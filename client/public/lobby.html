@@ -7,6 +7,12 @@
     <link rel="stylesheet" href="/style.css">
     <script src="/config.js"></script>
     <script src="/common.js"></script>
+    <script src="/game.js"></script>
+    <style>
+        /* Taller 5: el canvas mide el mundo del servidor (800x600) y se escala al ancho disponible */
+        #game-canvas { display: block; width: 100%; height: auto; border-radius: 8px; background: #2b2f36; }
+        .controls-hint kbd { font: inherit; font-size: 12px; padding: 1px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--code); }
+    </style>
 </head>
 <body>
     <main>
@@ -23,6 +29,11 @@
         <section id="replaced-panel" class="notice-panel" hidden>
             <p>Tu sesión se abrió en otra pestaña.</p>
             <button id="use-here-button" class="primary" type="button">Usar la sesión aquí</button>
+        </section>
+        <section aria-labelledby="game-heading">
+            <h2 id="game-heading">Pista</h2>
+            <p class="muted controls-hint">Muévete con <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> o <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>. Tu carro tiene el borde blanco.</p>
+            <canvas id="game-canvas" width="800" height="600" aria-label="Pista del juego con los carros de todos los jugadores"></canvas>
         </section>
         <section aria-labelledby="players-heading">
             <h2 id="players-heading">Jugadores en línea <span id="player-count">(0)</span></h2>
@@ -57,6 +68,16 @@
             const playerCount = document.getElementById("player-count");
 
             currentUser.textContent = `Usuario: ${localStorage.getItem("username") || "desconocido"}`;
+
+            // Taller 5: el juego solo envía intenciones; dibuja lo que manda el servidor
+            const game = createGame({
+                canvas: document.getElementById("game-canvas"),
+                send: (payload) => {
+                    if (socket && socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify(payload));
+                    }
+                }
+            });
 
             function showNotice(message, hint = "") {
                 notice.replaceChildren();
@@ -294,6 +315,12 @@
                             currentUser.textContent = `Conectado como ${msg.username}.`;
                             connectionStatus.textContent = "Conectado al coordinador.";
                             break;
+                        case "welcome":
+                            game.onWelcome(msg);
+                            break;
+                        case "state":
+                            game.onState(msg);
+                            break;
                         case "players_update":
                             if (Array.isArray(msg.players)) {
                                 renderPlayers(msg.players);
@@ -323,6 +350,7 @@
 
                 socket.addEventListener("close", (event) => {
                     stopSessionWatcher();
+                    game.stop(); // deja de leer el teclado
                     if (intentionalClose) {
                         return;
                     }
