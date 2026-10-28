@@ -11,6 +11,8 @@
     }
 }
 * { box-sizing: border-box; }
+/* El atributo hidden siempre gana (si no, reglas como form { display: grid } lo anulan) */
+[hidden] { display: none !important; }
 body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
 main { max-width: 760px; margin: 0 auto; padding: 32px 16px; display: grid; gap: 20px; }
 h1 { font-size: 24px; margin: 0; }
@@ -38,6 +40,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .players { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
 .players li { padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; }
 .players li.current { border-color: var(--accent); font-weight: 700; }
+.button-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .notice-panel:not([hidden]) { display: grid; gap: 12px; }
 .actions { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 @media (max-width: 520px) {

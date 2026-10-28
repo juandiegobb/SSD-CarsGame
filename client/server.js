@@ -24,10 +24,13 @@ const publicDirectory = path.join(__dirname, "public");
   console.log(`  AUTH_URL: ${currentAuth}`);
   console.log(`  COORDINATOR_WS_URL: ${currentWs}`);
 
+  // Taller 5: el Client ID de Google es público (va en el botón del navegador), no es un secreto.
+  const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
+
   res
     .type("application/javascript")
     .set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
-    .send(`window.APP_CONFIG = ${JSON.stringify({ AUTH_URL: currentAuth, COORDINATOR_WS_URL: currentWs })};\n`);
+    .send(`window.APP_CONFIG = ${JSON.stringify({ AUTH_URL: currentAuth, COORDINATOR_WS_URL: currentWs, GOOGLE_CLIENT_ID: googleClientId })};\n`);
  });
 
 app.get("/", (req, res) => {

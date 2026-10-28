@@ -7,6 +7,8 @@
     <link rel="stylesheet" href="/style.css">
     <script src="/config.js"></script>
     <script src="/common.js"></script>
+    <!-- Taller 5: Google Identity Services (botón oficial "Sign in with Google") -->
+    <script src="https://accounts.google.com/gsi/client" async></script>
 </head>
 <body>
     <main>
@@ -41,6 +43,24 @@
                 </form>
             </section>
         </div>
+
+        <section id="google-section">
+            <h2>Entrar con Google</h2>
+            <p id="google-message" class="message" role="alert" aria-live="polite"></p>
+            <div id="google-button"></div>
+            <p id="google-unavailable" class="muted" hidden></p>
+
+            <!-- Solo aparece el primer ingreso con Google (409 USERNAME_REQUIRED) -->
+            <form id="google-username-form" hidden>
+                <p>Es tu primer ingreso con Google. Elige el nombre con el que te verán los demás jugadores.</p>
+                <label for="google-username">Nombre de usuario</label>
+                <input id="google-username" name="username" autocomplete="username" required>
+                <div class="button-row">
+                    <button class="primary" type="submit">Crear cuenta y entrar</button>
+                    <button id="google-cancel" type="button">Cancelar</button>
+                </div>
+            </form>
+        </section>
         <p id="lobby-link" hidden><a href="/lobby.html">Ir al lobby</a></p>
     </main>
 
@@ -116,6 +136,114 @@
             setCredentials(result.payload.token, result.payload.username);
             window.location.assign("/lobby.html");
         });
+
+        // ── Taller 5: Login con Google (opción A, Google Identity Services) ──
+        // Google nos entrega un ID token (credential). Lo mandamos tal cual al auth,
+        // que es quien verifica la firma. El cliente nunca confía en el token por sí mismo.
+        const googleButton = document.getElementById("google-button");
+        const googleUnavailable = document.getElementById("google-unavailable");
+        const googleUsernameForm = document.getElementById("google-username-form");
+        const googleMessage = document.getElementById("google-message");
+        let pendingIdToken = null; // se guarda solo mientras el usuario elige su username
+
+        // Los mensajes de Google se muestran dentro de su propia tarjeta, junto al botón
+        function showGoogleMessage(message, hint = "", isError = false) {
+            googleMessage.replaceChildren();
+            const messageLine = document.createElement("p");
+            messageLine.textContent = message;
+            googleMessage.append(messageLine);
+            if (hint) {
+                const hintLine = document.createElement("p");
+                hintLine.textContent = `Sugerencia: ${hint}`;
+                googleMessage.append(hintLine);
+            }
+            googleMessage.className = `message ${isError ? "error" : "success"}`;
+        }
+
+        function clearGoogleMessage() {
+            googleMessage.replaceChildren();
+            googleMessage.className = "message";
+        }
+
+        async function sendGoogleLogin(idToken, username) {
+            const body = username ? { idToken, username } : { idToken };
+            const result = await apiPost("/auth/google", body);
+            if (!result.valid) {
+                showGoogleMessage(genericAuthError, "", true);
+                return;
+            }
+            if (result.ok) {
+                pendingIdToken = null;
+                setCredentials(result.payload.token, result.payload.username);
+                window.location.assign("/lobby.html");
+                return;
+            }
+            if (result.payload.code === "USERNAME_REQUIRED") {
+                // Primer ingreso: pedimos el username y reintentamos con el mismo idToken
+                pendingIdToken = idToken;
+                googleUsernameForm.hidden = false;
+                googleButton.hidden = true;
+                clearGoogleMessage(); // el propio formulario ya explica qué hacer
+                document.getElementById("google-username").focus();
+                return;
+            }
+            if (result.payload.code === "INVALID_ID_TOKEN") {
+                resetGoogleForm(); // el token pudo vencer: hay que volver a pulsar el botón
+            }
+            showGoogleMessage(result.payload.message, result.payload.hint, true);
+        }
+
+        function resetGoogleForm() {
+            pendingIdToken = null;
+            googleUsernameForm.reset();
+            googleUsernameForm.hidden = true;
+            googleButton.hidden = false;
+        }
+
+        googleUsernameForm.addEventListener("submit", (event) => {
+            event.preventDefault();
+            if (!pendingIdToken) {
+                resetGoogleForm();
+                return;
+            }
+            const username = new FormData(googleUsernameForm).get("username");
+            sendGoogleLogin(pendingIdToken, username);
+        });
+
+        document.getElementById("google-cancel").addEventListener("click", () => {
+            resetGoogleForm();
+            clearGoogleMessage();
+        });
+
+        function showGoogleUnavailable(text) {
+            googleUnavailable.textContent = text;
+            googleUnavailable.hidden = false;
+        }
+
+        function initGoogleLogin() {
+            const clientId = window.APP_CONFIG && window.APP_CONFIG.GOOGLE_CLIENT_ID;
+            if (!clientId) {
+                showGoogleUnavailable("El login con Google no está configurado (falta GOOGLE_CLIENT_ID en client/.env).");
+                return;
+            }
+            if (!window.google || !google.accounts || !google.accounts.id) {
+                showGoogleUnavailable("No se pudo cargar el botón de Google. Revisa tu conexión a internet.");
+                return;
+            }
+            google.accounts.id.initialize({
+                client_id: clientId,
+                callback: (response) => sendGoogleLogin(response.credential)
+            });
+            google.accounts.id.renderButton(googleButton, {
+                theme: "outline",
+                size: "large",
+                text: "signin_with",
+                locale: "es"
+            });
+        }
+
+        // El script de Google carga con async: esperamos a que termine la página
+        window.addEventListener("load", initGoogleLogin);
     </script>
 </body>
 </html>
