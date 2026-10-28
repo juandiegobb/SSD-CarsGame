@@ -1,5 +1,6 @@
-// Servicio de Autenticación (Auth Service) - Taller 4 Sistemas Distribuidos
+// Servicio de Autenticación (Auth Service) - Talleres 4 y 5 Sistemas Distribuidos
 // Responsabilidad: Registro, Login con JWT (1h) y persistencia en SQLite propia.
+// Taller 5: una sola tabla users con campo provider ('local' | 'google').
 // Puerto por defecto: 4000
 
 const fs = require('node:fs');
@@ -79,18 +80,67 @@ const DUMMY_HASH = bcrypt.hashSync('dummy_password_timing_defense', BCRYPT_ROUND
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL'); // Modo WAL para mejor concurrencia
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
+// Una sola tabla para los dos métodos de autenticación (SPEC.md §10.2).
+// Si hubiera dos tablas (users_local, users_google), un mismo username podría existir
+// dos veces y el resto del sistema (coordinador, score, replicación) tendría que duplicarse.
+// El CHECK de tabla impide filas inconsistentes: local ⇒ password_hash y sin google_sub;
+// google ⇒ google_sub y email, sin password_hash.
+const USERS_TABLE_SQL = `
+  CREATE TABLE users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    provider TEXT NOT NULL CHECK(provider IN ('local','google')),
+    password_hash TEXT,
+    google_sub TEXT UNIQUE,
+    email TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    CHECK (
+      (provider = 'local'  AND password_hash IS NOT NULL AND google_sub IS NULL) OR
+      (provider = 'google' AND password_hash IS NULL AND google_sub IS NOT NULL AND email IS NOT NULL)
+    )
   )
-`);
+`;
 
-// Sentencias preparadas para reutilización y prevención de inyección SQL
-const insertUserStmt = db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)');
-const findUserByUsernameStmt = db.prepare('SELECT id, username, password_hash, created_at FROM users WHERE username = ?');
+// Crea la tabla o, si viene de una base del Taller 4 (sin columna provider), la migra
+// conservando a los usuarios existentes como 'local'. Todo en una transacción.
+function ensureUsersTable() {
+  const columns = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+
+  if (columns.length === 0) {
+    db.exec(USERS_TABLE_SQL);
+    return;
+  }
+  if (columns.includes('provider')) {
+    return; // ya tiene el esquema del Taller 5
+  }
+
+  console.log('[auth-service] Migrando users.db del Taller 4 al esquema con provider...');
+  db.exec('BEGIN');
+  try {
+    db.exec('ALTER TABLE users RENAME TO users_taller4');
+    db.exec(USERS_TABLE_SQL);
+    db.exec(`
+      INSERT INTO users (id, username, provider, password_hash, created_at)
+      SELECT id, username, 'local', password_hash, created_at FROM users_taller4
+    `);
+    db.exec('DROP TABLE users_taller4');
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  console.log('[auth-service] Migración completada: los usuarios existentes quedaron como provider=local.');
+}
+ensureUsersTable();
+
+// Sentencias preparadas para reutilización y prevención de inyección SQL.
+// Los literales SQL llevan comillas SIMPLES (SQLite interpreta las dobles como nombres de columna).
+const stmts = {
+  insertLocal: db.prepare("INSERT INTO users (username, provider, password_hash) VALUES (?, 'local', ?)"),
+  insertGoogle: db.prepare("INSERT INTO users (username, provider, google_sub, email) VALUES (?, 'google', ?, ?)"),
+  findByUsername: db.prepare('SELECT * FROM users WHERE username = ?'),
+  findByGoogle: db.prepare('SELECT * FROM users WHERE google_sub = ?')
+};
 
 // 3. Helpers únicos de respuesta según SPEC.md §3.1
 function sendOk(res, status, message, extra = {}) {
@@ -112,6 +162,29 @@ function sendError(res, status, code, message, hint, details = undefined) {
     payload.details = details;
   }
   return res.status(status).json(payload);
+}
+
+// Emite el JWT propio del sistema. Es el mismo para usuarios locales y de Google:
+// el coordinador no necesita saber cómo se autenticó cada jugador, solo verifica la firma.
+// provider viaja en el payload para poder mostrar una insignia en el juego.
+function emitToken(user) {
+  const payload = {
+    userId: String(user.id),
+    username: user.username,
+    provider: user.provider
+  };
+  try {
+    return jwt.sign(payload, JWT_SECRET, { algorithm: 'HS256', expiresIn: getJwtExpiresIn() });
+  } catch (signErr) {
+    console.warn('[auth-service] Advertencia al firmar con expiración dinámica. Usando respaldo de 1h.');
+    return jwt.sign(payload, JWT_SECRET, { algorithm: 'HS256', expiresIn: '1h' });
+  }
+}
+
+// Segundos de vigencia de un token (exp - iat), para informarlo al cliente.
+function tokenLifetimeSeconds(token) {
+  const decoded = jwt.decode(token);
+  return (decoded && decoded.exp && decoded.iat) ? decoded.exp - decoded.iat : 3600;
 }
 
 // 4. Configuración de Express y Middlewares
@@ -203,7 +276,7 @@ app.post('/register', async (req, res, next) => {
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     try {
-      const info = insertUserStmt.run(cleanUsername, passwordHash);
+      const info = stmts.insertLocal.run(cleanUsername, passwordHash);
       console.log(`Usuario registrado: ${cleanUsername}`);
 
       return sendOk(res, 201, 'Usuario registrado exitosamente.', {
@@ -266,7 +339,7 @@ app.post('/login', async (req, res, next) => {
     }
 
     const cleanUsername = username.trim();
-    const user = findUserByUsernameStmt.get(cleanUsername);
+    const user = stmts.findByUsername.get(cleanUsername);
 
     if (!user) {
       // Comparación contra hash ficticio para evitar enumeración por temporización
@@ -277,6 +350,20 @@ app.post('/login', async (req, res, next) => {
         'INVALID_CREDENTIALS',
         'Credenciales inválidas.',
         'Verifica usuario y contraseña, o regístrate en POST /register.'
+      );
+    }
+
+    // Taller 5: un usuario de Google no tiene contraseña (password_hash es NULL).
+    // Se compara contra el hash ficticio para que el tiempo de respuesta no lo delate
+    // y se le indica que use el botón de Google.
+    if (user.provider !== 'local') {
+      await bcrypt.compare(password, DUMMY_HASH);
+      return sendError(
+        res,
+        401,
+        'USE_GOOGLE_LOGIN',
+        'Esta cuenta se creó con Google y no tiene contraseña.',
+        'Inicia sesión con el botón "Sign in with Google" (POST /auth/google).'
       );
     }
 
@@ -292,40 +379,8 @@ app.post('/login', async (req, res, next) => {
     }
 
     // Emisión de JWT con HS256 explícito y expiración recargada en caliente
-    const activeExpiresIn = getJwtExpiresIn();
-    let token;
-    try {
-      token = jwt.sign(
-        {
-          userId: String(user.id),
-          username: user.username
-        },
-        JWT_SECRET,
-        {
-          algorithm: 'HS256',
-          expiresIn: activeExpiresIn
-        }
-      );
-    } catch (signErr) {
-      console.warn('[auth-service] Advertencia al firmar con expiración dinámica. Usando respaldo de 1h.');
-      token = jwt.sign(
-        {
-          userId: String(user.id),
-          username: user.username
-        },
-        JWT_SECRET,
-        {
-          algorithm: 'HS256',
-          expiresIn: '1h'
-        }
-      );
-    }
-
-    // Calcular expiresIn dinámico en segundos a partir de exp - iat del token generado
-    const decoded = jwt.decode(token);
-    const expiresIn = (decoded && decoded.exp && decoded.iat)
-      ? (decoded.exp - decoded.iat)
-      : 3600;
+    const token = emitToken(user);
+    const expiresIn = tokenLifetimeSeconds(token);
 
     console.log(`Login exitoso: ${user.username}`);
 
