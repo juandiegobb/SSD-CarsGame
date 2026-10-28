@@ -22,8 +22,18 @@ if (!process.env.JWT_SECRET) {
 const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = Number(process.env.PORT) || 5000;
 
+// ── Taller 5: parámetros del mundo y del game loop (desde .env) ─────────────
+const WORLD_WIDTH = Number(process.env.WORLD_WIDTH) || 800;
+const WORLD_HEIGHT = Number(process.env.WORLD_HEIGHT) || 600;
+const PLAYER_RADIUS = Number(process.env.PLAYER_RADIUS) || 20;
+const PLAYER_SPEED = Number(process.env.PLAYER_SPEED) || 200; // px/seg
+const TICK_RATE = Number(process.env.TICK_RATE) || 20;        // Hz
+const TICK_MS = 1000 / TICK_RATE;
+const MAX_EXTRAS_BYTES = 1024; // límite anti-abuso para extras_update
+
 // ── Estado del coordinador ──────────────────────────────────────────────────
-// Map: userId (string) → { username, socket, connectedAt, expirationTimer }
+// Map: userId (string) → { username, provider, socket, connectedAt, expirationTimer,
+//                          x, y, intent: { x, y }, extras }
 const players = new Map();
 
 // ── Helpers de respuesta HTTP (mismo formato que Auth, SPEC.md §3.1) ────────
@@ -57,6 +67,65 @@ function broadcastPlayers() {
     }
   }
 }
+
+// ── Taller 5: estado del juego ───────────────────────────────────────────────
+// Foto del estado que se envía a los clientes (nunca incluye sockets ni timers).
+function snapshot() {
+  const list = [];
+  for (const [userId, p] of players) {
+    list.push({
+      userId,
+      username: p.username,
+      provider: p.provider,
+      x: Math.round(p.x * 10) / 10,
+      y: Math.round(p.y * 10) / 10,
+      extras: p.extras
+    });
+  }
+  return list;
+}
+
+function broadcast(payload) {
+  const msg = JSON.stringify(payload);
+  for (const p of players.values()) {
+    if (p.socket.readyState === p.socket.OPEN) {
+      p.socket.send(msg);
+    }
+  }
+}
+
+// ── Game loop (20 Hz): el servidor es la autoridad ───────────────────────────
+// El handler de mensajes SOLO guarda la intención; quien mueve es este loop.
+// Así la velocidad no depende de cuántos mensajes mande el cliente.
+let lastTick = Date.now();
+
+function tick() {
+  const now = Date.now();
+  const dt = (now - lastTick) / 1000; // segundos reales desde el tick anterior
+  lastTick = now;
+
+  if (players.size === 0) return; // nadie conectado: no hay a quién enviar
+
+  for (const p of players.values()) {
+    // Normalizar diagonales: sin esto (1,1) avanzaría √2 ≈ 41 % más rápido.
+    const ix = p.intent.x;
+    const iy = p.intent.y;
+    const mag = Math.hypot(ix, iy);
+    if (mag > 0) {
+      p.x += (ix / mag) * PLAYER_SPEED * dt;
+      p.y += (iy / mag) * PLAYER_SPEED * dt;
+    }
+
+    // Mantener dentro del mundo
+    p.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, p.x));
+    p.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, p.y));
+  }
+
+  // Un solo broadcast por tick (no uno por cada intent)
+  broadcast({ type: 'state', t: now, players: snapshot() });
+}
+
+setInterval(tick, TICK_MS);
 
 // ── Express — endpoints HTTP ─────────────────────────────────────────────────
 const app = express();
@@ -207,6 +276,8 @@ server.on('upgrade', (req, socket, head) => {
 wss.on('connection', (ws, payload) => {
   const userId = String(payload.userId);
   const username = payload.username;
+  // provider viene del JWT verificado (no del cliente). Tokens del Taller 4 no lo traen → 'local'.
+  const provider = payload.provider === 'google' ? 'google' : 'local';
 
   // Política de doble pestaña (SPEC.md §3.5): la conexión nueva reemplaza a la anterior.
   // Justificación: un socket "zombi" de una reconexión o refresh bloquearía al usuario
@@ -227,7 +298,13 @@ wss.on('connection', (ws, payload) => {
     username,
     socket: ws,
     connectedAt: new Date().toISOString(),
-    expirationTimer: null
+    expirationTimer: null,
+    provider,
+    // Taller 5: posición inicial aleatoria dentro del mundo, quieto y sin extras
+    x: PLAYER_RADIUS + Math.random() * (WORLD_WIDTH - 2 * PLAYER_RADIUS),
+    y: PLAYER_RADIUS + Math.random() * (WORLD_HEIGHT - 2 * PLAYER_RADIUS),
+    intent: { x: 0, y: 0 },
+    extras: {}
   };
   players.set(userId, entry);
 
@@ -241,6 +318,18 @@ wss.on('connection', (ws, payload) => {
     userId,
     username,
     onlineCount: players.size
+  });
+
+  // Taller 5: welcome con el mundo, para que el cliente dimensione el canvas
+  sendWs(ws, {
+    type: 'welcome',
+    you: { userId, username, provider },
+    world: {
+      width: WORLD_WIDTH,
+      height: WORLD_HEIGHT,
+      playerRadius: PLAYER_RADIUS,
+      tickRate: TICK_RATE
+    }
   });
 
   // Broadcast de la lista actualizada a TODOS (incluido el nuevo)
@@ -289,6 +378,44 @@ wss.on('connection', (ws, payload) => {
           serverTime: new Date().toISOString()
         });
         break;
+
+      case 'intent': {
+        // Solo se guarda la intención; el movimiento lo hace el game loop.
+        const dir = msg.intent && msg.intent.dir;
+        if (!dir || typeof dir.x !== 'number' || typeof dir.y !== 'number' ||
+            !Number.isFinite(dir.x) || !Number.isFinite(dir.y)) {
+          sendWs(ws, {
+            type: 'error',
+            ok: false,
+            code: 'INVALID_INTENT',
+            message: 'La intención de movimiento no tiene el formato esperado.',
+            hint: 'Envía {"type":"intent","intent":{"dir":{"x":1,"y":0}}} con x e y en -1, 0 o 1.'
+          });
+          break;
+        }
+        // Sanitizar a -1, 0, 1: NO confiar en el cliente ({x: 9999} queda en 1)
+        entry.intent = { x: Math.sign(dir.x), y: Math.sign(dir.y) };
+        break;
+      }
+
+      case 'extras_update': {
+        const extras = msg.extras;
+        const valid = extras && typeof extras === 'object' && !Array.isArray(extras) &&
+          Buffer.byteLength(JSON.stringify(extras)) <= MAX_EXTRAS_BYTES;
+        if (!valid) {
+          sendWs(ws, {
+            type: 'error',
+            ok: false,
+            code: 'INVALID_EXTRAS',
+            message: 'Los extras deben ser un objeto JSON de hasta 1024 bytes.',
+            hint: 'Envía {"type":"extras_update","extras":{"color":"#ff5500"}}.'
+          });
+          break;
+        }
+        // Se replica a todos en el próximo state (persistente durante la sesión)
+        entry.extras = extras;
+        break;
+      }
 
       case 'who':
         // Responde players_update solo al socket que preguntó
@@ -386,7 +513,7 @@ wss.on('connection', (ws, payload) => {
           ok: false,
           code: 'UNKNOWN_MESSAGE_TYPE',
           message: `Tipo de mensaje no reconocido: ${msg.type ?? '(sin tipo)'}.`,
-          hint: 'Tipos soportados: ping, who, verify.'
+          hint: 'Tipos soportados: ping, who, verify, intent, extras_update.'
         });
     }
   });
