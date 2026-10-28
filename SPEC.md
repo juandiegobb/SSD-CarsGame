@@ -1,4 +1,4 @@
-# SPEC — Taller 4: Proyecto Final Parte I (Identidad)
+# SPEC — Talleres 4 y 5: Proyecto Final Partes I (Identidad) y II (Juego en vivo + Google)
 
 > Sistemas Distribuidos · Universidad de Boyacá
 > Objetivo: desplegar la primera pieza del videojuego web multijugador: **identidad** (registro, login, JWT) y un **canal WebSocket autenticado** que mantiene la lista de jugadores en línea.
@@ -18,7 +18,7 @@ Tres componentes, tres procesos, tres puertos, tres túneles ngrok:
 | `client/` | HTML + JS plano (servido por Express minúsculo) | 3000 | Login/registro, lobby con lista en vivo, logout, manejo de cierre inesperado. |
 
 ### Fuera de alcance (no hacer)
-- Posición/movimiento de jugadores, replicación entre coordinadores, tolerancia a fallos (son partes posteriores del proyecto).
+- Replicación entre coordinadores y tolerancia a fallos (son partes posteriores del proyecto). El movimiento y el login con Google se agregan en el Taller 5 (ver §10).
 - Frameworks de frontend (React, Vue, etc.). El PDF lo prohíbe explícitamente: "no es el punto del taller".
 - Refresh tokens, roles, recuperación de contraseña.
 
@@ -148,6 +148,7 @@ SSD-C.../
 | 400 | `INVALID_USERNAME` | username faltante o con formato inválido | "Usa 3–32 caracteres: letras, números o guion bajo." |
 | 400 | `INVALID_PASSWORD` | password faltante o fuera de 8–72 | "Usa una contraseña de 8 a 72 caracteres." |
 | 401 | `INVALID_CREDENTIALS` | Login fallido | "Verifica usuario y contraseña, o regístrate en POST /register." |
+| 401 | `USE_GOOGLE_LOGIN` | Login con contraseña sobre una cuenta creada con Google (Taller 5, §10.3) | "Inicia sesión con el botón \"Sign in with Google\" (POST /auth/google)." |
 | 404 | `NOT_FOUND` | Ruta inexistente | "Rutas disponibles: GET /health, POST /register, POST /login." |
 | 409 | `USERNAME_TAKEN` | Registro duplicado | "Elige otro username o inicia sesión en POST /login." |
 | 500 | `INTERNAL_ERROR` | Error no controlado | "Intenta de nuevo; si persiste, revisa los logs del servicio." |
@@ -519,3 +520,133 @@ Antes de entrar: las **tres URLs de ngrok activas**, servicios corriendo, `.env`
 6. Guardar la contraseña en claro "solo para probar".
 7. Mezclar `ws://` con `https://` (contenido mixto) → usar `wss://` con ngrok.
 8. Olvidar CORS en el auth cuando cliente y auth están en orígenes distintos.
+
+---
+
+## 10. Taller 5 — Proyecto Final Parte II (juego en vivo + Login con Google)
+
+> Esta sección extiende el contrato de las secciones 1–9 sin romperlo: todo lo del Taller 4 sigue funcionando igual. Lo que aquí cambia o se agrega sale del PDF del Taller 5; las decisiones propias van marcadas como **[Decisión]**.
+
+### 10.1 Alcance nuevo
+
+- **Juego en vivo:** los jugadores se mueven en un canvas y todos ven a todos en tiempo real. **El servidor es la autoridad**: el cliente solo envía intenciones de movimiento y el coordinador calcula las posiciones.
+- **Login con Google:** además de usuario/contraseña, se puede entrar con Google. Ambos métodos producen **el mismo JWT propio** y conviven en **una sola tabla `users`**.
+- **Feature extra replicado** mediante `extras` (ver 10.6).
+- Siguen fuera de alcance: replicación entre coordinadores y tolerancia a fallos (talleres siguientes).
+
+### 10.2 Esquema único de usuarios
+
+```sql
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  provider TEXT NOT NULL CHECK(provider IN ('local','google')),
+  password_hash TEXT,           -- NULL para usuarios de Google
+  google_sub TEXT UNIQUE,       -- NULL para usuarios locales
+  email TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  CHECK (
+    (provider = 'local'  AND password_hash IS NOT NULL AND google_sub IS NULL) OR
+    (provider = 'google' AND password_hash IS NULL AND google_sub IS NOT NULL AND email IS NOT NULL)
+  )
+);
+```
+
+- Una sola tabla: si hubiera `users_local` y `users_google`, un mismo username podría existir dos veces y el coordinador, el score y la replicación futura tendrían que duplicarse.
+- **[Decisión]** El `CHECK` de tabla hace que la propia base rechace filas inconsistentes (p. ej. un usuario de Google con contraseña).
+- **[Decisión] Migración automática:** si `users.db` viene del Taller 4 (sin columna `provider`), al arrancar el auth la migra en una transacción y deja a los usuarios existentes como `provider = 'local'`. Nadie pierde su cuenta.
+- Los literales SQL van con comillas **simples** (`'local'`); SQLite interpreta las dobles como nombres de columna.
+
+### 10.3 Auth — cambios y endpoint nuevo
+
+**JWT:** payload `{ userId, username, provider, iat, exp }` (se agrega `provider`). Mismo `JWT_SECRET`, `HS256` y `JWT_EXPIRES_IN` que antes; lo emite un único helper `emitToken(user)` para los dos métodos.
+
+**`POST /login`:** si el usuario existe pero `provider !== 'local'`, responde `401 USE_GOOGLE_LOGIN` (la cuenta no tiene contraseña). Se compara igual contra el hash ficticio para no delatar la cuenta por tiempo de respuesta.
+
+**[Decisión] Opción A — Google Identity Services** (botón oficial en el cliente + ID Token). Se eligió sobre el Authorization Code Flow porque no requiere `client_secret` ni `redirect_uri` en el backend, funciona igual detrás de ngrok y el backend solo tiene que verificar un token.
+
+**`POST /auth/google`** — body `{ idToken, username? }`
+
+| HTTP | Forma | Cuándo |
+|---|---|---|
+| 200 | `{ ok, message, token, username, expiresIn }` | El usuario de Google ya existía, o se creó con el `username` enviado |
+| 400 | `INVALID_BODY` | Falta `idToken` o no es string |
+| 400 | `INVALID_USERNAME` | El `username` enviado no cumple 3–32 `[A-Za-z0-9_]` |
+| 401 | `invalid_id_token` → `INVALID_ID_TOKEN` | La firma, el emisor, la expiración o el `aud` del ID token no son válidos |
+| 401 | `EMAIL_NOT_VERIFIED` | `email_verified` del payload no es `true` |
+| 409 | `USERNAME_REQUIRED` | Primer login con Google y no se envió `username` → el cliente debe pedirlo y reintentar |
+| 409 | `USERNAME_TAKEN` | El `username` elegido ya existe (en cualquiera de los dos providers) |
+| 500 | `INTERNAL_ERROR` | Error no controlado |
+
+- **[Decisión] Formato de error:** el PDF muestra `{ error: "username_required" }`. Para no romper el envoltorio único de §3.1, se responde `{ ok:false, code:"USERNAME_REQUIRED", message, hint, error:"username_required" }`: el `code` sigue la convención del proyecto y el campo `error` conserva literalmente el valor del PDF (`username_required`, `username_taken`, `invalid_id_token`, `email_not_verified`).
+- Validaciones obligatorias (PDF): verificar la **firma** con `googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID })` (nunca solo decodificar), exigir `aud === GOOGLE_CLIENT_ID`, exigir `email_verified === true`, y usar **`sub`** como llave (`google_sub`), nunca el email.
+- El `idToken` nunca se escribe en logs.
+
+**Variables nuevas en `auth-service/.env`:** `GOOGLE_CLIENT_ID=<id>.apps.googleusercontent.com`. Si falta, el auth arranca igual pero `/auth/google` responde `503 GOOGLE_NOT_CONFIGURED` **[Decisión]** (así se puede seguir trabajando en local sin credenciales de Google).
+
+### 10.4 Coordinador — estado de juego y game loop
+
+Estado de cada jugador en el `Map` (se extiende la entrada del Taller 4):
+
+```
+userId → { username, provider, socket, connectedAt, expirationTimer,
+           x, y, intent: { x, y }, extras: {} }
+```
+
+- Posición inicial aleatoria dentro del mundo. Constantes por `.env`: `WORLD_WIDTH` (800), `WORLD_HEIGHT` (600), `PLAYER_RADIUS` (20), `PLAYER_SPEED` (200 px/s), `TICK_RATE` (20 Hz).
+- **Game loop** con `setInterval(tick, 1000 / TICK_RATE)`: calcula `dt` real con `Date.now()`, normaliza diagonales con `Math.hypot`, mueve `x/y` según `intent`, recorta a los bordes del mundo y hace **un** broadcast de `state` por tick.
+- El handler de mensajes **solo guarda** `intent`/`extras`; nunca mueve ni hace broadcast (errores típicos 2 y 4 del PDF).
+- **[Decisión]** El loop solo hace broadcast si hay jugadores conectados. `players_update` se sigue enviando al entrar/salir alguien (compatibilidad con el lobby del Taller 4).
+
+**Mensajes servidor → cliente nuevos:**
+
+| `type` | Cuándo | Forma |
+|---|---|---|
+| `welcome` | Al socket recién autenticado, después de `connected` | `{ "type":"welcome", "you":{ "userId","username","provider" }, "world":{ "width","height","playerRadius","tickRate" } }` |
+| `state` | A todos, una vez por tick | `{ "type":"state", "t":<ms>, "players":[{ "userId","username","provider","x","y","extras" }] }` |
+
+**Mensajes cliente → servidor nuevos:**
+
+| `type` | Forma | Efecto |
+|---|---|---|
+| `intent` | `{ "type":"intent", "intent":{ "dir":{ "x":-1\|0\|1, "y":-1\|0\|1 } } }` | Guarda `p.intent = { x: Math.sign(dir.x), y: Math.sign(dir.y) }`. No confía en el valor: `{x: 9999}` queda en `1`. |
+| `extras_update` | `{ "type":"extras_update", "extras":{ ... } }` | Si es un objeto (no array) y su JSON mide ≤ 1024 bytes, reemplaza `p.extras`. Se replica en el próximo `state`. |
+
+**[Decisión] Respuestas a `intent` / `extras_update`:** un `intent` válido **no** recibe respuesta individual (se mandan varios por segundo; la confirmación es el siguiente `state`). Uno inválido sí recibe `error` sin cerrar el socket:
+
+| `code` | Cuándo | `hint` |
+|---|---|---|
+| `INVALID_INTENT` | Falta `intent.dir` o `x`/`y` no son números | "Envía {\"type\":\"intent\",\"intent\":{\"dir\":{\"x\":1,\"y\":0}}}." |
+| `INVALID_EXTRAS` | `extras` no es objeto, es array o supera 1024 bytes | "Envía un objeto JSON de hasta 1024 bytes en extras." |
+
+`UNKNOWN_MESSAGE_TYPE` pasa a listar: `ping, who, verify, intent, extras_update`.
+
+### 10.5 Cliente
+
+- `GET /config.js` agrega `GOOGLE_CLIENT_ID` (desde `client/.env`).
+- `login.html`: botón oficial "Sign in with Google" (Google Identity Services). Si `/auth/google` responde `USERNAME_REQUIRED`, muestra un campo "Elige tu username" y reenvía `{ idToken, username }`.
+- `lobby.html`: canvas del tamaño de `welcome.world`; las flechas / WASD se traducen a `intent` (solo se envía cuando la dirección cambia); se dibuja cada `state` recibido. El cliente **nunca** calcula posiciones.
+- Se conservan del Taller 4: lista de jugadores, logout, manejo de `4001/4002/4003` y watcher del token.
+
+### 10.6 Feature extra replicado **[Decisión]**
+
+- **Color del carro:** selector de color → `extras_update { color: "#rrggbb" }`. Todos los clientes lo ven en el próximo `state` y se mantiene durante la sesión. El cliente solo acepta colores con formato `#rrggbb` al dibujar (si otro manda basura, se usa el color por defecto).
+- **Insignia de provider:** el coordinador incluye `provider` (tomado del JWT verificado, no de `extras`) en cada jugador del `state`; el cliente dibuja una "G" para Google y un candado para cuentas locales.
+
+### 10.7 Pruebas del Taller 5
+
+```bash
+# Cuenta de Google intentando /login → 401 USE_GOOGLE_LOGIN
+curl -X POST http://localhost:4000/login -H "Content-Type: application/json" -d '{"username":"<usuario_google>","password":"cualquiera"}'
+
+# ID token falso → 401 INVALID_ID_TOKEN
+curl -X POST http://localhost:4000/auth/google -H "Content-Type: application/json" -d '{"idToken":"esto.no.sirve"}'
+
+# Movimiento con wscat (el servidor manda state 20 veces por segundo)
+wscat -c "ws://localhost:5000/connect?token=<JWT>"
+> {"type":"intent","intent":{"dir":{"x":1,"y":0}}}
+> {"type":"intent","intent":{"dir":{"x":9999,"y":0}}}   # se sanea a 1, no teletransporta
+> {"type":"extras_update","extras":{"color":"#ff5500"}}
+```
+
+Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se ven moverse, el color que cambia uno lo ve el otro, y la velocidad en diagonal es igual a la recta.
