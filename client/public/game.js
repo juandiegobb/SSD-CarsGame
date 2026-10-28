@@ -22,6 +22,48 @@
         return `hsl(${Math.round((hash * 137.508) % 360)}, 70%, 55%)`;
     }
 
+    // Taller 5, feature extra: el color viaja en extras y lo manda OTRO cliente,
+    // así que no confiamos en él: solo aceptamos "#rrggbb"; si no, color por defecto.
+    const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+    function carColor(p) {
+        const c = p.extras && p.extras.color;
+        return typeof c === "string" && HEX_COLOR.test(c) ? c : colorFor(p.userId);
+    }
+
+    // Convierte el color por defecto (hsl) a hex, que es lo que entiende <input type="color">
+    function defaultColorHex(userId) {
+        const probe = document.createElement("canvas").getContext("2d");
+        probe.fillStyle = colorFor(userId);
+        return probe.fillStyle; // el navegador lo normaliza a "#rrggbb"
+    }
+
+    // Insignia junto al nombre: "G" para cuentas de Google, candado para cuentas locales.
+    // provider lo pone el coordinador desde el JWT verificado (el cliente no lo puede falsear).
+    function drawBadge(ctx, provider, x, y) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = provider === "google" ? "#fff" : "#475467";
+        ctx.fill();
+        ctx.font = "700 11px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        if (provider === "google") {
+            ctx.fillStyle = "#4285f4";
+            ctx.fillText("G", x, y + 0.5);
+        } else {
+            // candado simple dibujado (no depende de que el sistema tenga emojis)
+            ctx.strokeStyle = "#fff";
+            ctx.fillStyle = "#fff";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(x, y - 1.5, 2.5, Math.PI, 0);
+            ctx.stroke();
+            ctx.fillRect(x - 3.5, y - 1.5, 7, 5);
+        }
+        ctx.restore();
+    }
+
     function createGame({ canvas, send, myUserId }) {
         const ctx = canvas.getContext("2d");
         let world = { width: 800, height: 600, playerRadius: 20, tickRate: 20 };
@@ -58,8 +100,10 @@
         }
 
         function isTyping(event) {
-            const tag = event.target && event.target.tagName;
-            return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+            const el = event.target;
+            if (!el || !el.tagName) return false;
+            if (el.tagName === "INPUT") return el.type !== "color"; // el selector de color no "escribe"
+            return el.tagName === "TEXTAREA" || el.tagName === "SELECT";
         }
 
         function onKeyDown(event) {
@@ -153,11 +197,15 @@
             ctx.textAlign = "center";
             ctx.textBaseline = "bottom";
             const label = isMe ? `${p.username} (tú)` : p.username;
+            const textWidth = ctx.measureText(label).width;
+            const labelX = x + 10; // corrido a la derecha para dejar espacio a la insignia
+            const labelY = y - r - 6;
             ctx.lineWidth = 3;
             ctx.strokeStyle = "rgba(0,0,0,0.7)";
-            ctx.strokeText(label, x, y - r - 6);
+            ctx.strokeText(label, labelX, labelY);
             ctx.fillStyle = "#fff";
-            ctx.fillText(label, x, y - r - 6);
+            ctx.fillText(label, labelX, labelY);
+            drawBadge(ctx, p.provider, labelX - textWidth / 2 - 11, labelY - 7);
         }
 
         function frame() {
@@ -176,7 +224,7 @@
                     const dx = p.x - old.x;
                     const dy = p.y - old.y;
                     if (Math.hypot(dx, dy) > 0.5) headings.set(p.userId, Math.atan2(dy, dx));
-                    drawCar({ ...p, color: colorFor(p.userId) }, x, y, headings.get(p.userId) || 0, p.userId === meId);
+                    drawCar({ ...p, color: carColor(p) }, x, y, headings.get(p.userId) || 0, p.userId === meId);
                 }
             }
             requestAnimationFrame(frame);
@@ -208,4 +256,5 @@
     }
 
     window.createGame = createGame;
+    window.defaultCarColor = defaultColorHex;
 })();

@@ -11,6 +11,10 @@
     <style>
         /* Taller 5: el canvas mide el mundo del servidor (800x600) y se escala al ancho disponible */
         #game-canvas { display: block; width: 100%; height: auto; border-radius: 8px; background: #2b2f36; }
+        .game-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+        .game-toolbar p { margin: 0; }
+        .color-picker { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+        .color-picker input { width: 44px; height: 32px; padding: 2px; cursor: pointer; }
         .controls-hint kbd { font: inherit; font-size: 12px; padding: 1px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--code); }
     </style>
 </head>
@@ -32,7 +36,13 @@
         </section>
         <section aria-labelledby="game-heading">
             <h2 id="game-heading">Pista</h2>
-            <p class="muted controls-hint">Muévete con <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> o <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>. Tu carro tiene el borde blanco.</p>
+            <div class="game-toolbar">
+                <p class="muted controls-hint">Muévete con <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> o <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>. Tu carro tiene el borde blanco. Insignia: <strong>G</strong> = entró con Google, 🔒 = cuenta local.</p>
+                <!-- Taller 5, feature extra replicado: el color viaja en extras_update -->
+                <label class="color-picker" for="car-color">Color de tu carro
+                    <input id="car-color" type="color" value="#2f6fed">
+                </label>
+            </div>
             <canvas id="game-canvas" width="800" height="600" aria-label="Pista del juego con los carros de todos los jugadores"></canvas>
         </section>
         <section aria-labelledby="players-heading">
@@ -68,6 +78,43 @@
             const playerCount = document.getElementById("player-count");
 
             currentUser.textContent = `Usuario: ${localStorage.getItem("username") || "desconocido"}`;
+
+            // ── Taller 5, feature extra: color del carro replicado ─────────────────
+            // El cliente manda extras_update { color }; el coordinador lo guarda en
+            // player.extras y lo reparte a todos en el próximo state. Dura toda la sesión.
+            // Además lo guardamos en localStorage para reenviarlo si recargas la página.
+            const colorInput = document.getElementById("car-color");
+            let colorSendTimer = null;
+
+            function sendColor(color) {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ type: "extras_update", extras: { color } }));
+                }
+            }
+
+            function setupColorPicker(userId) {
+                const saved = localStorage.getItem(`carColor:${userId}`);
+                colorInput.value = saved || defaultCarColor(userId);
+                colorInput.dataset.userId = userId;
+                if (saved) sendColor(saved); // reponer el color elegido antes
+            }
+
+            // Mientras se arrastra el selector llegan muchos "input": mandamos máx. 1 cada 150 ms
+            colorInput.addEventListener("input", () => {
+                if (colorSendTimer) return;
+                colorSendTimer = setTimeout(() => {
+                    colorSendTimer = null;
+                    sendColor(colorInput.value);
+                }, 150);
+            });
+
+            colorInput.addEventListener("change", () => {
+                sendColor(colorInput.value);
+                if (colorInput.dataset.userId) {
+                    localStorage.setItem(`carColor:${colorInput.dataset.userId}`, colorInput.value);
+                }
+                colorInput.blur(); // devolver el teclado al juego
+            });
 
             // Taller 5: el juego solo envía intenciones; dibuja lo que manda el servidor
             const game = createGame({
@@ -317,6 +364,7 @@
                             break;
                         case "welcome":
                             game.onWelcome(msg);
+                            setupColorPicker(msg.you.userId);
                             break;
                         case "state":
                             game.onState(msg);
