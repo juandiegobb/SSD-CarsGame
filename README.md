@@ -1,12 +1,15 @@
-# Taller 4: Sistemas Distribuidos — Proyecto Final (Parte I: Identidad y Sesiones)
+# Talleres 4 y 5: Sistemas Distribuidos — Proyecto Final (Partes I y II)
 
 > **Universidad de Boyacá — Facultad de Ciencias e Ingeniería**  
 > **Asignatura:** Sistemas Distribuidos  
 > **Repositorio Oficial:** [https://github.com/juandiegobb/SSD-CarsGame.git](https://github.com/juandiegobb/SSD-CarsGame.git)  
 
-Este repositorio contiene la **Parte I del Proyecto Final**, correspondiente a la arquitectura base de **autenticación, coordinación de sesiones en tiempo real y cliente web**. Constituye el núcleo de identidad de un futuro videojuego multijugador distribuido en web.
+Este repositorio contiene el videojuego web multijugador **SSD-CarsGame**:
 
-> ℹ️ **Nota de Alcance:** Esta primera entrega aborda exclusivamente el registro, autenticación con JWT, persistencia en SQLite, presencia de jugadores en vivo mediante WebSocket y despliegue público seguro con túneles ngrok. **No incluye** lógica de movimiento, físicas ni replicación de estados de juego (reservados para entregas posteriores).
+* **Parte I (Taller 4) — Identidad:** registro, login con JWT, persistencia en SQLite, presencia de jugadores en vivo por WebSocket y despliegue con ngrok.
+* **Parte II (Taller 5) — Juego en vivo + Google:** cada jugador maneja un carro en un canvas, con el **servidor como autoridad** (game loop a 20 Hz), **login con Google** que convive con el login local en una sola tabla `users`, y un **feature extra replicado** (color del carro e insignia de provider). Ver la [sección 11](#11-taller-5--parte-ii-juego-en-vivo-y-login-con-google).
+
+> ℹ️ **Nota de Alcance:** La replicación entre varios coordinadores y la tolerancia a fallos quedan para las siguientes entregas.
 
 ---
 
@@ -20,8 +23,8 @@ Este repositorio contiene la **Parte I del Proyecto Final**, correspondiente a l
 7. [Pruebas del WebSocket (wscat)](#7-pruebas-del-websocket-wscat)
 8. [Decisiones de Diseño Justificadas](#8-decisiones-de-diseño-justificadas)
 9. [Despliegue Público con ngrok](#9-despliegue-público-con-ngrok)
-10. [Guion Rápido para la Sustentación](#10-guion-rápido-para-la-sustentación)
-11. [Errores Típicos y Cómo Evitarlos](#11-errores-típicos-y-cómo-evitarlos)
+10. [Errores Típicos y Cómo Evitarlos](#10-errores-típicos-y-cómo-evitarlos)
+11. [Taller 5 — Parte II: Juego en Vivo y Login con Google](#11-taller-5--parte-ii-juego-en-vivo-y-login-con-google)
 12. [Equipo y Reparto de Fases](#12-equipo-y-reparto-de-fases)
 
 ---
@@ -45,10 +48,11 @@ flowchart TD
 
     subgraph Backend ["Servicios Distribuidos (Node.js)"]
         ClientApp["Cliente Web (:3000)<br>Express estático + /config.js"]
-        AuthService["Auth Service (:4000)<br>Express + bcrypt + JWT"]
-        Coordinator["Coordinador (:5000)<br>HTTP + WebSocket Server"]
-        DB[("users.db<br>SQLite / WAL")]
-        MemoryMap[["players Map<br>(En memoria)"]]
+        AuthService["Auth Service (:4000)<br>Express + bcryptjs + JWT<br>+ /auth/google"]
+        Google["Google Identity Services<br>(ID Token)"]
+        Coordinator["Coordinador (:5000)<br>HTTP + WebSocket Server<br>+ game loop 20 Hz"]
+        DB[("users.db<br>node:sqlite / WAL<br>tabla única users")]
+        MemoryMap[["players Map<br>(x, y, intent, extras)"]]
     end
 
     %% Conexiones Clientes -> Túneles
@@ -67,7 +71,9 @@ flowchart TD
     %% Backend interno
     AuthService <-->|CRUD seguro| DB
     Coordinator <-->|Gestión de sockets| MemoryMap
-    AuthService -.->|Firma JWT (HS256)<br>Misma JWT_SECRET| Coordinator
+    AuthService -.->|"Firma JWT HS256<br>Misma JWT_SECRET"| Coordinator
+    BrowserA -.->|Sign in with Google| Google
+    AuthService -.->|verifyIdToken| Google
 ```
 
 ### Flujo de Vida de una Sesión:
@@ -75,6 +81,7 @@ flowchart TD
 2. **Login:** El cliente envía `POST /login`. El Auth Service valida las credenciales y genera un **JWT** firmado (algoritmo `HS256`, vigencia configurable).
 3. **Handshake WebSocket:** El cliente abre conexión a `ws://host:5000/connect?token=<JWT>` (o `wss://`). El Coordinador intercepta el evento HTTP `upgrade` y valida el token antes de aceptar el socket.
 4. **Presencia en Vivo:** El Coordinador registra al jugador en un `Map` en memoria (`userId -> { username, socket, ... }`) y emite un broadcast `players_update` a todos los clientes conectados.
+5. **Juego (Taller 5):** El cliente envía `intent` con la dirección de las teclas; el game loop del Coordinador mueve a cada jugador y difunde un `state` 20 veces por segundo. Con Google, el paso 2 se reemplaza por `POST /auth/google` y el resto es idéntico (mismo JWT).
 
 ---
 
@@ -83,12 +90,12 @@ flowchart TD
 ```text
 SSD-CarsGame/
 ├── auth-service/              # Servicio de Autenticación (Puerto 4000)
-│   ├── index.js               # API REST Express, SQLite y emisor de JWT
-│   ├── package.json           # Dependencias: express, better-sqlite3, bcrypt, jsonwebtoken, dotenv
+│   ├── index.js               # API REST Express, SQLite, emisor de JWT y /auth/google
+│   ├── package.json           # Dependencias: express, bcryptjs, jsonwebtoken, dotenv, cors, google-auth-library (+ node:sqlite)
 │   ├── .env.example           # Plantilla de variables de entorno del Auth
 │   └── users.db               # Base de datos SQLite (ignorado en .gitignore)
 ├── coordinator/               # Coordinador de Sesiones WebSocket (Puerto 5000)
-│   ├── index.js               # Verificación en upgrade, Map de presencia y broadcast
+│   ├── index.js               # Verificación en upgrade, Map de jugadores, game loop y broadcast
 │   ├── package.json           # Dependencias: express, ws, jsonwebtoken, dotenv
 │   └── .env.example           # Plantilla de variables de entorno del Coordinador
 ├── client/                    # Cliente Web Frontend y Servidor Estático (Puerto 3000)
@@ -96,8 +103,9 @@ SSD-CarsGame/
 │   ├── package.json           # Dependencias: express, dotenv
 │   ├── .env.example           # Plantilla de variables del cliente
 │   └── public/                # Archivos estáticos del frontend
-│       ├── login.html         # Formulario bimodal: Registro e Iniciar Sesión
-│       ├── lobby.html         # Vista en vivo de jugadores conectados y logout
+│       ├── login.html         # Registro, Iniciar Sesión y botón Sign in with Google
+│       ├── lobby.html         # Pista del juego, color del carro, jugadores conectados y logout
+│       ├── game.js            # Canvas: teclado → intent y dibujo de cada state
 │       ├── common.js          # Utilidades compartidas (API, localStorage, headers)
 │       └── style.css          # Estilos visuales del cliente
 ├── docs/                      # Documentación técnica adicional
@@ -116,10 +124,12 @@ SSD-CarsGame/
 
 ## 3. Requisitos Previos
 
-* **Node.js:** Versión `18.0.0` o superior (Recomendado: `Node.js 20.x LTS` o `Node.js 22.x LTS`).
+* **Node.js:** Versión `22.13.0` o superior (el auth usa `node:sqlite`, incluido en Node). Recomendado: `Node.js 22.x LTS` o `24.x`.
   * *Verificado y probado con Node.js v24.20.0 y npm v11.19.0.*
 * **npm:** Gestor de paquetes incluido con Node.js.
 * **ngrok:** CLI oficial de ngrok (v3.x) para túneles públicos.
+* **Cuenta de Google Cloud (gratis):** solo para crear el Client ID del login con Google ([sección 11.3](#113-configurar-google-cloud-client-id)).
+* **Chrome o Edge:** el login con Google abre una ventana emergente que el navegador integrado de VS Code no soporta.
 * **wscat (opcional para terminal):** Cliente de terminal para WebSockets (`npm install -g wscat`).
 * **Thunder Client / Postman / curl:** Para pruebas de endpoints HTTP.
 
@@ -159,13 +169,16 @@ Copia los archivos de ejemplo en cada servicio:
    BCRYPT_ROUNDS=10
    DB_PATH=users.db
    CORS_ORIGINS=http://localhost:3000
+   GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com   # Taller 5 (opcional)
    ```
+   > `JWT_SECRET` debe tener **al menos 32 caracteres** (exigencia del Taller 5); si no, el auth no arranca.
 
 3. **Configurar `coordinator/.env`:**
    > ⚠️ **CRÍTICO:** La variable `JWT_SECRET` debe ser **EXACTAMENTE LA MISMA** que la configurada en `auth-service/.env`. Si difieren, el Coordinador rechazará los tokens con error `TOKEN_INVALID_SIGNATURE`.
    ```dotenv
    PORT=5000
    JWT_SECRET=pega_aqui_la_clave_generada
+   # Taller 5 (opcionales): WORLD_WIDTH=800 WORLD_HEIGHT=600 PLAYER_RADIUS=20 PLAYER_SPEED=200 TICK_RATE=20
    ```
 
 4. **Configurar `client/.env`:**
@@ -173,6 +186,7 @@ Copia los archivos de ejemplo en cada servicio:
    PORT=3000
    AUTH_URL=http://localhost:4000
    COORDINATOR_WS_URL=ws://localhost:5000
+   GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com   # Taller 5: el mismo que en el auth
    ```
 
 > 💡 **Recarga en caliente de `JWT_EXPIRES_IN`:** La variable `JWT_EXPIRES_IN` en `auth-service/.env` se relee dinámicamente en cada petición `POST /login` (con `dotenv.parse`), permitiendo cambiar la expiración a `10s` o `30s` sin reiniciar el Auth Service. Los tokens emitidos previamente conservan su tiempo de expiración original (firmado en su payload). Las demás variables (`PORT`, `JWT_SECRET`, `BCRYPT_ROUNDS`, `CORS_ORIGINS`) se cargan al iniciar el proceso y requieren reiniciar el servicio.
@@ -480,6 +494,8 @@ ngrok start --all --config ngrok.example.yml
   CORS_ORIGINS=http://localhost:3000,https://<url-cliente>.ngrok-free.app
   ```
 
+> 🔑 **Login con Google por ngrok:** agrega la URL `https://<url-cliente>.ngrok-free.app` en **Orígenes de JavaScript autorizados** del Client ID en Google Cloud; si no, Google rechaza el botón con un error de *origin*.
+
 > 📌 **Nota sobre el Plan Gratuito:** Las URLs de ngrok cambian al reiniciar el proceso. Si se reinician los túneles, actualiza los `.env` y reinicia los servicios locales.
 
 ---
@@ -495,7 +511,172 @@ ngrok start --all --config ngrok.example.yml
 
 ---
 
-## 11. Equipo y Reparto de Fases
+## 11. Taller 5 — Parte II: Juego en Vivo y Login con Google
+
+El Taller 5 agrega dos piezas sobre la identidad del Taller 4:
+
+* **Juego en vivo:** cada jugador es un carro en un canvas y todos ven a todos en tiempo real. **El servidor es la autoridad**: el cliente solo envía *intenciones* de movimiento y el coordinador calcula las posiciones en un game loop a 20 Hz.
+* **Login con Google:** además de usuario/contraseña, se puede entrar con Google. Los dos métodos producen **el mismo JWT propio** y conviven en **una sola tabla `users`**.
+
+El contrato formal está en [`SPEC.md` §10](SPEC.md).
+
+### 11.1. Flujo completo
+
+```mermaid
+sequenceDiagram
+    participant B as Navegador
+    participant G as Google
+    participant A as Auth (:4000)
+    participant C as Coordinador (:5000)
+
+    B->>G: Clic en "Sign in with Google"
+    G-->>B: ID Token (JWT firmado por Google)
+    B->>A: POST /auth/google { idToken }
+    A->>G: verifyIdToken (firma + audience)
+    alt Primer ingreso
+        A-->>B: 409 USERNAME_REQUIRED
+        B->>A: POST /auth/google { idToken, username }
+    end
+    A-->>B: 200 { token (JWT propio), username }
+    B->>C: WSS /connect?token=JWT
+    C-->>B: connected + welcome { you, world }
+    loop 20 veces por segundo
+        B->>C: intent { dir } (solo cuando cambia la tecla)
+        C->>C: tick(): mueve con dt, normaliza diagonal, recorta bordes
+        C-->>B: state { players: [x, y, provider, extras] }
+    end
+```
+
+### 11.2. Una sola tabla `users`
+
+```sql
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT UNIQUE NOT NULL,
+  provider TEXT NOT NULL CHECK(provider IN ('local','google')),
+  password_hash TEXT,          -- NULL para usuarios de Google
+  google_sub TEXT UNIQUE,      -- NULL para usuarios locales
+  email TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  CHECK (
+    (provider = 'local'  AND password_hash IS NOT NULL AND google_sub IS NULL) OR
+    (provider = 'google' AND password_hash IS NULL AND google_sub IS NOT NULL AND email IS NOT NULL)
+  )
+);
+```
+
+* Con dos tablas (`users_local` / `users_google`) un mismo username podría existir dos veces y el coordinador, el score y la replicación futura tendrían que duplicarse.
+* El `CHECK` de tabla hace que la **base misma** rechace filas inconsistentes (por ejemplo, un usuario de Google con contraseña).
+* **Migración automática:** si `users.db` viene del Taller 4 (sin columna `provider`), al arrancar el auth la migra en una transacción y deja a los usuarios existentes como `local`. Nadie pierde su cuenta.
+
+### 11.3. Configurar Google Cloud (Client ID)
+
+1. Entra a [console.cloud.google.com](https://console.cloud.google.com) y usa o crea un proyecto.
+2. **APIs y servicios → Pantalla de consentimiento de OAuth** (Google Auth Platform): nombre de la app, correo de soporte, público **Externo**.
+3. **Público → Usuarios de prueba → Add users:** agrega los correos que van a entrar. Mientras la app esté en *modo de prueba*, solo esas cuentas pueden iniciar sesión.
+4. **Credenciales → Crear credenciales → ID de cliente de OAuth → Aplicación web.**
+   * **Orígenes de JavaScript autorizados:** `http://localhost:3000`, `http://localhost` y la URL `https://` del túnel ngrok del cliente.
+   * **URIs de redireccionamiento:** vacío (usamos la opción A).
+5. Copia el **ID de cliente** (`...apps.googleusercontent.com`) en **dos** `.env`:
+   ```dotenv
+   # auth-service/.env  → para verificar el ID token
+   GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+   # client/.env        → para dibujar el botón
+   GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+   ```
+   El **secreto del cliente no se usa** con la opción A: no lo guardes en ningún archivo.
+
+> ⚠️ **El botón no funciona dentro del navegador integrado de VS Code**: Google abre una ventana emergente y ese navegador no las permite. Usa Chrome o Edge y, si aparece "ventana emergente bloqueada", permítela para `localhost:3000`.
+
+### 11.4. `POST /auth/google`
+
+Body: `{ "idToken": "<ID token de Google>", "username": "<opcional>" }`
+
+| HTTP | `code` (`error` del PDF) | Cuándo |
+|---|---|---|
+| 200 | — | Ya existía, o se creó con el `username` enviado → `{ ok, message, token, username, expiresIn }` |
+| 400 | `INVALID_BODY` | Falta `idToken` |
+| 400 | `INVALID_USERNAME` | El username no cumple 3–32 `[A-Za-z0-9_]` |
+| 401 | `INVALID_ID_TOKEN` (`invalid_id_token`) | Firma, emisor, expiración o `aud` inválidos |
+| 401 | `EMAIL_NOT_VERIFIED` (`email_not_verified`) | `email_verified` no es `true` |
+| 409 | `USERNAME_REQUIRED` (`username_required`) | Primer ingreso sin username → el cliente lo pide y reintenta |
+| 409 | `USERNAME_TAKEN` (`username_taken`) | El username ya existe (en cualquiera de los dos providers) |
+| 503 | `GOOGLE_NOT_CONFIGURED` | Falta `GOOGLE_CLIENT_ID` en `auth-service/.env` |
+
+Además, `POST /login` responde `401 USE_GOOGLE_LOGIN` si la cuenta se creó con Google (no tiene contraseña).
+
+```bash
+# ID token falso → 401 INVALID_ID_TOKEN
+curl -X POST http://localhost:4000/auth/google -H "Content-Type: application/json" -d '{"idToken":"esto.no.sirve"}'
+
+# Cuenta de Google intentando login con contraseña → 401 USE_GOOGLE_LOGIN
+curl -X POST http://localhost:4000/login -H "Content-Type: application/json" -d '{"username":"<usuario_google>","password":"cualquiera"}'
+```
+
+> En PowerShell usa `curl.exe` y escapa las comillas: `-d '{\"idToken\":\"esto.no.sirve\"}'`.
+
+### 11.5. Mensajes WebSocket del juego
+
+| Dirección | `type` | Forma |
+|---|---|---|
+| servidor → cliente | `welcome` | `{ you: { userId, username, provider }, world: { width, height, playerRadius, tickRate } }` (después de `connected`) |
+| servidor → cliente | `state` | `{ t, players: [{ userId, username, provider, x, y, extras }] }` — una vez por tick |
+| cliente → servidor | `intent` | `{ intent: { dir: { x: -1\|0\|1, y: -1\|0\|1 } } }` |
+| cliente → servidor | `extras_update` | `{ extras: { color: "#rrggbb" } }` — objeto de máximo 1024 bytes |
+
+Errores nuevos (no cierran el socket): `INVALID_INTENT`, `INVALID_EXTRAS`.
+
+```bash
+wscat -c "ws://localhost:5000/connect?token=<JWT>"
+> {"type":"intent","intent":{"dir":{"x":1,"y":0}}}       # avanza a la derecha
+> {"type":"intent","intent":{"dir":{"x":9999,"y":0}}}    # se sanea a 1: no se teletransporta
+> {"type":"intent","intent":{"dir":{"x":0,"y":0}}}       # se detiene
+> {"type":"extras_update","extras":{"color":"#ff5500"}}  # los demás lo ven en el próximo state
+```
+
+Parámetros del mundo en `coordinator/.env` (todos opcionales): `WORLD_WIDTH=800`, `WORLD_HEIGHT=600`, `PLAYER_RADIUS=20`, `PLAYER_SPEED=200` (px/s), `TICK_RATE=20` (Hz).
+
+### 11.6. Feature extra replicado
+
+* **Color del carro:** selector en el lobby → `extras_update { color }`. El coordinador lo guarda en `player.extras` y lo reparte en el siguiente `state`; dura toda la sesión. El cliente también lo guarda en `localStorage` y lo reenvía al reconectar.
+* **Insignia de provider:** **G** para cuentas de Google y 🔒 para cuentas locales, junto al nombre. El `provider` lo pone el coordinador desde el **JWT verificado**, no desde `extras`, así que un cliente no puede hacerse pasar por usuario de Google.
+
+### 11.7. Decisiones de diseño del Taller 5
+
+1. **Opción A (Google Identity Services) en vez de Authorization Code Flow.** No necesita `client_secret` ni `redirect_uri` en el backend, funciona igual detrás de ngrok y el backend solo verifica un token.
+2. **Verificar la firma del ID token, nunca solo decodificarlo.** `googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID })` valida contra las claves públicas de Google. Sin `audience` se aceptarían tokens emitidos para *otras* apps de Google.
+3. **`sub` como llave, no el email.** El email de una cuenta de Google puede cambiar; `sub` es estable.
+4. **Formato de error consistente.** El PDF muestra `{ error: "username_required" }`; respondemos `{ ok:false, code:"USERNAME_REQUIRED", message, hint, error:"username_required" }` para no romper el formato único del Taller 4 y conservar el valor literal del PDF.
+5. **`node:sqlite` + `bcryptjs` en lugar de `better-sqlite3` + `bcrypt`** (como el esqueleto del PDF). Los dos anteriores son módulos nativos: en Node 24 sobre Windows había que compilarlos (Python + C++) y `npm install` fallaba. `bcryptjs` lee los mismos hashes `$2b$`, así que las contraseñas existentes siguen sirviendo.
+6. **Servidor autoritativo.** El handler de `intent` solo guarda la dirección; quien mueve es el game loop. Si moviera el handler, la velocidad dependería de cuántos mensajes mande el cliente.
+7. **`dt` real con `Date.now()`.** La velocidad queda en px/segundo aunque un tick llegue tarde o se cambie `TICK_RATE`.
+8. **Diagonales normalizadas con `Math.hypot`.** Sin esto, `(1,1)` avanzaría √2 ≈ 41 % más rápido.
+9. **Un broadcast por tick, no por mensaje.** El tráfico de salida es fijo (20 `state`/s) sin importar cuántas teclas se presionen.
+10. **No confiar en el cliente.** `Math.sign` en la dirección (`{x: 9999}` → `1`), `Number.isFinite`, y extras limitados a objeto de ≤ 1024 bytes. En el render, solo se aceptan colores `#rrggbb` que mandan otros jugadores.
+11. **El cliente envía `intent` solo cuando cambia la dirección**, y suelta todas las teclas si la ventana pierde el foco (si no, el carro seguiría avanzando solo).
+12. **Interpolación solo visual.** El servidor manda 20 estados por segundo y la pantalla dibuja a 60 fps; el cliente interpola entre los dos últimos `state` recibidos para que se vea fluido. No calcula posiciones propias: siempre dibuja lo que dijo el servidor (con un tick de retraso).
+13. **`GOOGLE_CLIENT_ID` opcional.** Si falta, el auth arranca igual y `/auth/google` responde `503 GOOGLE_NOT_CONFIGURED`; el login local sigue funcionando.
+
+### 11.8. Guion de demostración (Taller 5)
+
+1. **Login con Google:** clic en el botón → primer ingreso pide username (probar uno tomado y luego uno libre) → lobby. Cerrar sesión y volver a entrar: va directo.
+2. **Cuenta de Google con contraseña:** `POST /login` con ese username → `401 USE_GOOGLE_LOGIN`.
+3. **Dos navegadores** (uno local y otro Google): ambos se ven moverse en tiempo real, con su insignia.
+4. **Diagonal vs. recta:** mostrar en el código `Math.hypot` y que la velocidad es la misma.
+5. **Anti-trampa:** desde wscat o DevTools mandar `{"x":9999}` → el carro no se teletransporta.
+6. **Feature extra:** cambiar el color en una ventana y verlo en la otra.
+
+### 11.9. Problemas encontrados y cómo se resolvieron
+
+* **`npm install` fallaba pidiendo Python** al compilar `better-sqlite3` en Node 24 → se cambió a `node:sqlite` (incluido en Node) y `bcryptjs`.
+* **El botón de Google no hacía nada** dentro del navegador de VS Code (`Failed to open popup window`) → usar Chrome/Edge y permitir ventanas emergentes.
+* **Acceso bloqueado en Google** → la app está en modo de prueba: agregar el correo en *Usuarios de prueba*.
+* **El formulario oculto se veía** porque `form { display: grid }` anulaba el atributo `hidden` → regla global `[hidden] { display: none !important; }`.
+* **Todos los carros salían del mismo color** con ids consecutivos → el tono se reparte multiplicando por el ángulo áureo (~137.5°).
+
+---
+
+## 12. Equipo y Reparto de Fases
 
 | Fase | Componente / Responsabilidad | Integrante Responsable |
 |:---:|---|---|
