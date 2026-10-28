@@ -13,7 +13,7 @@ Tres componentes, tres procesos, tres puertos, tres túneles ngrok:
 
 | Componente | Tecnología | Puerto | Responsabilidad |
 |---|---|---|---|
-| `auth-service/` | Express + better-sqlite3 + bcrypt + jsonwebtoken + dotenv + cors | 4000 | Registrar usuarios, validar credenciales, emitir JWT (1 h). SQLite propia. |
+| `auth-service/` | Express + node:sqlite + bcryptjs + jsonwebtoken + dotenv + cors + google-auth-library (Taller 5; en el Taller 4 era better-sqlite3 + bcrypt) | 4000 | Registrar usuarios, validar credenciales, emitir JWT (1 h). SQLite propia. |
 | `coordinator/` | Express + ws + jsonwebtoken + dotenv | 5000 | Aceptar WS en `/connect?token=...`, verificar JWT, mantener `Map` de jugadores, hacer broadcast. |
 | `client/` | HTML + JS plano (servido por Express minúsculo) | 3000 | Login/registro, lobby con lista en vivo, logout, manejo de cierre inesperado. |
 
@@ -558,6 +558,8 @@ CREATE TABLE users (
 - Los literales SQL van con comillas **simples** (`'local'`); SQLite interpreta las dobles como nombres de columna.
 
 ### 10.3 Auth — cambios y endpoint nuevo
+
+**[Decisión] Dependencias:** se reemplazan `better-sqlite3` y `bcrypt` por `node:sqlite` (incluido en Node ≥ 22.13) y `bcryptjs`, como en el esqueleto del PDF. Los dos anteriores son módulos nativos que en Node 24 sobre Windows había que compilar (exigían Python y herramientas de C++), y `npm install` fallaba. `bcryptjs` lee los mismos hashes `$2b$`, así que las contraseñas existentes siguen funcionando.
 
 **JWT:** payload `{ userId, username, provider, iat, exp }` (se agrega `provider`). Mismo `JWT_SECRET`, `HS256` y `JWT_EXPIRES_IN` que antes; lo emite un único helper `emitToken(user)` para los dos métodos.
 

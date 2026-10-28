@@ -9,14 +9,31 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const dotenv = require('dotenv');
 const express = require('express');
 const cors = require('cors');
-const Database = require('better-sqlite3');
-const bcrypt = require('bcrypt');
+// Taller 5: node:sqlite (incluido en Node) y bcryptjs (JS puro), como en el esqueleto del PDF.
+// Ninguno necesita compilarse, así que npm install funciona sin Python ni Visual Studio.
+// bcryptjs lee los mismos hashes $2b$ que generaba bcrypt: las cuentas existentes siguen sirviendo.
+const { DatabaseSync } = require('node:sqlite');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { OAuth2Client } = require('google-auth-library');
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
   console.error('Error crítico: La variable de entorno JWT_SECRET no está definida.');
   process.exit(1);
+}
+if (process.env.JWT_SECRET.length < 32) {
+  console.error('Error crítico: JWT_SECRET debe tener al menos 32 caracteres (Taller 5).');
+  process.exit(1);
+}
+
+// Taller 5: Client ID de Google (Google Cloud Console → Credentials → OAuth client ID).
+// [Decisión] Si falta, el servicio arranca igual (registro/login local siguen funcionando)
+// y POST /auth/google responde 503 GOOGLE_NOT_CONFIGURED.
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || '').trim();
+const googleClient = GOOGLE_CLIENT_ID ? new OAuth2Client(GOOGLE_CLIENT_ID) : null;
+if (!googleClient) {
+  console.warn('[auth-service] GOOGLE_CLIENT_ID no está definido: POST /auth/google responderá 503.');
 }
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -77,8 +94,8 @@ const BCRYPT_ROUNDS = configuredRounds;
 const DUMMY_HASH = bcrypt.hashSync('dummy_password_timing_defense', BCRYPT_ROUNDS);
 
 // 2. Inicialización de la base de datos SQLite propia
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL'); // Modo WAL para mejor concurrencia
+const db = new DatabaseSync(DB_PATH);
+db.exec('PRAGMA journal_mode = WAL'); // Modo WAL para mejor concurrencia
 
 // Una sola tabla para los dos métodos de autenticación (SPEC.md §10.2).
 // Si hubiera dos tablas (users_local, users_google), un mismo username podría existir
@@ -151,17 +168,28 @@ function sendOk(res, status, message, extra = {}) {
   });
 }
 
-function sendError(res, status, code, message, hint, details = undefined) {
+function sendError(res, status, code, message, hint, details = undefined, extra = {}) {
   const payload = {
     ok: false,
     code,
     message,
-    hint
+    hint,
+    ...extra
   };
   if (details !== undefined) {
     payload.details = details;
   }
   return res.status(status).json(payload);
+}
+
+// Misma regla de username para /register y /auth/google (SPEC.md §3.2).
+function validateUsername(u) {
+  return typeof u === 'string' && /^[A-Za-z0-9_]{3,32}$/.test(u.trim());
+}
+
+function isUniqueViolation(err) {
+  return err && (err.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    (err.message && err.message.includes('UNIQUE constraint failed')));
 }
 
 // Emite el JWT propio del sistema. Es el mismo para usuarios locales y de Google:
@@ -211,7 +239,7 @@ if (allowedOrigins.includes(origin) || allowedOrigins.includes('*') || origin.in
 }));
 
 // Parser de cuerpo JSON
-app.use(express.json());
+app.use(express.json({ limit: '4kb' }));
 
 // 5. Endpoints de la API
 
@@ -242,12 +270,7 @@ app.post('/register', async (req, res, next) => {
     const { username, password } = req.body;
 
     // Validación de username: string, 3 a 32 caracteres, alfanumérico o guion bajo
-    if (
-      typeof username !== 'string' ||
-      username.trim().length < 3 ||
-      username.trim().length > 32 ||
-      !/^[A-Za-z0-9_]+$/.test(username.trim())
-    ) {
+    if (!validateUsername(username)) {
       return sendError(
         res,
         400,
@@ -285,7 +308,7 @@ app.post('/register', async (req, res, next) => {
       });
     } catch (dbErr) {
       // Capturar restricción UNIQUE para evitar condiciones de carrera
-      if (dbErr.code === 'SQLITE_CONSTRAINT_UNIQUE' || (dbErr.message && dbErr.message.includes('UNIQUE constraint failed'))) {
+      if (isUniqueViolation(dbErr)) {
         return sendError(
           res,
           409,
@@ -394,6 +417,149 @@ app.post('/login', async (req, res, next) => {
   }
 });
 
+// POST /auth/google - Login con Google (Taller 5, opción A: Google Identity Services)
+// Flujo: el cliente obtiene un ID Token con el botón oficial de Google y lo envía aquí.
+// 1) Verificamos la FIRMA del ID Token contra Google (no basta con decodificarlo).
+// 2) Si el google_sub ya existe → 200 con nuestro JWT.
+// 3) Si es la primera vez y no mandó username → 409 USERNAME_REQUIRED (el cliente lo pide).
+// 4) Si mandó username → creamos el usuario (409 USERNAME_TAKEN si ya existe).
+app.post('/auth/google', async (req, res, next) => {
+  try {
+    if (!googleClient) {
+      return sendError(
+        res,
+        503,
+        'GOOGLE_NOT_CONFIGURED',
+        'El login con Google no está configurado en este servidor.',
+        'Define GOOGLE_CLIENT_ID en auth-service/.env y reinicia el servicio.'
+      );
+    }
+
+    const { idToken, username } = req.body || {};
+
+    if (typeof idToken !== 'string' || !idToken) {
+      return sendError(
+        res,
+        400,
+        'INVALID_BODY',
+        'Se requiere el campo idToken como cadena de texto.',
+        'Envía { "idToken": "<ID token de Google>" } con Content-Type: application/json.'
+      );
+    }
+
+    // 1. Verificar el ID Token: firma con las claves públicas de Google, emisor, expiración
+    //    y audience. Sin audience aceptaríamos tokens emitidos para OTRAS apps de Google.
+    let payload;
+    try {
+      const ticket = await googleClient.verifyIdToken({ idToken, audience: GOOGLE_CLIENT_ID });
+      payload = ticket.getPayload();
+    } catch (verifyErr) {
+      return sendError(
+        res,
+        401,
+        'INVALID_ID_TOKEN',
+        'El ID token de Google no es válido.',
+        'Vuelve a pulsar "Sign in with Google"; el token pudo vencer o ser de otra aplicación.',
+        undefined,
+        { error: 'invalid_id_token' }
+      );
+    }
+
+    if (!payload || payload.email_verified !== true) {
+      return sendError(
+        res,
+        401,
+        'EMAIL_NOT_VERIFIED',
+        'El correo de tu cuenta de Google no está verificado.',
+        'Verifica tu correo en Google e inténtalo de nuevo.',
+        undefined,
+        { error: 'email_not_verified' }
+      );
+    }
+
+    // sub = identificador estable del usuario en Google. El email NO sirve como llave
+    // porque el usuario puede cambiarlo.
+    const googleSub = payload.sub;
+    const email = payload.email;
+
+    // 2. ¿Ya existe este usuario de Google?
+    const existing = stmts.findByGoogle.get(googleSub);
+    if (existing) {
+      const token = emitToken(existing);
+      console.log(`Login con Google: ${existing.username}`);
+      return sendOk(res, 200, 'Inicio de sesión con Google exitoso.', {
+        token,
+        username: existing.username,
+        expiresIn: tokenLifetimeSeconds(token)
+      });
+    }
+
+    // 3. Primera vez: hace falta que el usuario elija su username
+    if (username === undefined || username === null || username === '') {
+      return sendError(
+        res,
+        409,
+        'USERNAME_REQUIRED',
+        'Es tu primer ingreso con Google: elige un nombre de usuario.',
+        'Reenvía POST /auth/google con { idToken, username }.',
+        undefined,
+        { error: 'username_required' }
+      );
+    }
+
+    if (!validateUsername(username)) {
+      return sendError(
+        res,
+        400,
+        'INVALID_USERNAME',
+        'El nombre de usuario es inválido o no cumple el formato requerido.',
+        'Usa 3–32 caracteres: letras, números o guion bajo.',
+        [{ field: 'username', problem: 'must be 3-32 characters: letters, numbers or underscore' }]
+      );
+    }
+
+    // 4. Crear el usuario de Google (el UNIQUE de username aplica a ambos providers)
+    const cleanUsername = username.trim();
+    try {
+      const info = stmts.insertGoogle.run(cleanUsername, googleSub, email);
+      const newUser = { id: String(info.lastInsertRowid), username: cleanUsername, provider: 'google' };
+      const token = emitToken(newUser);
+      console.log(`Usuario de Google registrado: ${cleanUsername}`);
+      return sendOk(res, 200, 'Cuenta creada con Google e inicio de sesión exitoso.', {
+        token,
+        username: cleanUsername,
+        expiresIn: tokenLifetimeSeconds(token)
+      });
+    } catch (dbErr) {
+      if (isUniqueViolation(dbErr)) {
+        // Puede chocar el username o, en una carrera, el google_sub. Si ya existe el sub,
+        // otro request creó la cuenta un instante antes: devolvemos su sesión.
+        const raced = stmts.findByGoogle.get(googleSub);
+        if (raced) {
+          const token = emitToken(raced);
+          return sendOk(res, 200, 'Inicio de sesión con Google exitoso.', {
+            token,
+            username: raced.username,
+            expiresIn: tokenLifetimeSeconds(token)
+          });
+        }
+        return sendError(
+          res,
+          409,
+          'USERNAME_TAKEN',
+          'El nombre de usuario ya está registrado.',
+          'Elige otro username y reenvía POST /auth/google con { idToken, username }.',
+          [{ field: 'username', problem: 'already exists' }],
+          { error: 'username_taken' }
+        );
+      }
+      throw dbErr;
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Handler 404 para cualquier ruta inexistente
 app.use((req, res) => {
   sendError(
@@ -401,7 +567,7 @@ app.use((req, res) => {
     404,
     'NOT_FOUND',
     `Ruta ${req.method} ${req.originalUrl} no encontrada.`,
-    'Rutas disponibles: GET /health, POST /register, POST /login.'
+    'Rutas disponibles: GET /health, POST /register, POST /login, POST /auth/google.'
   );
 });
 
