@@ -280,7 +280,7 @@
                     if (socket && socket.readyState === WebSocket.OPEN) {
                         socket.close(1000, "logout");
                     }
-                    returnToLogin("La sesión se cerró porque se eliminó el token.");
+                    returnToLogin("Tu sesión se cerró en otra pestaña.");
                     return;
                 }
 
@@ -291,11 +291,11 @@
                         socket.send(JSON.stringify({ type: "verify", token: current }));
                         if (!verifySecurityTimer) {
                             verifySecurityTimer = setTimeout(() => {
-                                returnToLogin("El coordinador no respondió a la verificación del token.");
+                                returnToLogin("No pudimos confirmar tu sesión. Inicia sesión nuevamente.");
                             }, 2000);
                         }
                     } else if (socket && socket.readyState !== WebSocket.CONNECTING) {
-                        returnToLogin("Se perdió la conexión al intentar verificar el token.");
+                        returnToLogin("Se perdió la conexión y no pudimos confirmar tu sesión.");
                     }
                 }
             }
@@ -393,13 +393,12 @@
                                 lastVerifiedTokenCandidate = null;
                             }
                             break;
-                        case "error":
-                            lastErrorMessage = msg.message;
-                            if (msg.code === "TOKEN_MISMATCH") {
-                                lastErrorMessage = "El token no corresponde a esta sesión.";
-                            }
-                            showNotice(msg.message, msg.hint);
+                        case "error": {
+                            const feedback = friendlyFeedback(msg, "No pudimos completar esa acción en el juego.");
+                            lastErrorMessage = feedback.message;
+                            showNotice(feedback.message, feedback.hint);
                             break;
+                        }
                         case "pong":
                             break;
                     }
@@ -425,14 +424,14 @@
                         returnToLogin("Tu sesión expiró.");
                         return;
                     }
-                    returnToLogin("Se perdió la conexión con el coordinador.");
+                    returnToLogin("Se perdió la conexión con el juego. Comprueba tu internet y vuelve a entrar.");
                 });
 
                 socket.addEventListener("error", () => {
-                    connectionStatus.textContent = "No fue posible mantener la conexión con el coordinador.";
+                    connectionStatus.textContent = "No pudimos mantener la conexión con el juego.";
                 });
             } catch {
-                returnToLogin("No se pudo cargar la configuración del coordinador.");
+                returnToLogin("No pudimos preparar el juego. Recarga la página e inténtalo de nuevo.");
             }
         }
     </script>

@@ -67,7 +67,7 @@
     <script>
         const authMessage = document.getElementById("auth-message");
         const loginNotice = document.getElementById("login-notice");
-        const genericAuthError = "No se pudo contactar al servicio de autenticación. Verifica que esté en ejecución y que AUTH_URL sea correcto.";
+        const genericAuthError = "No pudimos conectar con el servicio de ingreso. Revisa tu conexión e inténtalo de nuevo.";
 
         function showAuthMessage(message, hint = "", isError = false) {
             authMessage.replaceChildren();
@@ -102,11 +102,13 @@
                 return;
             }
             if (result.ok) {
-                showAuthMessage(result.payload.message);
+                const feedback = friendlyFeedback(result.payload);
+                showAuthMessage(feedback.message || "Cuenta creada. Ya puedes iniciar sesión.", feedback.hint);
                 document.getElementById("register-form").reset();
                 return;
             }
-            showAuthMessage(result.payload.message, result.payload.hint, true);
+            const feedback = friendlyFeedback(result.payload);
+            showAuthMessage(feedback.message, feedback.hint, true);
         });
 
         document.getElementById("login-form").addEventListener("submit", async (event) => {
@@ -121,7 +123,8 @@
                 return;
             }
             if (!result.ok) {
-                showAuthMessage(result.payload.message, result.payload.hint, true);
+                const feedback = friendlyFeedback(result.payload);
+                showAuthMessage(feedback.message, feedback.hint, true);
                 return;
             }
             if (
@@ -190,7 +193,8 @@
             if (result.payload.code === "INVALID_ID_TOKEN") {
                 resetGoogleForm(); // el token pudo vencer: hay que volver a pulsar el botón
             }
-            showGoogleMessage(result.payload.message, result.payload.hint, true);
+            const feedback = friendlyFeedback(result.payload);
+            showGoogleMessage(feedback.message, feedback.hint, true);
         }
 
         function resetGoogleForm() {
@@ -223,7 +227,7 @@
         function initGoogleLogin() {
             const clientId = window.APP_CONFIG && window.APP_CONFIG.GOOGLE_CLIENT_ID;
             if (!clientId) {
-                showGoogleUnavailable("El login con Google no está configurado (falta GOOGLE_CLIENT_ID en client/.env).");
+                showGoogleUnavailable("El acceso con Google no está disponible en este momento.");
                 return;
             }
             if (!window.google || !google.accounts || !google.accounts.id) {
