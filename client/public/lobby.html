@@ -15,14 +15,17 @@
         .game-toolbar p { margin: 0; }
         .color-picker { display: flex; align-items: center; gap: 8px; font-weight: 600; }
         .color-picker input { width: 44px; height: 32px; padding: 2px; cursor: pointer; }
+        .track-heading { display: flex; align-items: center; gap: 10px; }
+        .track-heading::before { content: "🏁"; font-size: 22px; }
         .controls-hint kbd { font: inherit; font-size: 12px; padding: 1px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--code); }
     </style>
 </head>
-<body>
+<body class="racing-page">
     <main>
-        <header class="actions">
+        <header class="actions lobby-header">
             <div>
-                <h1>Lobby</h1>
+                <span class="hero-kicker">Zona de pilotos</span>
+                <h1>🏁 Lobby de carrera</h1>
                 <p id="current-user" class="muted"></p>
             </div>
             <button id="logout-button" type="button">Cerrar sesión</button>
@@ -34,8 +37,8 @@
             <p>Tu sesión se abrió en otra pestaña.</p>
             <button id="use-here-button" class="primary" type="button">Usar la sesión aquí</button>
         </section>
-        <section aria-labelledby="game-heading">
-            <h2 id="game-heading">Pista</h2>
+        <section aria-labelledby="game-heading" class="track-panel">
+            <h2 id="game-heading" class="track-heading">Circuito en vivo</h2>
             <div class="game-toolbar">
                 <p class="muted controls-hint">Muévete con <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> o <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>. Tu carro tiene el borde blanco. Insignia: <strong>G</strong> = entró con Google, 🔒 = cuenta local.</p>
                 <!-- Taller 5, feature extra replicado: el color viaja en extras_update -->

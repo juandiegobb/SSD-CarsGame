@@ -10,11 +10,16 @@
     <!-- Taller 5: Google Identity Services (botón oficial "Sign in with Google") -->
     <script src="https://accounts.google.com/gsi/client" async></script>
 </head>
-<body>
+<body class="auth-page">
     <main>
-        <header>
-            <h1>Juego multijugador</h1>
-            <p class="muted">Regístrate o inicia sesión para entrar al lobby.</p>
+        <header class="game-hero">
+            <div class="hero-badge" aria-hidden="true">🏁</div>
+            <div>
+                <span class="hero-kicker">Carrera multijugador</span>
+                <h1>SSD Cars</h1>
+                <p class="muted">Elige tu piloto, personaliza tu carro y entra a la pista.</p>
+            </div>
+        </header>
         </header>
 
         <p id="login-notice" class="message" role="alert"></p>

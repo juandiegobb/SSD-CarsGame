@@ -90,3 +90,96 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     main { gap: 10px; padding-top: 10px; padding-bottom: 10px; }
     .game-stage canvas { width: auto; max-width: 100%; max-height: calc(100vh - 150px); }
 }
+
+/* Estilo de carreras: entrada y lobby */
+.auth-page,
+.racing-page {
+    --accent: #ffcf3f;
+    --accent-strong: #ff7a00;
+    --surface-dark: rgba(18, 25, 38, 0.96);
+    min-height: 100vh;
+    background:
+        radial-gradient(circle at 15% 20%, rgba(255, 207, 63, 0.18), transparent 24rem),
+        radial-gradient(circle at 85% 75%, rgba(0, 168, 255, 0.16), transparent 28rem),
+        linear-gradient(145deg, #080d17 0%, #111827 55%, #090e18 100%);
+    color: #f7f9fc;
+}
+.auth-page::before,
+.racing-page::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: .18;
+    background-image:
+        linear-gradient(45deg, rgba(255,255,255,.08) 25%, transparent 25%),
+        linear-gradient(-45deg, rgba(255,255,255,.08) 25%, transparent 25%);
+    background-size: 48px 48px;
+}
+.auth-page main { max-width: 980px; padding-top: clamp(24px, 6vh, 72px); }
+.game-hero {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    overflow: hidden;
+    padding: 24px 28px;
+    border: 1px solid rgba(255, 207, 63, .28);
+    border-radius: 18px;
+    background: linear-gradient(100deg, rgba(20, 29, 46, .98), rgba(20, 29, 46, .78));
+    box-shadow: 0 18px 50px rgba(0,0,0,.35);
+}
+.game-hero::after { content: ""; width: 130px; height: 5px; border-radius: 10px; background: linear-gradient(90deg, var(--accent), var(--accent-strong)); transform: skewX(-25deg); margin-left: auto; box-shadow: 60px 12px 0 rgba(255,255,255,.12); }
+.hero-kicker { color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: .16em; text-transform: uppercase; }
+.game-hero h1 { font-size: clamp(30px, 6vw, 52px); line-height: 1; letter-spacing: -.03em; }
+.game-hero p { margin: 8px 0 0; }
+.hero-badge { flex: 0 0 auto; display: grid; place-items: center; width: 68px; height: 68px; font-size: 34px; border-radius: 16px; background: linear-gradient(145deg, var(--accent), var(--accent-strong)); box-shadow: 0 10px 30px rgba(255, 122, 0, .28); transform: rotate(-4deg); }
+.auth-page section,
+.racing-page section { border-color: rgba(255,255,255,.09); background: var(--surface-dark); box-shadow: 0 16px 40px rgba(0,0,0,.24); }
+.auth-page section { border-radius: 16px; }
+.auth-page section:hover { border-color: rgba(255, 207, 63, .32); transform: translateY(-2px); transition: .2s ease; }
+.auth-page input,
+.racing-page input { border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.065); }
+.auth-page input:focus,
+.racing-page input:focus { outline: 2px solid rgba(255,207,63,.7); border-color: transparent; }
+.auth-page button,
+.racing-page button { font-weight: 700; transition: transform .15s ease, box-shadow .15s ease, filter .15s ease; }
+.auth-page button:hover,
+.racing-page button:hover { transform: translateY(-2px); }
+button.primary { background: linear-gradient(135deg, var(--accent-strong), var(--accent)); border: 0; color: #121827; box-shadow: 0 8px 22px rgba(255,122,0,.22); }
+.auth-page .message,
+.racing-page .message { background: rgba(255,255,255,.07); border-color: rgba(255,255,255,.12); }
+.auth-page #google-section { overflow: hidden; }
+.auth-page #google-section::after { content: ""; float: right; width: 84px; height: 84px; margin: -70px -20px 0 0; opacity: .08; border: 18px solid var(--accent); border-radius: 50%; }
+
+/* Lobby y pista */
+.racing-page main { max-width: 1100px; }
+.lobby-header { position: relative; overflow: hidden; padding: 18px 20px; border-radius: 16px; border: 1px solid rgba(255,207,63,.22); background: var(--surface-dark); box-shadow: 0 16px 40px rgba(0,0,0,.25); }
+.lobby-header::after { content: ""; position: absolute; right: -30px; bottom: -18px; width: 180px; height: 55px; opacity: .14; background: repeating-linear-gradient(90deg, var(--accent) 0 22px, transparent 22px 44px); transform: skewX(-20deg); }
+.lobby-header h1 { font-size: clamp(24px, 5vw, 38px); }
+.lobby-header .button-row,
+.lobby-header button { position: relative; z-index: 1; }
+.status { color: #bdd2ff; }
+.status::before { content: "●"; color: #39d98a; margin-right: 8px; text-shadow: 0 0 10px #39d98a; }
+.track-panel { position: relative; }
+.track-panel::before { content: ""; position: absolute; left: 16px; right: 16px; top: 0; height: 3px; background: repeating-linear-gradient(90deg, transparent 0 18px, rgba(255,255,255,.8) 18px 36px); }
+.game-stage { border-radius: 12px; background: #1a202b; box-shadow: inset 0 0 0 1px rgba(255,255,255,.08), 0 18px 38px rgba(0,0,0,.35); }
+.game-toolbar { padding-bottom: 4px; }
+.controls-hint kbd { color: var(--accent) !important; border-color: rgba(255,207,63,.4) !important; background: rgba(255,207,63,.08) !important; }
+.players li { border-color: rgba(255,255,255,.09); background: rgba(255,255,255,.035); transition: transform .18s ease, border-color .18s ease; }
+.players li:hover { transform: translateX(4px); border-color: rgba(255,207,63,.35); }
+.players li.current { border-color: var(--accent); box-shadow: inset 3px 0 var(--accent); }
+.touch-controls button { border-radius: 12px; background: linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.04)); color: var(--accent); box-shadow: 0 6px 18px rgba(0,0,0,.3); }
+.touch-controls button:active { transform: scale(.94); background: rgba(255,207,63,.22); }
+
+@media (prefers-reduced-motion: no-preference) {
+    .hero-badge { animation: heroFloat 3.2s ease-in-out infinite; }
+    .game-stage canvas { animation: trackReveal .55s ease-out both; }
+    @keyframes heroFloat { 50% { transform: translateY(-5px) rotate(3deg); } }
+    @keyframes trackReveal { from { opacity: 0; transform: scale(.985); } }
+}
+@media (max-width: 700px) {
+    .game-hero { padding: 20px; }
+    .hero-badge { width: 58px; height: 58px; font-size: 29px; }
+    .game-hero::after { display: none; }
+}
