@@ -14,7 +14,8 @@
 /* El atributo hidden siempre gana (si no, reglas como form { display: grid } lo anulan) */
 [hidden] { display: none !important; }
 body { margin: 0; font: 14px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
-main { max-width: 760px; margin: 0 auto; padding: 32px 16px; display: grid; gap: 20px; }
+main { width: 100%; max-width: 960px; margin: 0 auto; padding: 32px 16px; display: grid; gap: 20px; }
+img, canvas, svg { max-width: 100%; }
 h1 { font-size: 24px; margin: 0; }
 h2 { font-size: 18px; margin: 0 0 8px; }
 p { margin: 0 0 12px; }
@@ -46,4 +47,46 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 @media (max-width: 520px) {
     main { padding: 20px 12px; }
     .actions { align-items: flex-start; flex-direction: column; }
+    button { min-height: 44px; }
+    input { min-height: 44px; }
+    .auth-forms { grid-template-columns: 1fr; }
+}
+
+/* Juego adaptable y controles táctiles */
+.game-stage { width: 100%; overflow: hidden; }
+.game-stage canvas { touch-action: none; }
+.touch-controls {
+    display: none;
+    width: 184px;
+    margin: 14px auto 0;
+    grid-template-columns: repeat(3, 56px);
+    grid-template-rows: repeat(2, 56px);
+    gap: 8px;
+    user-select: none;
+    -webkit-user-select: none;
+}
+.touch-controls button {
+    justify-self: stretch;
+    width: 56px;
+    height: 56px;
+    padding: 0;
+    font-size: 24px;
+    touch-action: none;
+}
+.touch-controls [data-direction="up"] { grid-column: 2; }
+.touch-controls [data-direction="left"] { grid-column: 1; grid-row: 2; }
+.touch-controls [data-direction="down"] { grid-column: 2; grid-row: 2; }
+.touch-controls [data-direction="right"] { grid-column: 3; grid-row: 2; }
+
+@media (hover: none) and (pointer: coarse), (max-width: 700px) {
+    .touch-controls { display: grid; }
+}
+@media (max-width: 700px) {
+    .game-toolbar { align-items: flex-start; }
+    .controls-hint { flex-basis: 100%; }
+    .color-picker { width: 100%; justify-content: space-between; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+    main { gap: 10px; padding-top: 10px; padding-bottom: 10px; }
+    .game-stage canvas { width: auto; max-width: 100%; max-height: calc(100vh - 150px); }
 }

@@ -43,7 +43,15 @@
                     <input id="car-color" type="color" value="#2f6fed">
                 </label>
             </div>
-            <canvas id="game-canvas" width="800" height="600" aria-label="Pista del juego con los carros de todos los jugadores"></canvas>
+            <div class="game-stage">
+                <canvas id="game-canvas" width="800" height="600" aria-label="Pista del juego con los carros de todos los jugadores"></canvas>
+            </div>
+            <div class="touch-controls" aria-label="Controles táctiles del carro">
+                <button type="button" data-direction="up" aria-label="Mover arriba">▲</button>
+                <button type="button" data-direction="left" aria-label="Mover izquierda">◀</button>
+                <button type="button" data-direction="down" aria-label="Mover abajo">▼</button>
+                <button type="button" data-direction="right" aria-label="Mover derecha">▶</button>
+            </div>
         </section>
         <section aria-labelledby="players-heading">
             <h2 id="players-heading">Jugadores en línea <span id="player-count">(0)</span></h2>
@@ -119,6 +127,7 @@
             // Taller 5: el juego solo envía intenciones; dibuja lo que manda el servidor
             const game = createGame({
                 canvas: document.getElementById("game-canvas"),
+                controls: document.querySelector(".touch-controls"),
                 send: (payload) => {
                     if (socket && socket.readyState === WebSocket.OPEN) {
                         socket.send(JSON.stringify(payload));

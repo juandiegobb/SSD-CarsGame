@@ -64,7 +64,7 @@
         ctx.restore();
     }
 
-    function createGame({ canvas, send, myUserId }) {
+    function createGame({ canvas, send, myUserId, controls }) {
         const ctx = canvas.getContext("2d");
         let world = { width: 800, height: 600, playerRadius: 20, tickRate: 20 };
         let meId = myUserId || null;
@@ -124,12 +124,39 @@
         // Si la ventana pierde el foco, soltamos todo (si no, el carro seguiría solo)
         function onBlur() {
             pressed.clear();
+            pointerDirections.clear();
             sendIntentIfChanged();
         }
 
         window.addEventListener("keydown", onKeyDown);
         window.addEventListener("keyup", onKeyUp);
         window.addEventListener("blur", onBlur);
+
+        const controlButtons = controls ? [...controls.querySelectorAll("[data-direction]")] : [];
+        const pointerDirections = new Map();
+
+        for (const button of controlButtons) {
+            const direction = button.dataset.direction;
+            button.addEventListener("pointerdown", (event) => {
+                event.preventDefault();
+                if (!running) return;
+                button.setPointerCapture?.(event.pointerId);
+                pointerDirections.set(event.pointerId, direction);
+                pressed.add(direction);
+                sendIntentIfChanged();
+            });
+            button.addEventListener("pointerup", (event) => {
+                pointerDirections.delete(event.pointerId);
+                if (![...pointerDirections.values()].includes(direction)) pressed.delete(direction);
+                sendIntentIfChanged();
+            });
+            button.addEventListener("pointercancel", (event) => {
+                pointerDirections.delete(event.pointerId);
+                if (![...pointerDirections.values()].includes(direction)) pressed.delete(direction);
+                sendIntentIfChanged();
+            });
+            button.addEventListener("contextmenu", (event) => event.preventDefault());
+        }
 
         // ── Dibujo ────────────────────────────────────────────────────────────
         function drawTrack() {
