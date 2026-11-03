@@ -150,12 +150,16 @@ function ensureUsersTable() {
 }
 ensureUsersTable();
 
+// Los nombres de usuario representan la misma identidad sin importar las mayúsculas.
+// La cláusula NOCASE conserva en la base el formato con el que se registró el usuario.
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_username_nocase ON users(username COLLATE NOCASE)');
+
 // Sentencias preparadas para reutilización y prevención de inyección SQL.
 // Los literales SQL llevan comillas SIMPLES (SQLite interpreta las dobles como nombres de columna).
 const stmts = {
   insertLocal: db.prepare("INSERT INTO users (username, provider, password_hash) VALUES (?, 'local', ?)"),
   insertGoogle: db.prepare("INSERT INTO users (username, provider, google_sub, email) VALUES (?, 'google', ?, ?)"),
-  findByUsername: db.prepare('SELECT * FROM users WHERE username = ?'),
+  findByUsername: db.prepare('SELECT * FROM users WHERE username COLLATE NOCASE = ?'),
   findByGoogle: db.prepare('SELECT * FROM users WHERE google_sub = ?')
 };
 
@@ -294,6 +298,17 @@ app.post('/register', async (req, res, next) => {
     }
 
     const cleanUsername = username.trim();
+
+    if (stmts.findByUsername.get(cleanUsername)) {
+      return sendError(
+        res,
+        409,
+        'USERNAME_TAKEN',
+        'El nombre de usuario ya está registrado.',
+        'Elige otro username o inicia sesión con cualquier combinación de mayúsculas y minúsculas.',
+        [{ field: 'username', problem: 'already exists (case-insensitive)' }]
+      );
+    }
 
     // Hashing seguro de la contraseña
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
@@ -520,6 +535,17 @@ app.post('/auth/google', async (req, res, next) => {
 
     // 4. Crear el usuario de Google (el UNIQUE de username aplica a ambos providers)
     const cleanUsername = username.trim();
+    if (stmts.findByUsername.get(cleanUsername)) {
+      return sendError(
+        res,
+        409,
+        'USERNAME_TAKEN',
+        'El nombre de usuario ya está registrado.',
+        'Elige otro nombre de usuario con letras diferentes a las existentes.',
+        [{ field: 'username', problem: 'already exists (case-insensitive)' }],
+        { error: 'username_taken' }
+      );
+    }
     try {
       const info = stmts.insertGoogle.run(cleanUsername, googleSub, email);
       const newUser = { id: String(info.lastInsertRowid), username: cleanUsername, provider: 'google' };
