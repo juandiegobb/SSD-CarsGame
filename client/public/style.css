@@ -172,6 +172,24 @@ button.primary { background: linear-gradient(135deg, var(--accent-strong), var(-
 .touch-controls button { border-radius: 12px; background: linear-gradient(145deg, rgba(255,255,255,.12), rgba(255,255,255,.04)); color: var(--accent); box-shadow: 0 6px 18px rgba(0,0,0,.3); }
 .touch-controls button:active { transform: scale(.94); background: rgba(255,207,63,.22); }
 
+/* Paleta limitada y exclusiva de colores para los carros */
+.car-colors { display: flex; flex-wrap: wrap; gap: 8px; }
+.car-color-option { width: 36px; height: 36px; min-height: 36px; padding: 0; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); background: var(--car-color); box-shadow: 0 4px 12px rgba(0,0,0,.28); }
+.car-color-option.selected { outline: 3px solid #fff; outline-offset: 3px; }
+.car-color-option:disabled { opacity: .18; filter: grayscale(.8); cursor: not-allowed; transform: none; }
+.color-picker { align-items: center; }
+
+/* Listado y configuración de salas */
+.room-create-form { max-width: 480px; margin-top: 16px; padding: 14px; border-radius: 12px; background: rgba(255,255,255,.045); }
+.rooms-list { list-style: none; display: grid; gap: 10px; padding: 0; margin: 16px 0 0; }
+.room-card { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 16px; border: 1px solid rgba(255,255,255,.09); border-radius: 12px; background: rgba(255,255,255,.035); }
+.room-card div { min-width: 0; display: grid; gap: 2px; }
+.room-card strong { overflow-wrap: anywhere; }
+.room-card span, .rooms-empty { color: var(--muted); font-size: 13px; }
+.room-card button { flex-shrink: 0; }
+.rooms-empty { grid-column: 1 / -1; padding: 18px; text-align: center; border: 1px dashed rgba(255,255,255,.14); border-radius: 12px; }
+.room-header-actions { align-items: center; }
+
 @media (prefers-reduced-motion: no-preference) {
     .hero-badge { animation: heroFloat 3.2s ease-in-out infinite; }
     .game-stage canvas { animation: trackReveal .55s ease-out both; }

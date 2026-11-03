@@ -621,7 +621,36 @@ userId → { username, provider, socket, connectedAt, expirationTimer,
 | `INVALID_INTENT` | Falta `intent.dir` o `x`/`y` no son números | "Envía {\"type\":\"intent\",\"intent\":{\"dir\":{\"x\":1,\"y\":0}}}." |
 | `INVALID_EXTRAS` | `extras` no es objeto, es array o supera 1024 bytes | "Envía un objeto JSON de hasta 1024 bytes en extras." |
 
-`UNKNOWN_MESSAGE_TYPE` pasa a listar: `ping, who, verify, intent, extras_update`.
+`UNKNOWN_MESSAGE_TYPE` pasa a listar: `ping, who, verify, intent, extras_update, room_create, room_join, room_leave, room_list, game_start, room_color_update`.
+
+### 10.7 Salas de juego
+
+- Las salas viven en memoria en el coordinador. Una sala tiene nombre, usuario anfitrión, estado (`waiting` o `playing`) y entre 0 y 8 miembros.
+- Crear una sala une automáticamente al creador y requiere un nombre de 3–32 caracteres, letras, números, espacios o guiones.
+- El anfitrión es el único usuario autorizado para iniciar la partida. No puede iniciar con menos de 2 miembros.
+- Los usuarios pueden consultar las salas disponibles y entrar en una sala con espacio y estado `waiting`.
+- Cada sala tiene su propio estado de juego; los estados y movimientos solo se difunden a los miembros de esa sala.
+- El color de cada jugador se representa como hexadecimal `#rrggbb`. No puede haber dos jugadores con el mismo color dentro de la misma sala; el servidor valida y rechaza la duplicidad.
+- Al desconectarse, el anfitrión sale de la sala y sus miembros siguen en ella; el siguiente miembro pasa a ser anfitrión. Si queda vacía, la sala se elimina.
+
+| Mensaje cliente → servidor | Forma | Respuesta o efecto |
+|---|---|---|
+| `room_create` | `{"type":"room_create","name":"Nombre"}` | `room_created`, luego lista global de salas |
+| `room_list` | `{"type":"room_list"}` | `room_list` solo al solicitante |
+| `room_join` | `{"type":"room_join","roomId":"..."}` | `room_joined`, lista global actualizada |
+| `room_leave` | `{"type":"room_leave"}` | `room_left`, lista global actualizada |
+| `game_start` | `{"type":"game_start"}` | Solo el anfitrión; exige al menos 2 miembros |
+| `room_color_update` | `{"type":"room_color_update","color":"#rrggbb"}` | Rechaza colores ya usados en la sala |
+
+| Mensaje servidor → cliente | Forma |
+|---|---|
+| `room_list` | `{"type":"room_list","rooms":[{"roomId","name","hostUserId","hostUsername","playerCount","maxPlayers", "status"}]}` |
+| `room_created` | Incluye los datos de la sala y confirma que el creador entró |
+| `room_joined` | Incluye `roomId`, `name`, `hostUserId`, `hostUsername`, `players` |
+| `room_left` | Confirma la salida y permite volver al lobby |
+| `game_started` | Confirma el inicio y identifica a los jugadores de la sala |
+
+Códigos nuevos de sala: `INVALID_ROOM_NAME`, `ROOM_NOT_FOUND`, `ROOM_FULL`, `ROOM_ALREADY_STARTED`, `ROOM_ALREADY_JOINED`, `NOT_ROOM_HOST`, `MIN_PLAYERS_REQUIRED`, `COLOR_INVALID`, `COLOR_TAKEN`, `ROOM_NOT_JOINED`.
 
 ### 10.5 Cliente
 

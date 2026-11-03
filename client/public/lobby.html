@@ -33,18 +33,50 @@
 
         <p id="connection-status" class="status" aria-live="polite">Conectando con el coordinador…</p>
         <div id="notice" class="message" role="alert" aria-live="assertive"></div>
+        <section id="rooms-lobby" aria-labelledby="rooms-heading">
+            <div class="button-row">
+                <div>
+                    <span class="hero-kicker">Selección de circuito</span>
+                    <h2 id="rooms-heading">Salas disponibles</h2>
+                </div>
+                <button id="create-room-button" class="primary" type="button">+ Crear sala</button>
+            </div>
+            <form id="create-room-form" class="room-create-form" hidden>
+                <label for="room-name">Nombre de la sala</label>
+                <input id="room-name" name="roomName" maxlength="32" minlength="3" autocomplete="off" required>
+                <div class="button-row">
+                    <button class="primary" type="submit">Crear y entrar</button>
+                    <button id="cancel-room-button" type="button">Cancelar</button>
+                </div>
+            </form>
+            <ul id="rooms-list" class="rooms-list"></ul>
+        </section>
+        <section id="current-room" hidden aria-labelledby="current-room-name">
+            <div class="button-row room-header-actions">
+                <div>
+                    <span class="hero-kicker">Sala actual</span>
+                    <h2 id="current-room-name">Carrera</h2>
+                    <p id="room-member-count" class="muted"></p>
+                </div>
+                <div class="button-row">
+                    <button id="start-game-button" class="primary" type="button" hidden>Iniciar partida</button>
+                    <button id="leave-room-button" type="button">Salir de la sala</button>
+                </div>
+            </div>
+            <ul id="room-members-list" class="players"></ul>
+        </section>
         <section id="replaced-panel" class="notice-panel" hidden>
             <p>Tu sesión se abrió en otra pestaña.</p>
             <button id="use-here-button" class="primary" type="button">Usar la sesión aquí</button>
         </section>
-        <section aria-labelledby="game-heading" class="track-panel">
+        <section id="game-section" aria-labelledby="game-heading" class="track-panel" hidden>
             <h2 id="game-heading" class="track-heading">Circuito en vivo</h2>
             <div class="game-toolbar">
                 <p class="muted controls-hint">Muévete con <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> o <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>. Tu carro tiene el borde blanco. Insignia: <strong>G</strong> = entró con Google, 🔒 = cuenta local.</p>
-                <!-- Taller 5, feature extra replicado: el color viaja en extras_update -->
-                <label class="color-picker" for="car-color">Color de tu carro
-                    <input id="car-color" type="color" value="#2f6fed">
-                </label>
+                <div class="color-picker">
+                    <span>Color de tu carro</span>
+                    <div id="car-colors" class="car-colors" role="radiogroup" aria-label="Colores disponibles del carro"></div>
+                </div>
             </div>
             <div class="game-stage">
                 <canvas id="game-canvas" width="800" height="600" aria-label="Pista del juego con los carros de todos los jugadores"></canvas>
@@ -56,7 +88,7 @@
                 <button type="button" data-direction="right" aria-label="Mover derecha">▶</button>
             </div>
         </section>
-        <section aria-labelledby="players-heading">
+        <section id="room-online-section" aria-labelledby="players-heading" hidden>
             <h2 id="players-heading">Jugadores en línea <span id="player-count">(0)</span></h2>
             <ul id="players-list" class="players"></ul>
         </section>
@@ -77,6 +109,9 @@
             let heartbeatTimer = null;
             let activeExpirationTimer = null;
             let lastErrorMessage = "";
+            let currentRoomId = null;
+            let currentRoomHostId = null;
+            let currentRoomStatus = "waiting";
             let tokenPayload = decodeToken(token);
             let lastKnownExpiresIn = null;
             let policyChangeTimestamp = null;
@@ -87,45 +122,116 @@
             const replacedPanel = document.getElementById("replaced-panel");
             const playersList = document.getElementById("players-list");
             const playerCount = document.getElementById("player-count");
+            const roomsLobby = document.getElementById("rooms-lobby");
+            const roomsList = document.getElementById("rooms-list");
+            const currentRoomPanel = document.getElementById("current-room");
+            const roomMembersList = document.getElementById("room-members-list");
+            const gameSection = document.getElementById("game-section");
+            const startGameButton = document.getElementById("start-game-button");
 
-            currentUser.textContent = `Usuario: ${localStorage.getItem("username") || "desconocido"}`;
+            function showRoomView(room) {
+                currentRoomId = room.roomId;
+                currentRoomHostId = room.hostUserId;
+                currentRoomStatus = room.status;
+                roomsLobby.hidden = true;
+                currentRoomPanel.hidden = false;
+                gameSection.hidden = false;
+                document.getElementById("room-online-section").hidden = true;
+                document.getElementById("current-room-name").textContent = room.name;
+                startGameButton.hidden = String(currentUserId) !== String(currentRoomHostId) || currentRoomStatus !== "waiting";
+            }
 
-            // ── Taller 5, feature extra: color del carro replicado ─────────────────
-            // El cliente manda extras_update { color }; el coordinador lo guarda en
-            // player.extras y lo reparte a todos en el próximo state. Dura toda la sesión.
-            // Además lo guardamos en localStorage para reenviarlo si recargas la página.
-            const colorInput = document.getElementById("car-color");
-            let colorSendTimer = null;
+            function showLobbyView() {
+                currentRoomId = null;
+                currentRoomHostId = null;
+                roomsLobby.hidden = false;
+                currentRoomPanel.hidden = true;
+                gameSection.hidden = true;
+                document.getElementById("room-online-section").hidden = false;
+                if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "room_list" }));
+            }
+
+            function renderRooms(rooms) {
+                roomsList.replaceChildren();
+                if (!rooms.length) {
+                    const empty = document.createElement("li");
+                    empty.className = "rooms-empty";
+                    empty.textContent = "No hay salas creadas todavía. ¡Sé el primero en abrir una carrera!";
+                    roomsList.append(empty);
+                    return;
+                }
+                for (const room of rooms) {
+                    const item = document.createElement("li");
+                    item.className = "room-card";
+                    const info = document.createElement("div");
+                    const name = document.createElement("strong");
+                    name.textContent = room.name;
+                    const meta = document.createElement("span");
+                    meta.textContent = `${room.playerCount}/8 pilotos · ${room.status === "playing" ? "En carrera" : "Esperando"}`;
+                    info.append(name, meta);
+                    const join = document.createElement("button");
+                    join.type = "button";
+                    join.textContent = room.status === "playing" ? "Partida iniciada" : "Entrar";
+                    join.disabled = room.status !== "waiting" || room.playerCount >= 8;
+                    join.addEventListener("click", () => socket.send(JSON.stringify({ type: "room_join", roomId: room.roomId })));
+                    item.append(info, join);
+                    roomsList.append(item);
+                }
+            }
+
+            function renderRoomMembers(players) {
+                roomMembersList.replaceChildren();
+                renderColorPalette(players);
+                document.getElementById("room-member-count").textContent = `${players.length}/8 pilotos en la sala`;
+                for (const player of players) {
+                    const item = document.createElement("li");
+                    const displayUsername = normalizeUsername(player.username);
+                    item.textContent = player.userId === String(currentRoomHostId) ? `${displayUsername} · Creador` : displayUsername;
+                    roomMembersList.append(item);
+                }
+                if (currentRoomStatus === "waiting") startGameButton.hidden = String(currentUserId) !== String(currentRoomHostId) || players.length < 2;
+            }
+
+            currentUser.textContent = `Usuario: ${normalizeUsername(localStorage.getItem("username") || "desconocido")}`;
+
+            const ROOM_COLORS = ["#2f6fed", "#ef4444", "#22c55e", "#f59e0b", "#a855f7", "#ec4899", "#06b6d4", "#ffffff"];
+            const carColors = document.getElementById("car-colors");
+            let selectedCarColor = ROOM_COLORS[0];
 
             function sendColor(color) {
                 if (socket && socket.readyState === WebSocket.OPEN) {
-                    socket.send(JSON.stringify({ type: "extras_update", extras: { color } }));
+                    socket.send(JSON.stringify({ type: currentRoomId ? "room_color_update" : "extras_update", color, extras: { color } }));
                 }
             }
 
-            function setupColorPicker(userId) {
-                const saved = localStorage.getItem(`carColor:${userId}`);
-                colorInput.value = saved || defaultCarColor(userId);
-                colorInput.dataset.userId = userId;
-                if (saved) sendColor(saved); // reponer el color elegido antes
+            function renderColorPalette(members = []) {
+                const occupied = new Set(members.filter((player) => String(player.userId) !== String(currentUserId)).map((player) => String(player.color || "").toLowerCase()));
+                const myMember = members.find((player) => String(player.userId) === String(currentUserId));
+                if (myMember?.color) selectedCarColor = String(myMember.color).toLowerCase();
+                carColors.replaceChildren();
+                for (const color of ROOM_COLORS) {
+                    const button = document.createElement("button");
+                    button.type = "button";
+                    button.className = "car-color-option";
+                    button.dataset.color = color;
+                    button.style.setProperty("--car-color", color);
+                    button.setAttribute("aria-label", `Elegir color ${color}`);
+                    button.setAttribute("role", "radio");
+                    button.setAttribute("aria-checked", String(color === selectedCarColor));
+                    button.disabled = occupied.has(color);
+                    if (color === selectedCarColor) button.classList.add("selected");
+                    button.addEventListener("click", () => {
+                        selectedCarColor = color;
+                        sendColor(color);
+                        renderColorPalette(members);
+                    });
+                    carColors.append(button);
+                }
             }
 
-            // Mientras se arrastra el selector llegan muchos "input": mandamos máx. 1 cada 150 ms
-            colorInput.addEventListener("input", () => {
-                if (colorSendTimer) return;
-                colorSendTimer = setTimeout(() => {
-                    colorSendTimer = null;
-                    sendColor(colorInput.value);
-                }, 150);
-            });
-
-            colorInput.addEventListener("change", () => {
-                sendColor(colorInput.value);
-                if (colorInput.dataset.userId) {
-                    localStorage.setItem(`carColor:${colorInput.dataset.userId}`, colorInput.value);
-                }
-                colorInput.blur(); // devolver el teclado al juego
-            });
+            function setupColorPicker() {
+                renderColorPalette([]);
+            }
 
             // Taller 5: el juego solo envía intenciones; dibuja lo que manda el servidor
             const game = createGame({
@@ -156,10 +262,10 @@
                 playerCount.textContent = `(${players.length})`;
                 for (const player of players) {
                     const item = document.createElement("li");
-                    item.textContent = player.username;
+                    item.textContent = normalizeUsername(player.username);
                     if (
                         (currentUserId && player.userId === currentUserId) ||
-                        (!currentUserId && player.username === localStorage.getItem("username"))
+                        (!currentUserId && normalizeUsername(player.username) === normalizeUsername(localStorage.getItem("username")))
                     ) {
                         item.classList.add("current");
                     }
@@ -348,6 +454,23 @@
                 window.location.reload();
             });
 
+            document.getElementById("create-room-button").addEventListener("click", () => {
+                document.getElementById("create-room-form").hidden = false;
+                document.getElementById("room-name").focus();
+            });
+            document.getElementById("cancel-room-button").addEventListener("click", () => {
+                document.getElementById("create-room-form").hidden = true;
+            });
+            document.getElementById("create-room-form").addEventListener("submit", (event) => {
+                event.preventDefault();
+                const name = new FormData(event.currentTarget).get("roomName")?.trim();
+                if (name) socket.send(JSON.stringify({ type: "room_create", name }));
+            });
+            document.getElementById("leave-room-button").addEventListener("click", () => {
+                socket.send(JSON.stringify({ type: "room_leave" }));
+            });
+            startGameButton.addEventListener("click", () => socket.send(JSON.stringify({ type: "game_start" })));
+
             try {
                 const { COORDINATOR_WS_URL } = getAppConfig();
                 socket = new WebSocket(
@@ -357,6 +480,7 @@
                 socket.addEventListener("open", () => {
                     connectionStatus.textContent = "Conectado al coordinador.";
                     startSessionWatcher(socket, token);
+                    socket.send(JSON.stringify({ type: "room_list" }));
                 });
 
                 socket.addEventListener("message", (event) => {
@@ -371,12 +495,13 @@
                     switch (msg.type) {
                         case "connected":
                             currentUserId = msg.userId;
+                            msg.username = normalizeUsername(msg.username);
                             currentUser.textContent = `Conectado como ${msg.username}.`;
                             connectionStatus.textContent = "Conectado al coordinador.";
                             break;
                         case "welcome":
                             game.onWelcome(msg);
-                            setupColorPicker(msg.you.userId);
+                            setupColorPicker();
                             break;
                         case "state":
                             game.onState(msg);
@@ -385,6 +510,30 @@
                             if (Array.isArray(msg.players)) {
                                 renderPlayers(msg.players);
                             }
+                            break;
+                        case "room_list":
+                            if (Array.isArray(msg.rooms)) renderRooms(msg.rooms);
+                            break;
+                        case "room_created":
+                        case "room_joined":
+                            showRoomView(msg);
+                            renderRoomMembers(msg.players || []);
+                            document.getElementById("create-room-form").hidden = true;
+                            break;
+                        case "room_updated":
+                            if (msg.roomId === currentRoomId) {
+                                currentRoomStatus = msg.status;
+                                currentRoomHostId = msg.hostUserId || currentRoomHostId;
+                                renderRoomMembers(msg.players || []);
+                            }
+                            break;
+                        case "room_left":
+                            showLobbyView();
+                            break;
+                        case "game_started":
+                            currentRoomStatus = "playing";
+                            startGameButton.hidden = true;
+                            connectionStatus.textContent = "Partida iniciada. ¡Buena carrera!";
                             break;
                         case "verified":
                             if (verifySecurityTimer) {

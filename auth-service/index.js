@@ -151,8 +151,21 @@ function ensureUsersTable() {
 ensureUsersTable();
 
 // Los nombres de usuario representan la misma identidad sin importar las mayúsculas.
-// La cláusula NOCASE conserva en la base el formato con el que se registró el usuario.
+// Se guardan siempre en minúsculas para que la información mostrada sea uniforme.
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_username_nocase ON users(username COLLATE NOCASE)');
+db.exec('BEGIN');
+try {
+  const rows = db.prepare('SELECT id, username FROM users').all();
+  const updateUsername = db.prepare('UPDATE users SET username = ? WHERE id = ?');
+  for (const row of rows) {
+    const normalized = String(row.username || '').trim().toLowerCase();
+    if (normalized && normalized !== row.username) updateUsername.run(normalized, row.id);
+  }
+  db.exec('COMMIT');
+} catch (error) {
+  db.exec('ROLLBACK');
+  throw error;
+}
 
 // Sentencias preparadas para reutilización y prevención de inyección SQL.
 // Los literales SQL llevan comillas SIMPLES (SQLite interpreta las dobles como nombres de columna).
@@ -191,6 +204,10 @@ function validateUsername(u) {
   return typeof u === 'string' && /^[A-Za-z0-9_]{3,32}$/.test(u.trim());
 }
 
+function normalizeUsername(u) {
+  return typeof u === 'string' ? u.trim().toLowerCase() : u;
+}
+
 function isUniqueViolation(err) {
   return err && (err.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
     (err.message && err.message.includes('UNIQUE constraint failed')));
@@ -202,7 +219,7 @@ function isUniqueViolation(err) {
 function emitToken(user) {
   const payload = {
     userId: String(user.id),
-    username: user.username,
+    username: normalizeUsername(user.username),
     provider: user.provider
   };
   try {
@@ -297,7 +314,7 @@ app.post('/register', async (req, res, next) => {
       );
     }
 
-    const cleanUsername = username.trim();
+    const cleanUsername = normalizeUsername(username);
 
     if (stmts.findByUsername.get(cleanUsername)) {
       return sendError(
@@ -376,7 +393,7 @@ app.post('/login', async (req, res, next) => {
       );
     }
 
-    const cleanUsername = username.trim();
+    const cleanUsername = normalizeUsername(username);
     const user = stmts.findByUsername.get(cleanUsername);
 
     if (!user) {
@@ -424,7 +441,7 @@ app.post('/login', async (req, res, next) => {
 
     return sendOk(res, 200, 'Inicio de sesión exitoso.', {
       token,
-      username: user.username,
+      username: normalizeUsername(user.username),
       expiresIn
     });
   } catch (err) {
@@ -504,7 +521,7 @@ app.post('/auth/google', async (req, res, next) => {
       console.log(`Login con Google: ${existing.username}`);
       return sendOk(res, 200, 'Inicio de sesión con Google exitoso.', {
         token,
-        username: existing.username,
+        username: normalizeUsername(existing.username),
         expiresIn: tokenLifetimeSeconds(token)
       });
     }
@@ -534,7 +551,7 @@ app.post('/auth/google', async (req, res, next) => {
     }
 
     // 4. Crear el usuario de Google (el UNIQUE de username aplica a ambos providers)
-    const cleanUsername = username.trim();
+    const cleanUsername = normalizeUsername(username);
     if (stmts.findByUsername.get(cleanUsername)) {
       return sendError(
         res,
@@ -565,7 +582,7 @@ app.post('/auth/google', async (req, res, next) => {
           const token = emitToken(raced);
           return sendOk(res, 200, 'Inicio de sesión con Google exitoso.', {
             token,
-            username: raced.username,
+            username: normalizeUsername(raced.username),
             expiresIn: tokenLifetimeSeconds(token)
           });
         }

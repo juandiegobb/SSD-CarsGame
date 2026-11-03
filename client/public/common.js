@@ -47,9 +47,13 @@ function getToken() {
     return localStorage.getItem("token");
 }
 
+function normalizeUsername(username) {
+    return typeof username === "string" ? username.trim().toLowerCase() : username;
+}
+
 function setCredentials(token, username) {
     localStorage.setItem("token", token);
-    localStorage.setItem("username", username);
+    localStorage.setItem("username", normalizeUsername(username));
 }
 
 function clearCredentials() {
@@ -131,7 +135,17 @@ function friendlyFeedback(payload, fallbackMessage = "No se pudo completar la ac
         UNKNOWN_MESSAGE_TYPE: {
             message: "El juego recibió una acción que no reconoce.",
             hint: "Recarga el juego si el problema continúa."
-        }
+        },
+        INVALID_ROOM_NAME: { message: "Ese nombre de sala no es válido.", hint: "Usa entre 3 y 32 letras, números, espacios o guiones." },
+        ROOM_NOT_FOUND: { message: "La sala ya no está disponible.", hint: "Regresa al listado y elige otra sala." },
+        ROOM_FULL: { message: "Esta sala ya está completa.", hint: "Elige una sala con espacio para nuevos pilotos." },
+        ROOM_ALREADY_STARTED: { message: "Esta partida ya comenzó.", hint: "Espera a que termine o elige otra sala." },
+        ROOM_ALREADY_JOINED: { message: "Ya estás dentro de una sala.", hint: "Sal de la sala actual antes de cambiar de sala." },
+        NOT_ROOM_HOST: { message: "Solo el creador puede iniciar la carrera.", hint: "Espera a que el creador pulse Iniciar partida." },
+        MIN_PLAYERS_REQUIRED: { message: "Todavía faltan pilotos.", hint: "Necesitas al menos 2 jugadores para iniciar." },
+        COLOR_INVALID: { message: "Ese color de carro no es válido.", hint: "Elige uno usando el selector de color." },
+        COLOR_TAKEN: { message: "Otro piloto ya eligió ese color.", hint: "Elige un color diferente para tu carro." },
+        ROOM_NOT_JOINED: { message: "Todavía no estás dentro de una sala.", hint: "Crea una sala o únete a una disponible." }
     };
 
     if (payload && payload.code && feedback[payload.code]) return feedback[payload.code];

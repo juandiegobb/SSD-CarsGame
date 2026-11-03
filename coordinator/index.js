@@ -30,11 +30,17 @@ const PLAYER_SPEED = Number(process.env.PLAYER_SPEED) || 200; // px/seg
 const TICK_RATE = Number(process.env.TICK_RATE) || 20;        // Hz
 const TICK_MS = 1000 / TICK_RATE;
 const MAX_EXTRAS_BYTES = 1024; // límite anti-abuso para extras_update
+const ROOM_COLORS = ['#2f6fed', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#ffffff'];
 
 // ── Estado del coordinador ──────────────────────────────────────────────────
 // Map: userId (string) → { username, provider, socket, connectedAt, expirationTimer,
 //                          x, y, intent: { x, y }, extras }
 const players = new Map();
+function normalizeUsername(username) {
+  return typeof username === 'string' ? username.trim().toLowerCase() : username;
+}
+const rooms = new Map();
+let nextRoomId = 1;
 
 // ── Helpers de respuesta HTTP (mismo formato que Auth, SPEC.md §3.1) ────────
 function sendOk(res, status, message, extra = {}) {
@@ -52,12 +58,66 @@ function sendWs(ws, payload) {
   }
 }
 
+function roomSummary(room) {
+  return {
+    roomId: room.roomId,
+    name: room.name,
+    hostUserId: room.hostUserId,
+    hostUsername: normalizeUsername(room.hostUsername),
+    playerCount: room.members.size,
+    maxPlayers: 8,
+    status: room.status
+  };
+}
+
+function roomPlayerList(room) {
+  return [...room.members.values()].map((memberId) => {
+    const player = players.get(memberId);
+    return player ? { userId: memberId, username: String(player.username || '').toLowerCase(), color: player.extras.color || null } : null;
+  }).filter(Boolean);
+}
+
+function broadcastRoomList() {
+  const payload = {
+    type: 'room_list',
+    rooms: [...rooms.values()].map(roomSummary)
+  };
+  broadcastToLobby(payload);
+}
+
+function broadcastToLobby(payload) {
+  for (const player of players.values()) {
+    if (!player.roomId && player.socket.readyState === player.socket.OPEN) {
+      sendWs(player.socket, payload);
+    }
+  }
+}
+
+function broadcastRoom(roomId, payload) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  for (const memberId of room.members) {
+    const player = players.get(memberId);
+    if (player && player.socket.readyState === player.socket.OPEN) sendWs(player.socket, payload);
+  }
+}
+
+function roomExistsWithUser(room, userId) {
+  return room && room.members.has(String(userId));
+}
+
+function assignAvailableRoomColor(room, userId) {
+  const used = new Set(roomPlayerList(room).map((player) => player.color));
+  const color = ROOM_COLORS.find((candidate) => !used.has(candidate));
+  if (color) players.get(userId).extras = { ...(players.get(userId).extras || {}), color };
+}
+
 // ── Broadcast de la lista de jugadores a TODOS los sockets abiertos ──────────
 // Formato exacto del PDF: { type, players: [{ userId, username }] }
 function broadcastPlayers() {
   const playerList = [];
   for (const [userId, entry] of players) {
-    playerList.push({ userId, username: entry.username });
+    playerList.push({ userId, username: normalizeUsername(entry.username) });
   }
   const msg = JSON.stringify({ type: 'players_update', players: playerList });
 
@@ -70,12 +130,13 @@ function broadcastPlayers() {
 
 // ── Taller 5: estado del juego ───────────────────────────────────────────────
 // Foto del estado que se envía a los clientes (nunca incluye sockets ni timers).
-function snapshot() {
+function snapshot(roomId = null) {
   const list = [];
   for (const [userId, p] of players) {
+    if (roomId ? p.roomId !== roomId : p.roomId) continue;
     list.push({
       userId,
-      username: p.username,
+      username: String(p.username || '').toLowerCase(),
       provider: p.provider,
       x: Math.round(p.x * 10) / 10,
       y: Math.round(p.y * 10) / 10,
@@ -107,6 +168,7 @@ function tick() {
   if (players.size === 0) return; // nadie conectado: no hay a quién enviar
 
   for (const p of players.values()) {
+    if (p.roomId && !rooms.has(p.roomId)) continue;
     // Normalizar diagonales: sin esto (1,1) avanzaría √2 ≈ 41 % más rápido.
     const ix = p.intent.x;
     const iy = p.intent.y;
@@ -121,8 +183,11 @@ function tick() {
     p.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, p.y));
   }
 
-  // Un solo broadcast por tick (no uno por cada intent)
-  broadcast({ type: 'state', t: now, players: snapshot() });
+  // La pista muestra a los miembros durante la espera y durante la partida.
+  // Solo se reproducen movimientos cuando el anfitrión inicia la sala.
+  for (const room of rooms.values()) {
+    broadcastRoom(room.roomId, { type: 'state', t: now, players: snapshot(room.roomId) });
+  }
 }
 
 setInterval(tick, TICK_MS);
@@ -144,7 +209,7 @@ app.get('/health', (req, res) => {
 app.get('/players', (req, res) => {
   const playerList = [];
   for (const [userId, entry] of players) {
-    playerList.push({ userId, username: entry.username });
+    playerList.push({ userId, username: normalizeUsername(entry.username) });
   }
   sendOk(res, 200, `Hay ${players.size} jugador(es) en línea.`, {
     count: players.size,
@@ -275,7 +340,7 @@ server.on('upgrade', (req, socket, head) => {
 // ── Evento connection: gestión del jugador ────────────────────────────────────
 wss.on('connection', (ws, payload) => {
   const userId = String(payload.userId);
-  const username = payload.username;
+  const username = typeof payload.username === 'string' ? payload.username.trim().toLowerCase() : payload.username;
   // provider viene del JWT verificado (no del cliente). Tokens del Taller 4 no lo traen → 'local'.
   const provider = payload.provider === 'google' ? 'google' : 'local';
 
@@ -304,7 +369,8 @@ wss.on('connection', (ws, payload) => {
     x: PLAYER_RADIUS + Math.random() * (WORLD_WIDTH - 2 * PLAYER_RADIUS),
     y: PLAYER_RADIUS + Math.random() * (WORLD_HEIGHT - 2 * PLAYER_RADIUS),
     intent: { x: 0, y: 0 },
-    extras: {}
+    extras: {},
+    roomId: null
   };
   players.set(userId, entry);
 
@@ -395,6 +461,125 @@ wss.on('connection', (ws, payload) => {
         }
         // Sanitizar a -1, 0, 1: NO confiar en el cliente ({x: 9999} queda en 1)
         entry.intent = { x: Math.sign(dir.x), y: Math.sign(dir.y) };
+        break;
+      }
+
+      case 'room_list':
+        sendWs(ws, { type: 'room_list', rooms: [...rooms.values()].map(roomSummary) });
+        break;
+
+      case 'room_create': {
+        const name = typeof msg.name === 'string' ? msg.name.trim() : '';
+        if (!/^[A-Za-z0-9ÁÉÍÓÚáéíóúÑñ _-]{3,32}$/.test(name)) {
+          sendWs(ws, { type: 'error', ok: false, code: 'INVALID_ROOM_NAME', message: 'El nombre de la sala no es válido.', hint: 'Usa entre 3 y 32 letras, números, espacios o guiones.' });
+          break;
+        }
+        if (entry.roomId) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_ALREADY_JOINED', message: 'Ya estás dentro de una sala.', hint: 'Sal de la sala actual antes de crear otra.' });
+          break;
+        }
+        const roomId = `room-${Date.now()}-${nextRoomId++}`;
+        const room = { roomId, name, hostUserId: userId, hostUsername: username, members: new Set([userId]), status: 'waiting' };
+        rooms.set(roomId, room);
+        entry.roomId = roomId;
+        assignAvailableRoomColor(room, userId);
+        broadcastRoomList();
+        sendWs(ws, { type: 'room_created', roomId, name, hostUserId: userId, hostUsername: username, players: roomPlayerList(room) });
+        sendWs(ws, { type: 'room_joined', roomId, name, hostUserId: userId, hostUsername: username, players: roomPlayerList(room) });
+        broadcastRoom(roomId, { type: 'room_updated', roomId, players: roomPlayerList(room), status: room.status });
+        break;
+      }
+
+      case 'room_join': {
+        const room = rooms.get(String(msg.roomId || ''));
+        if (!room) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_NOT_FOUND', message: 'La sala ya no está disponible.', hint: 'Regresa al listado y elige otra sala.' });
+          break;
+        }
+        if (entry.roomId) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_ALREADY_JOINED', message: 'Ya estás dentro de una sala.', hint: 'Sal de la sala actual antes de entrar en otra.' });
+          break;
+        }
+        if (room.status !== 'waiting') {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_ALREADY_STARTED', message: 'Esta sala ya comenzó la partida.', hint: 'Espera a que termine o elige otra sala.' });
+          break;
+        }
+        if (room.members.size >= 8) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_FULL', message: 'La sala está llena.', hint: 'Elige una sala con espacio disponible.' });
+          break;
+        }
+        room.members.add(userId);
+        entry.roomId = room.roomId;
+        assignAvailableRoomColor(room, userId);
+        broadcastRoomList();
+        sendWs(ws, { type: 'room_joined', roomId: room.roomId, name: room.name, hostUserId: room.hostUserId, hostUsername: room.hostUsername, players: roomPlayerList(room) });
+        broadcastRoom(room.roomId, { type: 'room_updated', roomId: room.roomId, players: roomPlayerList(room), status: room.status });
+        break;
+      }
+
+      case 'room_leave': {
+        const room = entry.roomId ? rooms.get(entry.roomId) : null;
+        if (!room) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_NOT_JOINED', message: 'No estás dentro de una sala.', hint: 'Elige una sala del listado para entrar.' });
+          break;
+        }
+        room.members.delete(userId);
+        entry.roomId = null;
+        if (room.members.size === 0) rooms.delete(room.roomId);
+        else if (room.hostUserId === userId) {
+          room.hostUserId = [...room.members][0];
+          room.hostUsername = players.get(room.hostUserId)?.username || '';
+        }
+        sendWs(ws, { type: 'room_left', ok: true, message: 'Has salido de la sala.' });
+        broadcastRoom(room.roomId, { type: 'room_updated', roomId: room.roomId, players: roomPlayerList(room), status: room.status, hostUserId: room.hostUserId, hostUsername: room.hostUsername });
+        broadcastRoomList();
+        break;
+      }
+
+      case 'game_start': {
+        const room = entry.roomId ? rooms.get(entry.roomId) : null;
+        if (!room) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_NOT_JOINED', message: 'Debes entrar a una sala.', hint: 'Crea una sala o únete a una existente.' });
+          break;
+        }
+        if (room.hostUserId !== userId) {
+          sendWs(ws, { type: 'error', ok: false, code: 'NOT_ROOM_HOST', message: 'Solo el creador puede iniciar la carrera.', hint: 'Espera a que el creador de la sala inicie la partida.' });
+          break;
+        }
+        if (room.members.size < 2) {
+          sendWs(ws, { type: 'error', ok: false, code: 'MIN_PLAYERS_REQUIRED', message: 'Faltan pilotos para comenzar.', hint: 'Necesitas al menos 2 jugadores en la sala.' });
+          break;
+        }
+        room.status = 'playing';
+        broadcastRoomList();
+        broadcastRoom(room.roomId, { type: 'game_started', roomId: room.roomId, players: roomPlayerList(room) });
+        break;
+      }
+
+      case 'room_color_update': {
+        const room = entry.roomId ? rooms.get(entry.roomId) : null;
+        const color = typeof msg.color === 'string' ? msg.color.toLowerCase() : '';
+        if (!room) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_NOT_JOINED', message: 'Debes estar dentro de una sala.', hint: 'Entra en una sala antes de elegir el color.' });
+          break;
+        }
+        if (!ROOM_COLORS.includes(color)) {
+          sendWs(ws, { type: 'error', ok: false, code: 'COLOR_INVALID', message: 'Ese color no está disponible.', hint: 'Elige uno de los 8 colores de la sala.' });
+          break;
+        }
+        let colorTaken = false;
+        for (const memberId of room.members) {
+          if (memberId !== userId && players.get(memberId)?.extras.color === color) {
+            colorTaken = true;
+            break;
+          }
+        }
+        if (colorTaken) {
+          sendWs(ws, { type: 'error', ok: false, code: 'COLOR_TAKEN', message: 'Otro piloto ya usa ese color.', hint: 'Elige un color diferente para tu carro.' });
+          break;
+        }
+        entry.extras = { ...entry.extras, color };
+        broadcastRoom(room.roomId, { type: 'room_updated', roomId: room.roomId, players: roomPlayerList(room), status: room.status });
         break;
       }
 
@@ -513,7 +698,7 @@ wss.on('connection', (ws, payload) => {
           ok: false,
           code: 'UNKNOWN_MESSAGE_TYPE',
           message: `Tipo de mensaje no reconocido: ${msg.type ?? '(sin tipo)'}.`,
-          hint: 'Tipos soportados: ping, who, verify, intent, extras_update.'
+          hint: 'Tipos soportados: ping, who, verify, intent, extras_update, room_create, room_join, room_leave, room_list, game_start, room_color_update.'
         });
     }
   });
@@ -525,7 +710,21 @@ wss.on('connection', (ws, payload) => {
     // y el socket viejo cierra pero NO debe tocar la entrada/timer del nuevo ni hacer broadcast.
     if (players.get(userId)?.socket === ws) {
       clearTimeout(entry.expirationTimer);
+      const roomId = entry.roomId;
       players.delete(userId);
+      if (roomId) {
+        const room = rooms.get(roomId);
+        if (room) {
+          room.members.delete(userId);
+          if (room.members.size === 0) rooms.delete(roomId);
+          else if (room.hostUserId === userId) {
+            room.hostUserId = [...room.members][0];
+            room.hostUsername = players.get(room.hostUserId)?.username || '';
+            broadcastRoom(roomId, { type: 'room_updated', roomId, players: roomPlayerList(room), status: room.status, hostUserId: room.hostUserId, hostUsername: room.hostUsername });
+          }
+        }
+        broadcastRoomList();
+      }
       console.log(`Jugador desconectado: ${username}`);
       broadcastPlayers();
     }
@@ -543,4 +742,4 @@ server.listen(PORT, () => {
   console.log(`WebSocket disponible en ws://localhost:${PORT}/connect?token=<JWT>`);
 });
 
-module.exports = { app, server, wss, players };
+module.exports = { app, server, wss, players, rooms };

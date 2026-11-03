@@ -223,7 +223,8 @@
             ctx.font = "600 13px system-ui, sans-serif";
             ctx.textAlign = "center";
             ctx.textBaseline = "bottom";
-            const label = isMe ? `${p.username} (tú)` : p.username;
+            const displayUsername = typeof p.username === "string" ? p.username.trim().toLowerCase() : p.username;
+            const label = isMe ? `${displayUsername} (tú)` : displayUsername;
             const textWidth = ctx.measureText(label).width;
             const labelX = x + 10; // corrido a la derecha para dejar espacio a la insignia
             const labelY = y - r - 6;
