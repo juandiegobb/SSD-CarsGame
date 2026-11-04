@@ -269,6 +269,9 @@
                 if (!Array.isArray(msg.players)) return;
                 prev = curr;
                 curr = msg;
+                // Referencia global para la demostración de autoridad desde DevTools.
+                // Solo afecta el dibujo local; no se envía al coordinador.
+                window.lastState = curr;
                 currAt = performance.now();
                 for (const id of headings.keys()) {
                     if (!msg.players.some((p) => p.userId === id)) headings.delete(id);
