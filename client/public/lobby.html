@@ -17,6 +17,10 @@
         .color-picker input { width: 44px; height: 32px; padding: 2px; cursor: pointer; }
         .track-heading { display: flex; align-items: center; gap: 10px; }
         .track-heading::before { content: "🏁"; font-size: 22px; }
+        /* Taller 6: a qué coordinador del mesh está conectado este cliente */
+        .server-info { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+        .server-info span { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; font-size: 14px; }
+        .server-info strong { font-family: ui-monospace, monospace; }
         .controls-hint kbd { font: inherit; font-size: 12px; padding: 1px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--code); }
     </style>
 </head>
@@ -32,6 +36,10 @@
         </header>
 
         <p id="connection-status" class="status" aria-live="polite">Conectando con el coordinador…</p>
+        <p id="server-info" class="server-info" hidden>
+            <span>Coordinador: <strong id="coordinator-name">—</strong></span>
+            <span>Tick: <strong id="tick-rate">—</strong></span>
+        </p>
         <div id="notice" class="message" role="alert" aria-live="assertive"></div>
         <section id="rooms-lobby" aria-labelledby="rooms-heading">
             <div class="button-row">
@@ -113,6 +121,7 @@
             let currentRoomHostId = null;
             let currentRoomStatus = "waiting";
             let currentCoordinatorId = null; // Taller 6: a qué coordinador estamos conectados
+            let currentTickRate = null;
             let tokenPayload = decodeToken(token);
             let lastKnownExpiresIn = null;
             let policyChangeTimestamp = null;
@@ -129,6 +138,18 @@
             const roomMembersList = document.getElementById("room-members-list");
             const gameSection = document.getElementById("game-section");
             const startGameButton = document.getElementById("start-game-button");
+            const serverInfo = document.getElementById("server-info");
+
+            // Taller 6: "Coordinador: coord-b · Tick: 20 Hz", visible en todo momento
+            function updateServerInfo() {
+                document.getElementById("coordinator-name").textContent = currentCoordinatorId || "único (sin directorio)";
+                document.getElementById("tick-rate").textContent = currentTickRate ? `${currentTickRate} Hz` : "—";
+                serverInfo.hidden = false;
+            }
+
+            function connectedLabel() {
+                return currentCoordinatorId ? `Conectado a ${currentCoordinatorId}.` : "Conectado al coordinador.";
+            }
 
             function showRoomView(room) {
                 currentRoomId = room.roomId;
@@ -483,7 +504,8 @@
                     : "Conectando con el coordinador…";
 
                 ws.addEventListener("open", () => {
-                    connectionStatus.textContent = "Conectado al coordinador.";
+                    connectionStatus.textContent = connectedLabel();
+                    updateServerInfo();
                     startSessionWatcher(ws, token);
                     ws.send(JSON.stringify({ type: "room_list" }));
                 });
@@ -502,10 +524,14 @@
                             currentUserId = msg.userId;
                             msg.username = normalizeUsername(msg.username);
                             currentUser.textContent = `Conectado como ${msg.username}.`;
-                            connectionStatus.textContent = "Conectado al coordinador.";
+                            connectionStatus.textContent = connectedLabel();
                             break;
                         case "welcome":
                             game.onWelcome(msg);
+                            if (msg.world && msg.world.tickRate) currentTickRate = msg.world.tickRate;
+                            // Si el coordinador también se identifica en el welcome, usamos ese nombre
+                            if (typeof msg.coordinatorId === "string") currentCoordinatorId = msg.coordinatorId;
+                            updateServerInfo();
                             setupColorPicker();
                             break;
                         case "state":
