@@ -110,6 +110,7 @@ const USERS_TABLE_SQL = `
     password_hash TEXT,
     google_sub TEXT UNIQUE,
     email TEXT,
+    picture_url TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     CHECK (
       (provider = 'local'  AND password_hash IS NOT NULL AND google_sub IS NULL) OR
@@ -150,6 +151,13 @@ function ensureUsersTable() {
 }
 ensureUsersTable();
 
+// Taller 6 (corrección): foto de perfil de Google. Si la base es anterior y no tiene
+// la columna, se agrega sin tocar a los usuarios existentes (quedan con NULL).
+if (!db.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'picture_url')) {
+  db.exec('ALTER TABLE users ADD COLUMN picture_url TEXT');
+  console.log('[auth-service] Columna picture_url agregada a users.');
+}
+
 // Los nombres de usuario representan la misma identidad sin importar las mayúsculas.
 // Se guardan siempre en minúsculas para que la información mostrada sea uniforme.
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_username_nocase ON users(username COLLATE NOCASE)');
@@ -171,7 +179,8 @@ try {
 // Los literales SQL llevan comillas SIMPLES (SQLite interpreta las dobles como nombres de columna).
 const stmts = {
   insertLocal: db.prepare("INSERT INTO users (username, provider, password_hash) VALUES (?, 'local', ?)"),
-  insertGoogle: db.prepare("INSERT INTO users (username, provider, google_sub, email) VALUES (?, 'google', ?, ?)"),
+  insertGoogle: db.prepare("INSERT INTO users (username, provider, google_sub, email, picture_url) VALUES (?, 'google', ?, ?, ?)"),
+  updatePicture: db.prepare('UPDATE users SET picture_url = ? WHERE id = ?'),
   findByUsername: db.prepare('SELECT * FROM users WHERE username COLLATE NOCASE = ?'),
   findByGoogle: db.prepare('SELECT * FROM users WHERE google_sub = ?')
 };
@@ -208,6 +217,18 @@ function normalizeUsername(u) {
   return typeof u === 'string' ? u.trim().toLowerCase() : u;
 }
 
+// Solo se acepta la foto si es una URL https de Google (lh3.googleusercontent.com, etc.).
+// Así nadie puede colar en el JWT una URL arbitraria que luego se muestre a otros jugadores.
+function safePictureUrl(value) {
+  if (typeof value !== 'string' || value.length > 1000) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && url.hostname.endsWith('.googleusercontent.com') ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
 function isUniqueViolation(err) {
   return err && (err.code === 'SQLITE_CONSTRAINT_UNIQUE' ||
     (err.message && err.message.includes('UNIQUE constraint failed')));
@@ -222,6 +243,8 @@ function emitToken(user) {
     username: normalizeUsername(user.username),
     provider: user.provider
   };
+  // Taller 6: la foto de perfil de Google viaja en el JWT para que el lobby la muestre
+  if (user.picture_url) payload.picture = user.picture_url;
   try {
     return jwt.sign(payload, JWT_SECRET, { algorithm: 'HS256', expiresIn: getJwtExpiresIn() });
   } catch (signErr) {
@@ -513,10 +536,16 @@ app.post('/auth/google', async (req, res, next) => {
     // porque el usuario puede cambiarlo.
     const googleSub = payload.sub;
     const email = payload.email;
+    const pictureUrl = safePictureUrl(payload.picture);
 
     // 2. ¿Ya existe este usuario de Google?
     const existing = stmts.findByGoogle.get(googleSub);
     if (existing) {
+      // La foto puede cambiar en Google: se actualiza en cada ingreso
+      if (pictureUrl !== existing.picture_url) {
+        stmts.updatePicture.run(pictureUrl, existing.id);
+        existing.picture_url = pictureUrl;
+      }
       const token = emitToken(existing);
       console.log(`Login con Google: ${existing.username}`);
       return sendOk(res, 200, 'Inicio de sesión con Google exitoso.', {
@@ -564,8 +593,8 @@ app.post('/auth/google', async (req, res, next) => {
       );
     }
     try {
-      const info = stmts.insertGoogle.run(cleanUsername, googleSub, email);
-      const newUser = { id: String(info.lastInsertRowid), username: cleanUsername, provider: 'google' };
+      const info = stmts.insertGoogle.run(cleanUsername, googleSub, email, pictureUrl);
+      const newUser = { id: String(info.lastInsertRowid), username: cleanUsername, provider: 'google', picture_url: pictureUrl };
       const token = emitToken(newUser);
       console.log(`Usuario de Google registrado: ${cleanUsername}`);
       return sendOk(res, 200, 'Cuenta creada con Google e inicio de sesión exitoso.', {
