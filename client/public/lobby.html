@@ -112,6 +112,7 @@
             let currentRoomId = null;
             let currentRoomHostId = null;
             let currentRoomStatus = "waiting";
+            let currentCoordinatorId = null; // Taller 6: a qué coordinador estamos conectados
             let tokenPayload = decodeToken(token);
             let lastKnownExpiresIn = null;
             let policyChangeTimestamp = null;
@@ -473,9 +474,13 @@
 
             // Taller 6: la conexión vive en una función para poder reconectar a otro
             // coordinador sin recargar la página. `ws` es el socket de ESTA conexión.
-            function connectToCoordinator(wsUrl) {
+            function connectToCoordinator(wsUrl, coordinatorId) {
                 const ws = new WebSocket(`${wsUrl}/connect?token=${encodeURIComponent(token)}`);
                 socket = ws;
+                currentCoordinatorId = coordinatorId;
+                connectionStatus.textContent = coordinatorId
+                    ? `Conectando con ${coordinatorId}…`
+                    : "Conectando con el coordinador…";
 
                 ws.addEventListener("open", () => {
                     connectionStatus.textContent = "Conectado al coordinador.";
@@ -584,12 +589,31 @@
                 });
             }
 
-            try {
-                const { COORDINATOR_WS_URL } = getAppConfig();
-                connectToCoordinator(COORDINATOR_WS_URL);
-            } catch {
-                returnToLogin("No pudimos preparar el juego. Recarga la página e inténtalo de nuevo.");
+            // Taller 6: login → pedir coordinador al auth → conectar al que diga.
+            async function findCoordinatorAndConnect() {
+                connectionStatus.textContent = "Buscando un coordinador disponible…";
+                const result = await requestCoordinator();
+
+                if (result.ok) {
+                    connectToCoordinator(result.publicUrl, result.coordinatorId);
+                    return;
+                }
+
+                // El auth todavía no tiene GET /coordinator (versión del Taller 5):
+                // usamos el único coordinador configurado en el .env del cliente.
+                if (result.status === 404) {
+                    const { COORDINATOR_WS_URL } = getAppConfig();
+                    connectToCoordinator(COORDINATOR_WS_URL, null);
+                    return;
+                }
+
+                connectionStatus.textContent = "No hay coordinador disponible.";
+                showNotice("No pudimos obtener un coordinador para jugar.", "Recarga la página en unos segundos.");
             }
+
+            findCoordinatorAndConnect().catch(() => {
+                returnToLogin("No pudimos preparar el juego. Recarga la página e inténtalo de nuevo.");
+            });
         }
     </script>
 </body>

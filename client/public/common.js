@@ -43,6 +43,40 @@ async function apiPost(path, body) {
     return { ok: false, valid: false, status: response.status };
 }
 
+// Taller 6: el auth (directory service) dice a qué coordinador conectarse.
+// Devuelve { ok: true, coordinatorId, publicUrl } o { ok: false, status, payload }
+// (o { ok: false, networkError: true } si el auth no responde).
+async function requestCoordinator() {
+    let response;
+    let payload = null;
+
+    try {
+        const { AUTH_URL } = getAppConfig();
+        response = await fetch(`${AUTH_URL}/coordinator`, {
+            headers: { "ngrok-skip-browser-warning": "true" },
+            cache: "no-store"
+        });
+        payload = await response.json().catch(() => null);
+    } catch {
+        return { ok: false, networkError: true };
+    }
+
+    if (
+        response.ok &&
+        payload &&
+        typeof payload.coordinatorId === "string" &&
+        typeof payload.publicUrl === "string"
+    ) {
+        return {
+            ok: true,
+            coordinatorId: payload.coordinatorId,
+            publicUrl: payload.publicUrl.replace(/\/+$/, "")
+        };
+    }
+
+    return { ok: false, status: response.status, payload };
+}
+
 function getToken() {
     return localStorage.getItem("token");
 }
