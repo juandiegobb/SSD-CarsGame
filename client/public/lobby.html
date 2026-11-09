@@ -539,6 +539,7 @@
                     opened = true;
                     retryCount = 0;
                     clearNotice();
+                    game.resume(); // vuelve a leer el teclado si venimos de una reconexión
                     connectionStatus.textContent = connectedLabel();
                     updateServerInfo();
                     startSessionWatcher(ws, token);
@@ -656,6 +657,9 @@
             function handleCoordinatorLost(lostId, wasConnected) {
                 deadCoordinatorId = lostId;
                 deadCoordinatorAt = Date.now();
+                // En el coordinador nuevo todavía no estamos en ninguna sala
+                showLobbyView();
+                replacedPanel.hidden = true;
                 const who = lostId || "el coordinador";
                 showNotice(
                     wasConnected ? `Se perdió la conexión con ${who}.` : `No pudimos conectarnos a ${who}.`,

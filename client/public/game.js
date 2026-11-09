@@ -280,6 +280,23 @@
                     if (!msg.players.some((p) => p.userId === id)) headings.delete(id);
                 }
             },
+            // Taller 6: al reconectar a otro coordinador se arranca limpio:
+            // sin fotos viejas, sin teclas "pegadas" y volviendo a escuchar el teclado.
+            resume() {
+                prev = null;
+                curr = null;
+                window.lastState = null;
+                headings.clear();
+                pressed.clear();
+                pointerDirections.clear();
+                lastDir = { x: 0, y: 0 };
+                if (running) return;
+                running = true;
+                window.addEventListener("keydown", onKeyDown);
+                window.addEventListener("keyup", onKeyUp);
+                window.addEventListener("blur", onBlur);
+                requestAnimationFrame(frame);
+            },
             stop() {
                 running = false;
                 window.removeEventListener("keydown", onKeyDown);
