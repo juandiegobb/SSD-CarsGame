@@ -471,19 +471,19 @@
             });
             startGameButton.addEventListener("click", () => socket.send(JSON.stringify({ type: "game_start" })));
 
-            try {
-                const { COORDINATOR_WS_URL } = getAppConfig();
-                socket = new WebSocket(
-                    `${COORDINATOR_WS_URL}/connect?token=${encodeURIComponent(token)}`
-                );
+            // Taller 6: la conexión vive en una función para poder reconectar a otro
+            // coordinador sin recargar la página. `ws` es el socket de ESTA conexión.
+            function connectToCoordinator(wsUrl) {
+                const ws = new WebSocket(`${wsUrl}/connect?token=${encodeURIComponent(token)}`);
+                socket = ws;
 
-                socket.addEventListener("open", () => {
+                ws.addEventListener("open", () => {
                     connectionStatus.textContent = "Conectado al coordinador.";
-                    startSessionWatcher(socket, token);
-                    socket.send(JSON.stringify({ type: "room_list" }));
+                    startSessionWatcher(ws, token);
+                    ws.send(JSON.stringify({ type: "room_list" }));
                 });
 
-                socket.addEventListener("message", (event) => {
+                ws.addEventListener("message", (event) => {
                     let msg;
                     try {
                         msg = JSON.parse(event.data);
@@ -556,7 +556,7 @@
                     }
                 });
 
-                socket.addEventListener("close", (event) => {
+                ws.addEventListener("close", (event) => {
                     stopSessionWatcher();
                     game.stop(); // deja de leer el teclado
                     if (intentionalClose) {
@@ -579,9 +579,14 @@
                     returnToLogin("Se perdió la conexión con el juego. Comprueba tu internet y vuelve a entrar.");
                 });
 
-                socket.addEventListener("error", () => {
+                ws.addEventListener("error", () => {
                     connectionStatus.textContent = "No pudimos mantener la conexión con el juego.";
                 });
+            }
+
+            try {
+                const { COORDINATOR_WS_URL } = getAppConfig();
+                connectToCoordinator(COORDINATOR_WS_URL);
             } catch {
                 returnToLogin("No pudimos preparar el juego. Recarga la página e inténtalo de nuevo.");
             }
