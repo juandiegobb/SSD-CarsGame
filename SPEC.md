@@ -681,3 +681,129 @@ wscat -c "ws://localhost:5000/connect?token=<JWT>"
 ```
 
 Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se ven moverse, el color que cambia uno lo ve el otro, y la velocidad en diagonal es igual a la recta.
+
+---
+
+## 11. Taller 6 — Proyecto Final Parte III (varios coordinadores en mesh)
+
+### 11.1 Alcance nuevo
+
+- **Varios coordinadores en paralelo**, intercambiables y con el mismo estado del juego.
+- **El auth también es directory service:** los coordinadores le avisan que siguen vivos (`POST /heartbeat`) y el cliente le pregunta a cuál conectarse (`GET /coordinator`).
+- **Mesh:** cada coordinador se conecta por WebSocket con todos los demás y les replica lo que pasa con sus jugadores locales.
+- **Cliente:** login → `GET /coordinator` → WebSocket al coordinador asignado. Muestra a cuál está conectado y, si se cae, pide otro.
+
+```
+                 ┌───────────── Auth :4000 (usuarios + directorio) ─────────────┐
+   heartbeat c/2s│  POST /heartbeat   GET /coordinator   GET /peers             │
+                 └───────▲──────────────────▲───────────────────▲───────────────┘
+                         │                  │ (cliente)         │
+   coord-a :5001 ◄═══ mesh WS ═══► coord-b :5002 ◄═══ mesh WS ═══► coord-c :5003
+   (peers :5101)                   (peers :5102)                   (peers :5103)
+        ▲ clientes                      ▲ clientes                      ▲ clientes
+```
+
+### 11.2 Variables de entorno de cada coordinador
+
+| Variable | Ejemplo | Para qué |
+|---|---|---|
+| `COORDINATOR_ID` | `coord-a` | Identificador único en el mesh |
+| `PORT` | `5001` | WebSocket de **clientes** (`/connect?token=`) |
+| `PEER_PORT` | `5101` | WebSocket de **peers** (otros coordinadores) |
+| `PUBLIC_URL` | `ws://localhost:5001` (o el `wss://` de ngrok) | URL que el auth le da a los clientes |
+| `PEER_URL` | `ws://localhost:5101` | URL a la que se conectan los otros coordinadores |
+| `AUTH_URL` | `http://localhost:4000` | Dónde mandar los heartbeats y pedir `/peers` |
+| `JWT_SECRET` | igual en todos | Mismo secreto que el auth |
+
+**[Decisión]** Puerto de peers separado del de clientes, como recomienda el PDF: el tráfico entre coordinadores no se mezcla con el de los jugadores y los peers no necesitan túnel de ngrok si corren en la misma máquina.
+
+### 11.3 Auth — endpoints del directorio
+
+El auth guarda **en memoria** `Map<coordinatorId, { publicUrl, peerUrl, connectedPlayers, uptime, lastSeen }>`. **Un coordinador sin heartbeat en los últimos 6 s (3 ciclos) se considera muerto y se descarta.**
+
+**`POST /heartbeat`** — lo llama cada coordinador cada 2 s.
+
+```json
+{ "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:5101", "connectedPlayers": 7, "uptime": 12345 }
+```
+
+| HTTP | Forma | Cuándo |
+|---|---|---|
+| 200 | `{ "ok": true }` | Registrado o actualizado (`lastSeen = Date.now()`) |
+| 400 | `INVALID_BODY` | Falta algún campo o tiene un tipo incorrecto |
+
+**`GET /coordinator`** — lo llama el cliente después del login, antes de abrir el WebSocket.
+
+| HTTP | Forma | Cuándo |
+|---|---|---|
+| 200 | `{ "coordinatorId": "coord-b", "publicUrl": "ws://localhost:5002" }` | El vivo con **menos** `connectedPlayers` (si empatan, el primero) |
+| 503 | `{ "error": "no_coordinators_available" }` | No hay ningún coordinador vivo |
+
+**[Decisión]** Es *client-side load balancing*: el auth no proxea tráfico, solo le dice al cliente a dónde conectarse.
+
+**`GET /peers`** — lo llaman los coordinadores al arrancar y periódicamente.
+
+```json
+{ "peers": [ { "coordinatorId": "coord-a", "peerUrl": "ws://localhost:5101" }, { "coordinatorId": "coord-c", "peerUrl": "ws://localhost:5103" } ] }
+```
+
+Cada coordinador **quita su propio ID** de la lista.
+
+**`GET /coordinators`** *(solo para depurar y para la demo)* — lista de los vivos con `connectedPlayers`, `uptime` y segundos desde el último heartbeat.
+
+### 11.4 Protocolo del mesh (WebSocket entre coordinadores)
+
+- **Una sola conexión por par.** **[Decisión] Regla del ID menor:** si `"coord-a" < "coord-b"` (orden lexicográfico), `coord-a` inicia la conexión y `coord-b` espera. Si llega una conexión de un peer con el que ya hay una abierta, se cierra la nueva.
+- **Todos los mensajes llevan `origin`** (el `coordinatorId` que lo originó). Si `origin` es uno mismo, se descarta. **Nadie retransmite** lo que recibe de un peer: todos lo reciben directo del origen. Así no hay bucles.
+- Lo que llega de un peer **también se valida** (mismas reglas que con los clientes: `Math.sign` en el intent, extras de máximo 1024 bytes).
+
+| `type` | Forma | Cuándo |
+|---|---|---|
+| `hello` | `{ type, coordinatorId }` | Primer mensaje al abrir la conexión |
+| `player_joined` | `{ type, origin, userId, username, provider, x, y, extras }` | Un cliente se conecta a `origin`. **También** se envía uno por cada jugador local al recibir un `hello` (así un coordinador que arranca tarde conoce a los que ya estaban) |
+| `player_left` | `{ type, origin, userId }` | Un cliente se desconecta de `origin` |
+| `intent_replicate` | `{ type, origin, userId, intent: { dir: { x, y } } }` | Un cliente local manda un intent |
+| `extras_replicate` | `{ type, origin, userId, extras }` | Un cliente local cambia sus extras |
+| `player_sync` | `{ type, origin, players: [{ userId, x, y }] }` | **[Decisión]** Cada ~1 s, la posición real de los jugadores locales de `origin`, para corregir desviaciones |
+| `room_replicate` | `{ type, origin, op, roomId, ... }` | **[Propuesta]** Replicar salas: `op` = `create`, `join`, `leave`, `start`, `color`, `host` |
+
+**Jugadores remotos:** cada jugador del `Map` lleva `home` (el coordinador al que está conectado) y `local: true/false`. Los remotos **no tienen socket**: nunca se les manda nada directamente.
+
+**Peer caído:** si se cierra la conexión con un peer, se borran todos los jugadores cuyo `home` sea ese peer (un coordinador muerto con Ctrl+C nunca manda `player_left`).
+
+**Game loop (20 Hz):**
+1. Aplica los intents de **todos** los jugadores, locales y remotos.
+2. Hace broadcast del `state` **solo a sus clientes locales** (nunca a los peers). Cada `state` incluye a todos los jugadores del mundo.
+
+**`welcome`:** se agrega `coordinatorId` para que el cliente muestre a qué coordinador está conectado.
+
+### 11.5 Cliente
+
+1. Después del login, `GET /coordinator` al auth (`requestCoordinator()` en `common.js`).
+2. Abre el WebSocket al `publicUrl` recibido, con el token como siempre.
+3. Muestra en el lobby **"Coordinador: coord-b · Tick: 20 Hz"**.
+4. **Si se cae el coordinador, no reconecta al mismo:** vuelve a pedir `GET /coordinator` y se conecta al que diga.
+
+**[Decisiones del cliente]**
+- **Coordinador caído aún anunciado:** durante los 6 s en que el auth todavía no lo descarta, puede seguir devolviéndolo. El cliente lo recuerda 10 s y, si el auth se lo vuelve a dar, espera y pregunta otra vez en vez de conectarse.
+- **Reintentos:** cada 2 s, máximo 15 (unos 30 s). Si se agotan, vuelve al login con un mensaje.
+- **503 o auth caído:** mensaje claro (`NO_COORDINATORS_AVAILABLE` / `AUTH_UNREACHABLE`) y reintentos automáticos.
+- **Compatibilidad:** si el auth responde 404 a `GET /coordinator` (versión del Taller 5), el cliente usa el coordinador único del `.env`.
+- **Al reconectar** se vuelve a la lista de salas y se reactiva el teclado (`game.resume()`).
+
+### 11.6 Pruebas del Taller 6
+
+```bash
+# Heartbeat a mano
+curl -X POST http://localhost:4000/heartbeat -H "Content-Type: application/json" \
+  -d '{"coordinatorId":"coord-x","publicUrl":"ws://localhost:5009","peerUrl":"ws://localhost:5109","connectedPlayers":0,"uptime":1}'
+
+curl http://localhost:4000/coordinator   # el menos cargado, o 503
+curl http://localhost:4000/peers         # los vivos (coord-x desaparece a los 6 s)
+```
+
+Prueba manual (sustentación):
+1. Tres coordinadores con puertos distintos → los tres aparecen en `/peers`.
+2. Cuatro clientes → el auth los reparte (no van los 4 al mismo).
+3. Alice en `coord-a` y Bob en `coord-b`: cada pestaña muestra su coordinador y se ven moverse en vivo.
+4. Ctrl+C a un coordinador → sus clientes se desconectan, el auth deja de devolverlo después de 6 s y los clientes se reconectan a uno vivo.
