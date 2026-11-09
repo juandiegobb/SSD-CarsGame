@@ -127,6 +127,11 @@
             const MAX_RETRIES = 15; // ~30 s buscando coordinador antes de rendirse
             let retryCount = 0;
             let retryTimer = null;
+            // Coordinador que se acaba de caer: mientras el auth no lo descarte
+            // (6 s sin heartbeat) puede seguir devolviéndolo, así que lo evitamos un rato.
+            const DEAD_COORDINATOR_TTL_MS = 10000;
+            let deadCoordinatorId = null;
+            let deadCoordinatorAt = 0;
             let tokenPayload = decodeToken(token);
             let lastKnownExpiresIn = null;
             let policyChangeTimestamp = null;
@@ -489,6 +494,7 @@
 
             document.getElementById("logout-button").addEventListener("click", () => {
                 intentionalClose = true;
+                clearTimeout(retryTimer);
                 stopSessionWatcher();
                 clearCredentials();
                 if (socket) {
@@ -523,12 +529,14 @@
             function connectToCoordinator(wsUrl, coordinatorId) {
                 const ws = new WebSocket(`${wsUrl}/connect?token=${encodeURIComponent(token)}`);
                 socket = ws;
+                let opened = false;
                 currentCoordinatorId = coordinatorId;
                 connectionStatus.textContent = coordinatorId
                     ? `Conectando con ${coordinatorId}…`
                     : "Conectando con el coordinador…";
 
                 ws.addEventListener("open", () => {
+                    opened = true;
                     retryCount = 0;
                     clearNotice();
                     connectionStatus.textContent = connectedLabel();
@@ -615,6 +623,7 @@
                 });
 
                 ws.addEventListener("close", (event) => {
+                    if (ws !== socket) return; // cierre de una conexión vieja: ya hay otra
                     stopSessionWatcher();
                     game.stop(); // deja de leer el teclado
                     if (intentionalClose) {
@@ -634,12 +643,25 @@
                         returnToLogin("Tu sesión expiró.");
                         return;
                     }
-                    returnToLogin("Se perdió la conexión con el juego. Comprueba tu internet y vuelve a entrar.");
+                    // Taller 6: el coordinador se cayó (o no se pudo conectar). NO reconectar
+                    // directo al mismo: volver a pedir GET /coordinator y usar el que diga.
+                    handleCoordinatorLost(currentCoordinatorId, opened);
                 });
 
                 ws.addEventListener("error", () => {
                     connectionStatus.textContent = "No pudimos mantener la conexión con el juego.";
                 });
+            }
+
+            function handleCoordinatorLost(lostId, wasConnected) {
+                deadCoordinatorId = lostId;
+                deadCoordinatorAt = Date.now();
+                const who = lostId || "el coordinador";
+                showNotice(
+                    wasConnected ? `Se perdió la conexión con ${who}.` : `No pudimos conectarnos a ${who}.`,
+                    "Buscando otro coordinador disponible…"
+                );
+                scheduleCoordinatorRetry(`Buscando un coordinador distinto de ${who}.`);
             }
 
             // Taller 6: login → pedir coordinador al auth → conectar al que diga.
@@ -649,6 +671,11 @@
                 const result = await requestCoordinator();
 
                 if (result.ok) {
+                    const stillFresh = Date.now() - deadCoordinatorAt < DEAD_COORDINATOR_TTL_MS;
+                    if (result.coordinatorId === deadCoordinatorId && stillFresh) {
+                        scheduleCoordinatorRetry(`El directorio todavía anuncia a ${deadCoordinatorId}, que no responde. Esperando a que lo descarte…`);
+                        return;
+                    }
                     connectToCoordinator(result.publicUrl, result.coordinatorId);
                     return;
                 }
