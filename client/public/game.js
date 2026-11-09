@@ -239,6 +239,9 @@
         function frame() {
             if (!running) return;
             drawTrack();
+            // Se dibuja lo que haya en window.lastState (lo último que mandó el servidor,
+            // o lo que alguien haya alterado a mano en DevTools hasta el próximo tick).
+            if (window.lastState && Array.isArray(window.lastState.players)) curr = window.lastState;
             if (curr) {
                 // alpha: qué tan lejos estamos entre prev y curr (0 → prev, 1 → curr)
                 const tickMs = 1000 / world.tickRate;
