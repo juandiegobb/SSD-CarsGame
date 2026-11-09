@@ -626,6 +626,15 @@ curl -X POST http://localhost:4000/login -H "Content-Type: application/json" -d 
 
 Errores nuevos (no cierran el socket): `INVALID_INTENT`, `INVALID_EXTRAS`.
 
+**Salas.** Para jugar, los pilotos entran a una sala (máximo 8). El `state` de cada tick se envía **solo a los miembros de cada sala**, así que dos jugadores se ven en el canvas únicamente si están en la misma sala. El contrato completo está en [`SPEC.md`](SPEC.md) (sección de salas).
+
+| Dirección | `type` | Forma |
+|---|---|---|
+| cliente → servidor | `room_list` / `room_create` / `room_join` / `room_leave` | `{ type }`, `{ type, name }`, `{ type, roomId }`, `{ type }` |
+| cliente → servidor | `game_start` | solo el anfitrión, con al menos 2 pilotos |
+| cliente → servidor | `room_color_update` | `{ color: "#rrggbb" }` — uno de los 8 colores, sin repetir dentro de la sala |
+| servidor → cliente | `room_list`, `room_created`, `room_joined`, `room_updated`, `room_left`, `game_started` | ver `SPEC.md` |
+
 ```bash
 wscat -c "ws://localhost:5000/connect?token=<JWT>"
 > {"type":"intent","intent":{"dir":{"x":1,"y":0}}}       # avanza a la derecha
@@ -638,7 +647,7 @@ Parámetros del mundo en `coordinator/.env` (todos opcionales): `WORLD_WIDTH=800
 
 ### 11.6. Feature extra replicado
 
-* **Color del carro:** selector en el lobby → `extras_update { color }`. El coordinador lo guarda en `player.extras` y lo reparte en el siguiente `state`; dura toda la sesión. El cliente también lo guarda en `localStorage` y lo reenvía al reconectar.
+* **Color del carro:** paleta de 8 colores en la sala → `room_color_update { color }` (fuera de una sala se usa `extras_update { extras: { color } }`). El coordinador valida que el color sea de la paleta y que nadie más de la sala lo tenga, lo guarda en `player.extras.color` y lo reparte en el siguiente `state`; dura toda la sesión. Al entrar a una sala se asigna automáticamente el primer color libre.
 * **Insignia de provider:** **G** para cuentas de Google y 🔒 para cuentas locales, junto al nombre. El `provider` lo pone el coordinador desde el **JWT verificado**, no desde `extras`, así que un cliente no puede hacerse pasar por usuario de Google.
 
 ### 11.7. Decisiones de diseño del Taller 5
@@ -659,12 +668,20 @@ Parámetros del mundo en `coordinator/.env` (todos opcionales): `WORLD_WIDTH=800
 
 ### 11.8. Guion de demostración (Taller 5)
 
-1. **Login con Google:** clic en el botón → primer ingreso pide username (probar uno tomado y luego uno libre) → lobby. Cerrar sesión y volver a entrar: va directo.
-2. **Cuenta de Google con contraseña:** `POST /login` con ese username → `401 USE_GOOGLE_LOGIN`.
-3. **Dos navegadores** (uno local y otro Google): ambos se ven moverse en tiempo real, con su insignia.
-4. **Diagonal vs. recta:** mostrar en el código `Math.hypot` y que la velocidad es la misma.
-5. **Anti-trampa:** desde wscat o DevTools mandar `{"x":9999}` → el carro no se teletransporta.
-6. **Feature extra:** cambiar el color en una ventana y verlo en la otra.
+> Usa **dos navegadores distintos** (o una ventana normal y otra de incógnito). Dos pestañas del mismo navegador comparten `localStorage`, así que la segunda sesión reemplaza a la primera (cierre 4002).
+
+1. **Juego en vivo (3 min):** `alice` crea una sala y `bob_google` entra desde la lista. Moverse en una ventana y ver el movimiento en la otra. Cambiar el color del carro en una y verlo en la otra.
+2. **Dos providers (3 min):**
+   * Registrar `alice` con contraseña.
+   * En el otro navegador, *Sign in with Google* → primer ingreso pide username → `bob_google`. Ambos entran a la misma sala y se ven (insignia 🔒 y **G**).
+   * `alice` no puede entrar por Google: si una cuenta de Google intenta quedarse con el username `alice` → `409 username_taken`.
+   * `bob_google` no puede usar contraseña: `POST /login` con ese username → `401 USE_GOOGLE_LOGIN`.
+3. **Autoridad del servidor (2 min):** en DevTools de una ventana:
+   ```js
+   setInterval(() => { const p = lastState.players.find(p => p.username === 'alice'); p.x = 60; p.y = 540; }, 5);
+   ```
+   El carro se “teletransporta” solo en esa pestaña; en la otra sigue en su posición real. `lastState` es el último `state` recibido y lo sobrescribe el siguiente tick del servidor. También se puede mandar `{"type":"intent","intent":{"dir":{"x":9999,"y":0}}}`: se sanea a `1`.
+4. **Tour del código (4 min):** game loop → `tick()` en `coordinator/index.js`; validación de entradas → `case 'intent'` y `case 'extras_update'`; verificación del ID token → `verifyIdToken` en `auth-service/index.js`; extras → `entry.extras` / `snapshot()`.
 
 ### 11.9. Problemas encontrados y cómo se resolvieron
 
