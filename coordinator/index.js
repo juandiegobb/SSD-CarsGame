@@ -73,7 +73,7 @@ function roomSummary(room) {
 function roomPlayerList(room) {
   return [...room.members.values()].map((memberId) => {
     const player = players.get(memberId);
-    return player ? { userId: memberId, username: String(player.username || '').toLowerCase(), color: player.extras.color || null } : null;
+    return player ? { userId: memberId, username: String(player.username || '').toLowerCase(), color: player.extras.color || null, picture: player.picture || null } : null;
   }).filter(Boolean);
 }
 
@@ -117,7 +117,7 @@ function assignAvailableRoomColor(room, userId) {
 function broadcastPlayers() {
   const playerList = [];
   for (const [userId, entry] of players) {
-    playerList.push({ userId, username: normalizeUsername(entry.username) });
+    playerList.push({ userId, username: normalizeUsername(entry.username), picture: entry.picture || null });
   }
   const msg = JSON.stringify({ type: 'players_update', players: playerList });
 
@@ -343,6 +343,8 @@ wss.on('connection', (ws, payload) => {
   const username = typeof payload.username === 'string' ? payload.username.trim().toLowerCase() : payload.username;
   // provider viene del JWT verificado (no del cliente). Tokens del Taller 4 no lo traen → 'local'.
   const provider = payload.provider === 'google' ? 'google' : 'local';
+  // Foto de perfil de Google: viene del JWT ya verificado (el auth solo pone URLs https de Google)
+  const picture = typeof payload.picture === 'string' && payload.picture.startsWith('https://') ? payload.picture : null;
 
   // Política de doble pestaña (SPEC.md §3.5): la conexión nueva reemplaza a la anterior.
   // Justificación: un socket "zombi" de una reconexión o refresh bloquearía al usuario
@@ -365,6 +367,7 @@ wss.on('connection', (ws, payload) => {
     connectedAt: new Date().toISOString(),
     expirationTimer: null,
     provider,
+    picture,
     // Taller 5: posición inicial aleatoria dentro del mundo, quieto y sin extras
     x: PLAYER_RADIUS + Math.random() * (WORLD_WIDTH - 2 * PLAYER_RADIUS),
     y: PLAYER_RADIUS + Math.random() * (WORLD_HEIGHT - 2 * PLAYER_RADIUS),

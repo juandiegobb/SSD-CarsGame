@@ -21,6 +21,11 @@
         .server-info { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
         .server-info span { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; font-size: 14px; }
         .server-info strong { font-family: ui-monospace, monospace; }
+        /* Foto de perfil de Google (o inicial para cuentas locales) */
+        .avatar { width: 28px; height: 28px; flex: none; border-radius: 50%; object-fit: cover; display: inline-flex; align-items: center; justify-content: center; background: #2f6fed; color: #fff; font-weight: 700; font-size: 13px; text-transform: uppercase; }
+        .avatar-lg { width: 36px; height: 36px; font-size: 16px; }
+        .user-line { display: flex; align-items: center; gap: 10px; }
+        .players li { display: flex; align-items: center; gap: 10px; }
         .controls-hint kbd { font: inherit; font-size: 12px; padding: 1px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--code); }
     </style>
 </head>
@@ -218,13 +223,41 @@
                 for (const player of players) {
                     const item = document.createElement("li");
                     const displayUsername = normalizeUsername(player.username);
-                    item.textContent = player.userId === String(currentRoomHostId) ? `${displayUsername} · Creador` : displayUsername;
+                    const name = document.createElement("span");
+                    name.textContent = player.userId === String(currentRoomHostId) ? `${displayUsername} · Creador` : displayUsername;
+                    item.append(avatarElement(displayUsername, player.picture), name);
                     roomMembersList.append(item);
                 }
                 if (currentRoomStatus === "waiting") startGameButton.hidden = String(currentUserId) !== String(currentRoomHostId) || players.length < 2;
             }
 
-            currentUser.textContent = `Usuario: ${normalizeUsername(localStorage.getItem("username") || "desconocido")}`;
+            // Foto de perfil de Google si existe; si no (cuenta local o la imagen no carga), la inicial.
+            // referrerpolicy="no-referrer": sin esto Google a veces bloquea la imagen.
+            function avatarElement(username, picture, large = false) {
+                const initial = document.createElement("span");
+                initial.className = large ? "avatar avatar-lg" : "avatar";
+                initial.textContent = String(username || "?").charAt(0);
+                initial.setAttribute("aria-hidden", "true");
+                if (typeof picture !== "string" || !picture.startsWith("https://")) return initial;
+
+                const img = document.createElement("img");
+                img.className = initial.className;
+                img.src = picture;
+                img.alt = `Foto de perfil de ${username}`;
+                img.referrerPolicy = "no-referrer";
+                img.addEventListener("error", () => img.replaceWith(initial));
+                return img;
+            }
+
+            function showCurrentUser(text) {
+                const name = normalizeUsername(localStorage.getItem("username") || "desconocido");
+                const label = document.createElement("span");
+                label.textContent = text;
+                currentUser.className = "muted user-line";
+                currentUser.replaceChildren(avatarElement(name, tokenPayload && tokenPayload.picture, true), label);
+            }
+
+            showCurrentUser(`Usuario: ${normalizeUsername(localStorage.getItem("username") || "desconocido")}`);
 
             const ROOM_COLORS = ["#2f6fed", "#ef4444", "#22c55e", "#f59e0b", "#a855f7", "#ec4899", "#06b6d4", "#ffffff"];
             const carColors = document.getElementById("car-colors");
@@ -314,7 +347,9 @@
                 playerCount.textContent = `(${players.length})`;
                 for (const player of players) {
                     const item = document.createElement("li");
-                    item.textContent = normalizeUsername(player.username);
+                    const name = document.createElement("span");
+                    name.textContent = normalizeUsername(player.username);
+                    item.append(avatarElement(name.textContent, player.picture), name);
                     if (
                         (currentUserId && player.userId === currentUserId) ||
                         (!currentUserId && normalizeUsername(player.username) === normalizeUsername(localStorage.getItem("username")))
@@ -559,7 +594,7 @@
                         case "connected":
                             currentUserId = msg.userId;
                             msg.username = normalizeUsername(msg.username);
-                            currentUser.textContent = `Conectado como ${msg.username}.`;
+                            showCurrentUser(`Conectado como ${msg.username}.`);
                             connectionStatus.textContent = connectedLabel();
                             break;
                         case "welcome":
