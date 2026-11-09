@@ -717,9 +717,13 @@ wss.on('connection', (ws, payload) => {
         if (room) {
           room.members.delete(userId);
           if (room.members.size === 0) rooms.delete(roomId);
-          else if (room.hostUserId === userId) {
-            room.hostUserId = [...room.members][0];
-            room.hostUsername = players.get(room.hostUserId)?.username || '';
+          else {
+            if (room.hostUserId === userId) {
+              room.hostUserId = [...room.members][0];
+              room.hostUsername = players.get(room.hostUserId)?.username || '';
+            }
+            // Avisar a los que quedan aunque el que se fue no fuera el anfitrión,
+            // para que su lista de pilotos y su paleta de colores se actualicen.
             broadcastRoom(roomId, { type: 'room_updated', roomId, players: roomPlayerList(room), status: room.status, hostUserId: room.hostUserId, hostUsername: room.hostUsername });
           }
         }
