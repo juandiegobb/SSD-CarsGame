@@ -122,6 +122,11 @@
             let currentRoomStatus = "waiting";
             let currentCoordinatorId = null; // Taller 6: a qué coordinador estamos conectados
             let currentTickRate = null;
+            // Taller 6: reintentos cuando no hay coordinador disponible
+            const RETRY_DELAY_MS = 2000;
+            const MAX_RETRIES = 15; // ~30 s buscando coordinador antes de rendirse
+            let retryCount = 0;
+            let retryTimer = null;
             let tokenPayload = decodeToken(token);
             let lastKnownExpiresIn = null;
             let policyChangeTimestamp = null;
@@ -277,6 +282,26 @@
                     notice.append(hintLine);
                 }
                 notice.classList.add("error");
+            }
+
+            function clearNotice() {
+                notice.replaceChildren();
+                notice.classList.remove("error");
+            }
+
+            // Vuelve a pedir coordinador al auth dentro de unos segundos
+            function scheduleCoordinatorRetry(statusText) {
+                if (intentionalClose) return;
+                if (retryCount >= MAX_RETRIES) {
+                    returnToLogin("No encontramos ningún coordinador disponible. Inténtalo de nuevo en unos minutos.");
+                    return;
+                }
+                retryCount += 1;
+                connectionStatus.textContent = `${statusText} Reintento ${retryCount} de ${MAX_RETRIES}…`;
+                clearTimeout(retryTimer);
+                retryTimer = setTimeout(() => {
+                    findCoordinatorAndConnect().catch(() => scheduleCoordinatorRetry("Error buscando coordinador."));
+                }, RETRY_DELAY_MS);
             }
 
             function renderPlayers(players) {
@@ -504,6 +529,8 @@
                     : "Conectando con el coordinador…";
 
                 ws.addEventListener("open", () => {
+                    retryCount = 0;
+                    clearNotice();
                     connectionStatus.textContent = connectedLabel();
                     updateServerInfo();
                     startSessionWatcher(ws, token);
@@ -617,6 +644,7 @@
 
             // Taller 6: login → pedir coordinador al auth → conectar al que diga.
             async function findCoordinatorAndConnect() {
+                if (intentionalClose) return;
                 connectionStatus.textContent = "Buscando un coordinador disponible…";
                 const result = await requestCoordinator();
 
@@ -633,8 +661,24 @@
                     return;
                 }
 
-                connectionStatus.textContent = "No hay coordinador disponible.";
-                showNotice("No pudimos obtener un coordinador para jugar.", "Recarga la página en unos segundos.");
+                // 503 { error: "no_coordinators_available" }: ningún coordinador vivo
+                if (result.status === 503) {
+                    const feedback = friendlyFeedback({ code: "NO_COORDINATORS_AVAILABLE" });
+                    showNotice(feedback.message, feedback.hint);
+                    scheduleCoordinatorRetry("No hay coordinadores vivos.");
+                    return;
+                }
+
+                // El auth no responde (caído o sin red)
+                if (result.networkError) {
+                    const feedback = friendlyFeedback({ code: "AUTH_UNREACHABLE" });
+                    showNotice(feedback.message, feedback.hint);
+                    scheduleCoordinatorRetry("El servicio de autenticación no responde.");
+                    return;
+                }
+
+                showNotice("No pudimos obtener un coordinador para jugar.", "Estamos reintentando automáticamente.");
+                scheduleCoordinatorRetry("Respuesta inesperada del directorio.");
             }
 
             findCoordinatorAndConnect().catch(() => {

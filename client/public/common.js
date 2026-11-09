@@ -154,6 +154,14 @@ function friendlyFeedback(payload, fallbackMessage = "No se pudo completar la ac
             message: "Esta sesión corresponde a otra cuenta.",
             hint: "Inicia sesión en la cuenta que quieres usar."
         },
+        NO_COORDINATORS_AVAILABLE: {
+            message: "No hay coordinadores de juego disponibles en este momento.",
+            hint: "Estamos reintentando automáticamente; si sigue así, avisa a quien administra el juego."
+        },
+        AUTH_UNREACHABLE: {
+            message: "No pudimos contactar al servicio que asigna el coordinador.",
+            hint: "Estamos reintentando automáticamente; revisa tu conexión a internet."
+        },
         INVALID_JSON: {
             message: "La información enviada al juego no se pudo leer.",
             hint: "Actualiza la página e inténtalo nuevamente."
