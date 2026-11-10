@@ -355,6 +355,17 @@ function roomPlayerList(room) {
   }).filter(Boolean);
 }
 
+function roomUpdateMessage(room) {
+  return {
+    type: 'room_updated',
+    roomId: room.roomId,
+    players: roomPlayerList(room),
+    status: room.status,
+    hostUserId: room.hostUserId,
+    hostUsername: room.hostUsername
+  };
+}
+
 function broadcastRoomList() {
   const payload = {
     type: 'room_list',
@@ -423,7 +434,7 @@ function acceptRemotePlayer(peerId, message) {
   broadcastPlayers();
 }
 
-function removeRemotePlayer(peerId, userId) {
+function removeRemotePlayer(peerId, userId, notify = true) {
   if (typeof userId !== 'string') return;
   const entry = players.get(userId);
   if (!entry || entry.local || entry.home !== peerId) return;
@@ -438,24 +449,30 @@ function removeRemotePlayer(peerId, userId) {
         room.hostUserId = [...room.members][0];
         room.hostUsername = players.get(room.hostUserId)?.username || '';
       }
-      broadcastRoom(room.roomId, {
-        type: 'room_updated',
-        roomId: room.roomId,
-        players: roomPlayerList(room),
-        status: room.status,
-        hostUserId: room.hostUserId,
-        hostUsername: room.hostUsername
-      });
+      if (notify) broadcastRoom(room.roomId, roomUpdateMessage(room));
     }
-    broadcastRoomList();
+    if (notify) broadcastRoomList();
   }
-  broadcastPlayers();
+  if (notify) broadcastPlayers();
+  return true;
 }
 
 function removePlayersFromPeer(peerId) {
+  const removedRoomIds = new Set();
+  let removedAny = false;
   for (const [userId, entry] of players) {
-    if (!entry.local && entry.home === peerId) removeRemotePlayer(peerId, userId);
+    if (!entry.local && entry.home === peerId) {
+      if (entry.roomId) removedRoomIds.add(entry.roomId);
+      removedAny = removeRemotePlayer(peerId, userId, false) || removedAny;
+    }
   }
+  if (!removedAny) return;
+  for (const roomId of removedRoomIds) {
+    const room = rooms.get(roomId);
+    if (room && room.members.size > 0) broadcastRoom(roomId, roomUpdateMessage(room));
+  }
+  broadcastRoomList();
+  broadcastPlayers();
 }
 
 function acceptRemoteIntent(peerId, message) {
