@@ -459,6 +459,23 @@ app.get('/peers', (req, res) => {
   return res.json({ peers });
 });
 
+// GET /coordinators - Inspección de estado sin modificar el directorio.
+app.get('/coordinators', (req, res) => {
+  const now = Date.now();
+  const directory = [...coordinators.values()]
+    .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
+    .map(({ coordinatorId, publicUrl, peerUrl, load, lastHeartbeat }) => ({
+      coordinatorId,
+      publicUrl,
+      peerUrl,
+      load,
+      lastHeartbeat,
+      live: isCoordinatorLive({ lastHeartbeat }, now)
+    }));
+
+  return sendOk(res, 200, 'Directorio de coordinadores.', { coordinators: directory });
+});
+
 // POST /register - Registro de nuevo usuario
 app.post('/register', async (req, res, next) => {
   try {
@@ -801,7 +818,7 @@ app.use((req, res) => {
     404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas disponibles: GET /health, POST /heartbeat, GET /coordinator, GET /peers, POST /register, POST /login, POST /auth/google.'
+    'Rutas disponibles: GET /health, POST /heartbeat, GET /coordinator, GET /peers, GET /coordinators, POST /register, POST /login, POST /auth/google.'
   );
 });
 

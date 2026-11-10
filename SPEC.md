@@ -778,7 +778,7 @@ Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth
 
 El directorio conserva todos los coordinadores vigentes, incluido el solicitante; solo se omite de la respuesta.
 
-**`GET /coordinators`** *(solo para depurar y para la demo)* — lista de los vivos con `connectedPlayers`, `uptime` y segundos desde el último heartbeat.
+**`GET /coordinators`** *(solo para depurar y para la demo)* — responde `{ "ok": true, "message": "Directorio de coordinadores.", "coordinators": [...] }`. Cada elemento contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load`, `lastHeartbeat` y `live` (booleano calculado con `isCoordinatorLive()` en el momento de la consulta). Puede incluir entradas expiradas que aún no haya retirado el ciclo de limpieza, marcadas con `live: false`; no son seleccionables por `GET /coordinator` ni aparecen en `GET /peers`. La consulta no modifica el directorio. La respuesta no incluye secretos ni credenciales. Si el directorio está vacío, devuelve `coordinators: []`.
 
 ### 11.4 Protocolo del mesh (WebSocket entre coordinadores)
 
