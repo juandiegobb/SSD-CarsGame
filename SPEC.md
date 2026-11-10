@@ -765,18 +765,18 @@ Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth
 
 | HTTP | Forma | Cuándo |
 |---|---|---|
-| 200 | `{ "coordinatorId": "coord-b", "publicUrl": "ws://localhost:5002" }` | El vivo con **menos** `connectedPlayers` (si empatan, el primero) |
-| 503 | `{ "error": "no_coordinators_available" }` | No hay ningún coordinador vivo |
+| 200 | `{ "coordinatorId": "coord-b", "publicUrl": "ws://localhost:5002" }` | El coordinador vigente con menor `load`; empate por `coordinatorId` lexicográficamente menor |
+| 503 | `{ "error": "no_coordinators_available" }` | No hay ningún coordinador vigente |
 
 **[Decisión]** Es *client-side load balancing*: el auth no proxea tráfico, solo le dice al cliente a dónde conectarse.
 
-**`GET /peers`** — lo llaman los coordinadores al arrancar y periódicamente.
+**`GET /peers?coordinatorId=<ID>`** — lo llaman los coordinadores para descubrir a los demás. Responde con `{ "peers": [...] }`; cada elemento contiene exclusivamente `coordinatorId`, `publicUrl` y `peerUrl`. Solo incluye coordinadores vigentes, excluye el ID solicitante, y no modifica el directorio. Si no hay peers vigentes, responde `{ "peers": [] }`. Un `coordinatorId` ausente o inválido devuelve `400 INVALID_COORDINATOR_ID`.
 
 ```json
-{ "peers": [ { "coordinatorId": "coord-a", "peerUrl": "ws://localhost:5101" }, { "coordinatorId": "coord-c", "peerUrl": "ws://localhost:5103" } ] }
+{ "peers": [ { "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:5101" }, { "coordinatorId": "coord-c", "publicUrl": "ws://localhost:5003", "peerUrl": "ws://localhost:5103" } ] }
 ```
 
-Cada coordinador **quita su propio ID** de la lista.
+El directorio conserva todos los coordinadores vigentes, incluido el solicitante; solo se omite de la respuesta.
 
 **`GET /coordinators`** *(solo para depurar y para la demo)* — lista de los vivos con `connectedPlayers`, `uptime` y segundos desde el último heartbeat.
 

@@ -403,6 +403,62 @@ app.post('/heartbeat', (req, res) => {
   return sendOk(res, 200, 'Heartbeat recibido.');
 });
 
+// GET /coordinator - Selecciona el coordinador vigente con menor carga.
+app.get('/coordinator', (req, res) => {
+  const now = Date.now();
+  let selected = null;
+
+  for (const coordinator of coordinators.values()) {
+    if (!isCoordinatorLive(coordinator, now)) continue;
+
+    if (!selected ||
+        coordinator.load < selected.load ||
+        (coordinator.load === selected.load &&
+          coordinator.coordinatorId < selected.coordinatorId)) {
+      selected = coordinator;
+    }
+  }
+
+  if (!selected) {
+    return res.status(503).json({ error: 'no_coordinators_available' });
+  }
+
+  return res.json({
+    coordinatorId: selected.coordinatorId,
+    publicUrl: selected.publicUrl
+  });
+});
+
+// GET /peers - Lista coordinadores vigentes excepto el solicitante, sin mutar el directorio.
+app.get('/peers', (req, res) => {
+  const coordinatorId = req.query.coordinatorId;
+  if (typeof coordinatorId !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId)) {
+    return sendError(
+      res,
+      400,
+      'INVALID_COORDINATOR_ID',
+      'El identificador del coordinador es inválido o no fue proporcionado.',
+      'Envía un coordinatorId válido como parámetro de consulta.'
+    );
+  }
+
+  const now = Date.now();
+  const peers = [...coordinators.values()]
+    .filter((coordinator) =>
+      coordinator.coordinatorId !== coordinatorId &&
+      isCoordinatorLive(coordinator, now)
+    )
+    .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
+    .map(({ coordinatorId: peerId, publicUrl, peerUrl }) => ({
+      coordinatorId: peerId,
+      publicUrl,
+      peerUrl
+    }));
+
+  return res.json({ peers });
+});
+
 // POST /register - Registro de nuevo usuario
 app.post('/register', async (req, res, next) => {
   try {
@@ -745,7 +801,7 @@ app.use((req, res) => {
     404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas disponibles: GET /health, POST /heartbeat, POST /register, POST /login, POST /auth/google.'
+    'Rutas disponibles: GET /health, POST /heartbeat, GET /coordinator, GET /peers, POST /register, POST /login, POST /auth/google.'
   );
 });
 
