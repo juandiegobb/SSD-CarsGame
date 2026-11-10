@@ -99,6 +99,7 @@ const HEARTBEAT_INTERVAL_MS = 2000;
 const HEARTBEAT_TIMEOUT_MS = 5000;
 const PEER_DISCOVERY_INTERVAL_MS = 2000;
 const PEER_DISCOVERY_TIMEOUT_MS = 5000;
+const PEER_HELLO_TIMEOUT_MS = 5000;
 
 // ── Taller 5: parámetros del mundo y del game loop (desde .env) ─────────────
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH) || 800;
@@ -123,6 +124,10 @@ let peerDiscoveryInFlight = false;
 let peerDiscoveryAbortController = null;
 let peerDiscoveryStopped = false;
 let peers = [];
+const peerConnections = new Map();
+const pendingPeerConnections = new Map();
+const peerHttpServer = http.createServer();
+const peerWss = new WebSocketServer({ noServer: true });
 let gameLoopTimer = null;
 function normalizeUsername(username) {
   return typeof username === 'string' ? username.trim().toLowerCase() : username;
@@ -558,6 +563,62 @@ app.use((err, req, res, next) => {
 
 // ── Servidor HTTP (http.createServer es requerido para el upgrade manual) ────
 const server = http.createServer(app);
+
+peerHttpServer.on('upgrade', (req, socket, head) => {
+  let peerPath;
+  try {
+    peerPath = new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname;
+  } catch {
+    socket.destroy();
+    return;
+  }
+  if (peerPath !== '/mesh') {
+    socket.destroy();
+    return;
+  }
+  peerWss.handleUpgrade(req, socket, head, (ws) => peerWss.emit('connection', ws));
+});
+
+peerWss.on('connection', (ws) => {
+  const helloTimer = setTimeout(() => ws.close(4000, 'hello timeout'), PEER_HELLO_TIMEOUT_MS);
+  helloTimer.unref();
+  let peerId = null;
+
+  ws.on('message', (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      ws.close(4000, 'invalid message');
+      return;
+    }
+
+    if (!peerId) {
+      if (msg.type !== 'hello' || typeof msg.coordinatorId !== 'string' ||
+          !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(msg.coordinatorId) ||
+          msg.coordinatorId === COORDINATOR_ID) {
+        ws.close(4000, 'invalid hello');
+        return;
+      }
+      peerId = msg.coordinatorId;
+      if (COORDINATOR_ID < peerId || peerConnections.has(peerId)) {
+        ws.close(4000, 'duplicate peer');
+        return;
+      }
+      clearTimeout(helloTimer);
+      peerConnections.set(peerId, ws);
+      return;
+    }
+  });
+
+  ws.on('close', () => {
+    clearTimeout(helloTimer);
+    if (peerId && peerConnections.get(peerId) === ws) peerConnections.delete(peerId);
+  });
+  ws.on('error', (err) => {
+    console.error(`[coordinator] Error en peer ${peerId || 'sin identificar'} (${err.code || 'UNKNOWN'}).`);
+  });
+});
 
 // ── Servidor WebSocket (noServer: true — el upgrade se maneja manualmente) ───
 // ── Helper para clasificar errores de verificación JWT (reutilizado en upgrade y verify) ──
