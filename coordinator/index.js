@@ -367,6 +367,80 @@ function roomExistsWithUser(room, userId) {
   return room && room.members.has(String(userId));
 }
 
+function broadcastPeer(payload) {
+  const message = JSON.stringify({ ...payload, origin: COORDINATOR_ID });
+  for (const ws of peerConnections.values()) {
+    if (isOpenSocket(ws)) ws.send(message);
+  }
+}
+
+function isValidPeerExtras(extras) {
+  return extras !== null && typeof extras === 'object' && !Array.isArray(extras) &&
+    Buffer.byteLength(JSON.stringify(extras)) <= MAX_EXTRAS_BYTES;
+}
+
+function acceptRemotePlayer(peerId, message) {
+  const userId = typeof message.userId === 'string' ? message.userId : '';
+  if (!userId || userId.length > 128 ||
+      typeof message.username !== 'string' ||
+      !Number.isFinite(message.x) || !Number.isFinite(message.y) ||
+      !isValidPeerExtras(message.extras)) return;
+
+  const existing = players.get(userId);
+  if (existing?.local) return;
+  players.set(userId, {
+    username: message.username.trim().toLowerCase(),
+    provider: message.provider === 'google' ? 'google' : 'local',
+    picture: typeof message.picture === 'string' && message.picture.startsWith('https://') ? message.picture : null,
+    socket: null,
+    connectedAt: new Date().toISOString(),
+    expirationTimer: null,
+    x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, message.x)),
+    y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, message.y)),
+    intent: { x: 0, y: 0 },
+    extras: message.extras,
+    roomId: existing?.roomId || null,
+    home: peerId,
+    local: false
+  });
+  broadcastPlayers();
+}
+
+function removeRemotePlayer(peerId, userId) {
+  if (typeof userId !== 'string') return;
+  const entry = players.get(userId);
+  if (!entry || entry.local || entry.home !== peerId) return;
+
+  players.delete(userId);
+  const room = entry.roomId ? rooms.get(entry.roomId) : null;
+  if (room) {
+    room.members.delete(userId);
+    if (room.members.size === 0) rooms.delete(room.roomId);
+    else {
+      if (room.hostUserId === userId) {
+        room.hostUserId = [...room.members][0];
+        room.hostUsername = players.get(room.hostUserId)?.username || '';
+      }
+      broadcastRoom(room.roomId, {
+        type: 'room_updated',
+        roomId: room.roomId,
+        players: roomPlayerList(room),
+        status: room.status,
+        hostUserId: room.hostUserId,
+        hostUsername: room.hostUsername
+      });
+    }
+    broadcastRoomList();
+  }
+  broadcastPlayers();
+}
+
+function removePlayersFromPeer(peerId) {
+  for (const [userId, entry] of players) {
+    if (!entry.local && entry.home === peerId) removeRemotePlayer(peerId, userId);
+  }
+}
+
 function assignAvailableRoomColor(room, userId) {
   const used = new Set(roomPlayerList(room).map((player) => player.color));
   const color = ROOM_COLORS.find((candidate) => !used.has(candidate));
@@ -624,6 +698,13 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       pendingPeerConnections.delete(peerId);
       return;
     }
+
+    if (msg.origin !== peerId) return;
+    if (msg.type === 'player_joined') {
+      acceptRemotePlayer(peerId, msg);
+    } else if (msg.type === 'player_left') {
+      removeRemotePlayer(peerId, msg.userId);
+    }
   });
 
   ws.on('close', () => {
@@ -631,7 +712,10 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
     if (expectedPeerId && pendingPeerConnections.get(expectedPeerId) === ws) {
       pendingPeerConnections.delete(expectedPeerId);
     }
-    if (peerId && peerConnections.get(peerId) === ws) peerConnections.delete(peerId);
+    if (peerId && peerConnections.get(peerId) === ws) {
+      peerConnections.delete(peerId);
+      removePlayersFromPeer(peerId);
+    }
   });
   ws.on('error', (err) => {
     console.error(`[coordinator] Error en peer ${peerId || 'sin identificar'} (${err.code || 'UNKNOWN'}).`);
@@ -818,9 +902,21 @@ wss.on('connection', (ws, payload) => {
     y: PLAYER_RADIUS + Math.random() * (WORLD_HEIGHT - 2 * PLAYER_RADIUS),
     intent: { x: 0, y: 0 },
     extras: {},
-    roomId: null
+    roomId: null,
+    home: COORDINATOR_ID,
+    local: true
   };
   players.set(userId, entry);
+  broadcastPeer({
+    type: 'player_joined',
+    userId,
+    username,
+    provider,
+    picture,
+    x: entry.x,
+    y: entry.y,
+    extras: entry.extras
+  });
 
   console.log(`Jugador conectado: ${username}`);
 
@@ -1197,6 +1293,7 @@ wss.on('connection', (ws, payload) => {
     // y el socket viejo cierra pero NO debe tocar la entrada/timer del nuevo ni hacer broadcast.
     if (players.get(userId)?.socket === ws) {
       clearTimeout(entry.expirationTimer);
+      broadcastPeer({ type: 'player_left', userId });
       const roomId = entry.roomId;
       players.delete(userId);
       if (roomId) {
