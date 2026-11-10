@@ -100,6 +100,7 @@ const HEARTBEAT_TIMEOUT_MS = 5000;
 const PEER_DISCOVERY_INTERVAL_MS = 2000;
 const PEER_DISCOVERY_TIMEOUT_MS = 5000;
 const PEER_HELLO_TIMEOUT_MS = 5000;
+const PEER_SYNC_INTERVAL_MS = 1000;
 
 // ── Taller 5: parámetros del mundo y del game loop (desde .env) ─────────────
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH) || 800;
@@ -129,6 +130,7 @@ const pendingPeerConnections = new Map();
 const peerHttpServer = http.createServer();
 const peerWss = new WebSocketServer({ noServer: true });
 let gameLoopTimer = null;
+let peerSyncTimer = null;
 function normalizeUsername(username) {
   return typeof username === 'string' ? username.trim().toLowerCase() : username;
 }
@@ -301,9 +303,30 @@ function stopPeerDiscovery() {
   if (peerDiscoveryAbortController) peerDiscoveryAbortController.abort();
 }
 
+function syncPlayerPositions() {
+  const localPlayers = [];
+  for (const [userId, player] of players) {
+    if (player.local) localPlayers.push({ userId, x: player.x, y: player.y });
+  }
+  if (localPlayers.length) broadcastPeer({ type: 'player_sync', players: localPlayers });
+}
+
+function startPeerSync() {
+  if (peerSyncTimer) return;
+  peerSyncTimer = setInterval(syncPlayerPositions, PEER_SYNC_INTERVAL_MS);
+  peerSyncTimer.unref();
+}
+
+function stopPeerSync() {
+  if (!peerSyncTimer) return;
+  clearInterval(peerSyncTimer);
+  peerSyncTimer = null;
+}
+
 function shutdownCoordinator() {
   stopHeartbeat();
   stopPeerDiscovery();
+  stopPeerSync();
   if (gameLoopTimer) {
     clearInterval(gameLoopTimer);
     gameLoopTimer = null;
@@ -497,6 +520,18 @@ function acceptRemoteExtras(peerId, message) {
       hostUserId: rooms.get(player.roomId).hostUserId,
       hostUsername: rooms.get(player.roomId).hostUsername
     });
+  }
+}
+
+function acceptRemotePositions(peerId, message) {
+  if (!Array.isArray(message.players)) return;
+  for (const update of message.players) {
+    if (!update || typeof update.userId !== 'string' ||
+        !Number.isFinite(update.x) || !Number.isFinite(update.y)) continue;
+    const player = players.get(update.userId);
+    if (!player || player.local || player.home !== peerId) continue;
+    player.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, update.x));
+    player.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, update.y));
   }
 }
 
@@ -768,6 +803,8 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       acceptRemoteIntent(peerId, msg);
     } else if (msg.type === 'extras_replicate') {
       acceptRemoteExtras(peerId, msg);
+    } else if (msg.type === 'player_sync') {
+      acceptRemotePositions(peerId, msg);
     }
   });
 
@@ -1403,10 +1440,12 @@ server.listen(PORT, () => {
   peerHttpServer.listen(PEER_PORT);
   startHeartbeat();
   startPeerDiscovery();
+  startPeerSync();
 });
 server.once('close', () => {
   stopHeartbeat();
   stopPeerDiscovery();
+  stopPeerSync();
   if (peerHttpServer.listening) peerHttpServer.close();
   if (gameLoopTimer) {
     clearInterval(gameLoopTimer);
