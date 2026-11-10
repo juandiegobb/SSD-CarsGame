@@ -182,6 +182,23 @@ async function sendHeartbeat() {
   }
 }
 
+function sendLocalPlayersToPeer(ws) {
+  for (const [userId, player] of players) {
+    if (!player.local || !isOpenSocket(ws)) continue;
+    ws.send(JSON.stringify({
+      type: 'player_joined',
+      origin: COORDINATOR_ID,
+      userId,
+      username: player.username,
+      provider: player.provider,
+      picture: player.picture,
+      x: player.x,
+      y: player.y,
+      extras: player.extras
+    }));
+  }
+}
+
 function startHeartbeat() {
   if (heartbeatTimer || !COORDINATOR_SHARED_SECRET) return;
 
@@ -696,6 +713,7 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       clearTimeout(helloTimer);
       peerConnections.set(peerId, ws);
       pendingPeerConnections.delete(peerId);
+      sendLocalPlayersToPeer(ws);
       return;
     }
 
