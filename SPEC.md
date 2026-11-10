@@ -750,7 +750,7 @@ El objetivo 6 solo prepara configuración y arranque: `PEER_PORT` no escucha con
 | `COORDINATOR_SHARED_SECRET` | placeholder local reemplazado por un secreto común | Secreto compartido con Auth; no se imprime en logs |
 | `JWT_SECRET` | igual que en Auth | Firma de los JWT de usuario |
 
-`PORT` y `PEER_PORT` son independientes y deben ser distintos. Los valores predeterminados conservan una instancia compatible: `PORT=5000`, `COORDINATOR_ID=coord-5000`, `PEER_PORT=6000`, URLs locales y `AUTH_URL=http://localhost:4000`. `JWT_SECRET` sigue siendo obligatoria; el secreto compartido es opcional durante esta fase para no romper instalaciones anteriores y se validará cuando se use en heartbeats.
+`PORT` y `PEER_PORT` son independientes y deben ser distintos. Los valores predeterminados conservan una instancia compatible: `PORT=5000`, `COORDINATOR_ID=coord-5000`, `PEER_PORT=6000`, URLs locales y `AUTH_URL=http://localhost:4000`. `JWT_SECRET` y `COORDINATOR_SHARED_SECRET` son obligatorias; el segundo debe coincidir con la configuración de Auth para que el heartbeat autenticado funcione.
 
 Para una sola instancia, configura `coordinator/.env` y ejecuta `npm start --prefix coordinator` desde la raíz. Para levantar tres instancias locales con IDs `coord-1` a `coord-3`, puertos HTTP `5001`–`5003` y puertos peer reservados `6001`–`6003`, ejecuta:
 

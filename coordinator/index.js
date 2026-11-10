@@ -11,7 +11,7 @@ const dotenv = require('dotenv');
 const http = require('node:http');
 const { URL } = require('node:url');
 const express = require('express');
-const { WebSocketServer } = require('ws');
+const { WebSocket, WebSocketServer } = require('ws');
 const jwt = require('jsonwebtoken');
 
 // ── Verificación de configuración crítica ────────────────────────────────────
@@ -79,8 +79,8 @@ const AUTH_URL = parseServiceUrl(
   ['http:', 'https:']
 );
 const COORDINATOR_SHARED_SECRET = process.env.COORDINATOR_SHARED_SECRET;
-if (COORDINATOR_SHARED_SECRET !== undefined && !COORDINATOR_SHARED_SECRET.trim()) {
-  console.error('Error de configuración: COORDINATOR_SHARED_SECRET no puede estar vacío.');
+if (!COORDINATOR_SHARED_SECRET || !COORDINATOR_SHARED_SECRET.trim()) {
+  console.error('Error de configuración: COORDINATOR_SHARED_SECRET es obligatorio para enviar heartbeats autenticados a Auth.');
   process.exit(1);
 }
 
@@ -95,6 +95,8 @@ const APP_WS_PROTOCOL = 'carsgame.v1';
 const WS_TICKET_PROTOCOL_PREFIX = 'auth.';
 const WS_TICKET_TTL_MS = 15_000;
 const MAX_PENDING_WS_TICKETS = 1000;
+const HEARTBEAT_INTERVAL_MS = 2000;
+const HEARTBEAT_TIMEOUT_MS = 5000;
 
 // ── Taller 5: parámetros del mundo y del game loop (desde .env) ─────────────
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH) || 800;
@@ -111,11 +113,92 @@ const ROOM_COLORS = ['#2f6fed', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#ec
 //                          x, y, intent: { x, y }, extras }
 const players = new Map();
 const wsTickets = new Map();
+let heartbeatTimer = null;
+let heartbeatInFlight = false;
+let heartbeatAbortController = null;
+let gameLoopTimer = null;
 function normalizeUsername(username) {
   return typeof username === 'string' ? username.trim().toLowerCase() : username;
 }
 const rooms = new Map();
 let nextRoomId = 1;
+
+function countOpenLocalPlayers() {
+  let count = 0;
+  for (const player of players.values()) {
+    if (player.socket?.readyState === WebSocket.OPEN) count += 1;
+  }
+  return count;
+}
+
+async function sendHeartbeat() {
+  if (heartbeatInFlight || !COORDINATOR_SHARED_SECRET) return;
+
+  heartbeatInFlight = true;
+  const controller = new AbortController();
+  heartbeatAbortController = controller;
+  const timeout = setTimeout(() => controller.abort(), HEARTBEAT_TIMEOUT_MS);
+  timeout.unref();
+
+  try {
+    const response = await fetch(`${AUTH_URL}/heartbeat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-coordinator-secret': COORDINATOR_SHARED_SECRET
+      },
+      body: JSON.stringify({
+        coordinatorId: COORDINATOR_ID,
+        publicUrl: PUBLIC_URL,
+        peerUrl: PEER_URL,
+        load: countOpenLocalPlayers()
+      }),
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      console.error(`[coordinator] Auth rechazó el heartbeat (HTTP ${response.status}).`);
+    }
+  } catch {
+    if (!controller.signal.aborted || heartbeatTimer) {
+      console.error('[coordinator] No se pudo enviar el heartbeat a Auth.');
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (heartbeatAbortController === controller) heartbeatAbortController = null;
+    heartbeatInFlight = false;
+  }
+}
+
+function startHeartbeat() {
+  if (heartbeatTimer || !COORDINATOR_SHARED_SECRET) return;
+
+  void sendHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    void sendHeartbeat();
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref();
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+  if (heartbeatAbortController) heartbeatAbortController.abort();
+}
+
+function shutdownCoordinator() {
+  stopHeartbeat();
+  if (gameLoopTimer) {
+    clearInterval(gameLoopTimer);
+    gameLoopTimer = null;
+  }
+  for (const client of wss.clients) {
+    client.close(1001, 'server shutdown');
+  }
+  server.close();
+}
 
 // ── Helpers de respuesta HTTP (mismo formato que Auth, SPEC.md §3.1) ────────
 function sendOk(res, status, message, extra = {}) {
@@ -265,7 +348,7 @@ function tick() {
   }
 }
 
-setInterval(tick, TICK_MS);
+gameLoopTimer = setInterval(tick, TICK_MS);
 
 // ── Express — endpoints HTTP ─────────────────────────────────────────────────
 const app = express();
@@ -927,7 +1010,17 @@ wss.on('connection', (ws, payload) => {
 server.listen(PORT, () => {
   console.log(`Coordinador ${COORDINATOR_ID} escuchando en http://localhost:${PORT} (PORT HTTP/WebSocket; PEER_PORT reservado: ${PEER_PORT}).`);
   console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
+  startHeartbeat();
 });
+server.once('close', () => {
+  stopHeartbeat();
+  if (gameLoopTimer) {
+    clearInterval(gameLoopTimer);
+    gameLoopTimer = null;
+  }
+});
+process.once('SIGINT', shutdownCoordinator);
+process.once('SIGTERM', shutdownCoordinator);
 
 module.exports = {
   app,
@@ -935,6 +1028,9 @@ module.exports = {
   wss,
   players,
   rooms,
+  countOpenLocalPlayers,
+  sendHeartbeat,
+  stopHeartbeat,
   config: {
     COORDINATOR_ID,
     PORT,

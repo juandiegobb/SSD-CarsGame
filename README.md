@@ -190,7 +190,7 @@ Copia los archivos de ejemplo en cada servicio:
    COORDINATOR_SHARED_SECRET=reemplaza_con_el_mismo_secreto_local_de_auth
    # Taller 5 (opcionales): WORLD_WIDTH=800 WORLD_HEIGHT=600 PLAYER_RADIUS=20 PLAYER_SPEED=200 TICK_RATE=20
    ```
-   `COORDINATOR_SHARED_SECRET` debe coincidir con el valor local de `auth-service/.env`; no reutilices `JWT_SECRET` para ese propósito.
+   `COORDINATOR_SHARED_SECRET` es obligatorio y debe coincidir con el valor local de `auth-service/.env`; no reutilices `JWT_SECRET` para ese propósito.
    `PORT` es el puerto HTTP/WebSocket activo; `PEER_PORT` es independiente y queda reservado para una fase futura. Para iniciar una instancia:
    ```powershell
    npm start --prefix coordinator
