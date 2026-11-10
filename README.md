@@ -115,7 +115,7 @@ SSD-CarsGame/
 │   └── ngrok.md               # Guía completa de despliegue con ngrok
 ├── worker/                    # Componente reservado para futuras fases (física/movimiento)
 │                              # (No se utiliza en este Taller 4 - Parte I)
-├── ngrok.example.yml          # Plantilla para ejecutar 3 túneles ngrok simultáneos
+├── ngrok.example.yml          # Plantilla v3 para los 5 endpoints locales
 ├── .env.example               # Referencia global de variables
 ├── .gitignore                 # Reglas de exclusión (ignora .env, *.db, node_modules)
 ├── SPEC.md                    # Especificación formal y contratos del taller
@@ -473,37 +473,30 @@ Esta sección sustenta los requerimientos clave exigidos en el taller:
 
 ## 9. Despliegue Público con ngrok
 
-El sistema soporta despliegue mediante **tres túneles independientes** (uno por servicio):
+El objetivo 11 prepara **cinco endpoints independientes**: Auth (`4000`),
+Client (`3000`) y tres coordinadores (`5001`–`5003`). La guía completa,
+incluidas configuración v3, dominios, variables, arranque y diagnóstico está
+en [`docs/ngrok.md`](docs/ngrok.md). La plantilla [`ngrok.example.yml`](ngrok.example.yml)
+define los cinco upstreams; crea `ngrok.local.yml` y asigna a cada endpoint
+una URL real y distinta de tu cuenta antes de ejecutar:
 
-```text
-ngrok http 4000  --> https://<auth>.ngrok-free.app
-ngrok http 5000  --> https://<coord>.ngrok-free.app  (y wss:// para WebSocket)
-ngrok http 3000  --> https://<cliente>.ngrok-free.app
-```
-
-### 9.1. Inicio Simultáneo con Plantilla
-Usa la plantilla versionable [`ngrok.example.yml`](ngrok.example.yml):
 ```powershell
-ngrok start --all --config ngrok.example.yml
+ngrok config add-authtoken <TU_AUTHTOKEN>
+ngrok config check --config .\ngrok.local.yml
+ngrok start --all --config .\ngrok.local.yml
 ```
 
-### 9.2. Ajuste de Variables `.env` para ngrok
-* **`client/.env`**:
-  ```dotenv
-  PORT=3000
-  AUTH_URL=https://<url-auth>.ngrok-free.app
-  COORDINATOR_WS_URL=wss://<url-coordinador>.ngrok-free.app
-  ```
-  > ⚡ **CRÍTICO:** `COORDINATOR_WS_URL` debe usar **`wss://`** (WebSocket Seguro). Si se usa `ws://` sobre una página cargada en HTTPS, los navegadores bloquean la conexión por **Contenido Mixto (Mixed Content)**.
+Free y Hobbyist permiten hasta tres endpoints online en la tabla de precios
+actual de ngrok; publicar los cinco a la vez requiere un plan/cuenta que permita
+cinco endpoints y dominios distintos. Revisa las condiciones y cargos por uso
+vigentes en [ngrok.com/pricing](https://ngrok.com/pricing).
 
-* **`auth-service/.env`**:
-  ```dotenv
-  CORS_ORIGINS=http://localhost:3000,https://<url-cliente>.ngrok-free.app
-  ```
-
-> 🔑 **Login con Google por ngrok:** agrega la URL `https://<url-cliente>.ngrok-free.app` en **Orígenes de JavaScript autorizados** del Client ID en Google Cloud; si no, Google rechaza el botón con un error de *origin*.
-
-> 📌 **Nota sobre el Plan Gratuito:** Las URLs de ngrok cambian al reiniciar el proceso. Si se reinician los túneles, actualiza los `.env` y reinicia los servicios locales.
+En los `.env` locales configura la URL HTTPS pública de Auth en `client/.env` y
+`coordinator/.env`, el origen público de Client en `auth-service/.env` y
+`coordinator/.env`, y pasa las tres URLs `wss://` de coordinador a
+`start-three.ps1 -PublicUrls`. No publiques el authtoken, secretos ni valores
+reales de `.env`. `PEER_PORT` permanece reservado, sin listener ni túnel; no
+hay comunicación P2P ni replicación entre coordinadores.
 
 ---
 

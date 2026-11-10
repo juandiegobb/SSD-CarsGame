@@ -9,12 +9,12 @@ Este documento es la fuente de verdad del proyecto. Todo lo que aquí se define 
 
 ## 1. Alcance
 
-Tres componentes, tres procesos, tres puertos, tres túneles ngrok:
+Tres componentes. El despliegue base usa tres procesos locales; el objetivo 11 permite publicar Auth, Client y tres procesos Coordinator mediante cinco túneles ngrok.
 
 | Componente | Tecnología | Puerto | Responsabilidad |
 |---|---|---|---|
 | `auth-service/` | Express + node:sqlite + bcryptjs + jsonwebtoken + dotenv + cors + google-auth-library (Taller 5; en el Taller 4 era better-sqlite3 + bcrypt) | 4000 | Registrar usuarios, validar credenciales, emitir JWT (1 h). SQLite propia. |
-| `coordinator/` | Express + ws + jsonwebtoken + dotenv | 5000 | Emitir tickets WS de un solo uso, validar el ticket durante `/connect`, mantener `Map` de jugadores y hacer broadcast. |
+| `coordinator/` | Express + ws + jsonwebtoken + dotenv | 5000 por defecto; 5001–5003 para tres instancias | Emitir tickets WS de un solo uso, validar el ticket durante `/connect`, mantener `Map` de jugadores y hacer broadcast. |
 | `client/` | HTML + JS plano (servido por Express minúsculo) | 3000 | Login/registro, lobby con lista en vivo, logout, manejo de cierre inesperado. |
 
 ### Fuera de alcance (no hacer)
@@ -362,24 +362,27 @@ Cada fase termina con **criterios de aceptación verificables** y **al menos un 
 
 ### Fase 4 — Despliegue con ngrok
 **Tareas**
-1. Levantar los tres servicios locales (4000, 5000, 3000).
-2. Abrir **un túnel por servicio**:
-   ```bash
-   ngrok http 4000   # Terminal 1 → URL pública del auth
-   ngrok http 5000   # Terminal 2 → URL pública del coordinador
-   ngrok http 3000   # Terminal 3 → URL pública del cliente
+1. Preparar la configuración local de Auth, Client y los tres coordinadores; iniciar Auth (`4000`) y Client (`3000`).
+2. Abrir cinco endpoints HTTP(S) distintos con ngrok: uno para Auth, uno para Client y uno por coordinador. Los endpoints del coordinador también transportan el upgrade WebSocket por el mismo puerto:
+   ```powershell
+   ngrok config check --config ngrok.local.yml
+   ngrok start --all --config ngrok.local.yml
    ```
-   > Si tu cuenta gratuita no permite varias sesiones simultáneas, define los tres túneles en un `ngrok.yml` y ejecuta `ngrok start --all` (siguen siendo tres túneles separados). Documentar el comando usado en el README.
-3. Actualizar los `.env`:
-   - `client/.env`: `AUTH_URL=https://<auth>.ngrok-free.app` y `COORDINATOR_WS_URL=wss://<coord>.ngrok-free.app` (**`wss://`**, no `ws://`: contenido mixto, error típico #7).
-   - `auth-service/.env`: `CORS_ORIGINS=https://<cliente>.ngrok-free.app`.
-   - `coordinator/.env`: `CLIENT_ORIGINS=https://<cliente>.ngrok-free.app` (además del origen local, separado por coma si se conservan ambos).
+   La plantilla `ngrok.example.yml` define los cinco upstreams; `ngrok.local.yml` debe contener cinco URLs/dominios distintos asignados por la cuenta. Free y Hobbyist permiten hasta tres endpoints online en la tabla de precios vigente; revisa el plan y costo necesario para mantener cinco simultáneamente.
+3. Actualizar los `.env` y arrancar los tres coordinadores (`5001`–`5003`):
+   - `client/.env`: `AUTH_URL=https://<auth-publico>`; `COORDINATOR_WS_URL=wss://<coordinador-1>` es solo fallback heredado si Auth no tiene `GET /coordinator`.
+   - `auth-service/.env`: agrega el origen `https://<client-publico>` a `CORS_ORIGINS`.
+   - `coordinator/.env`: `AUTH_URL=https://<auth-publico>` y agrega `https://<client-publico>` a `CLIENT_ORIGINS`.
+   - Inicia las instancias con `.\coordinator\start-three.ps1 -PublicUrls @('wss://<coordinador-1>','wss://<coordinador-2>','wss://<coordinador-3>')`; el script asigna estos valores como `PUBLIC_URL`.
 4. Reiniciar los servicios para que lean el `.env`.
-5. Considerar el aviso intersticial de ngrok gratuito: el `fetch` del cliente envía `ngrok-skip-browser-warning: true`, por lo que `cors()` del auth debe incluirlo en `allowedHeaders` (si no, el preflight falla).
-6. Probar el flujo completo desde otro dispositivo/red usando solo la URL pública del cliente.
+5. El authtoken se configura en la cuenta local de ngrok (`ngrok config add-authtoken`) y nunca se guarda en el repositorio. No configurar ni tunelizar `PEER_PORT`; todavía no hay listener peer.
+6. Considerar el aviso intersticial: el Client envía `ngrok-skip-browser-warning`; revisar CORS con los orígenes HTTPS exactos.
+7. Probar el flujo completo desde otro dispositivo/red usando la URL pública del Client.
 
 **Aceptación:** registro, login y lobby funcionan desde la URL pública del cliente; la consola del navegador no muestra errores de CORS ni de contenido mixto.
 **Commit sugerido:** `docs: comandos y configuración de ngrok`.
+
+El objetivo 11 documenta y configura los cinco túneles. No implementa listener, conexiones ni replicación entre coordinadores; esas funciones corresponden al Turno 3.
 
 ### Fase 5 — README
 Debe incluir (checklist del PDF):

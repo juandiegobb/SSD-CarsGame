@@ -1,12 +1,37 @@
 param(
   [int[]]$HttpPorts = @(5001, 5002, 5003),
-  [int[]]$PeerPorts = @(6001, 6002, 6003)
+  [int[]]$PeerPorts = @(6001, 6002, 6003),
+  [string[]]$PublicUrls = @()
 )
 
 $ErrorActionPreference = 'Stop'
 
 if ($HttpPorts.Count -ne 3 -or $PeerPorts.Count -ne 3) {
   throw 'Debes proporcionar exactamente tres puertos HTTP y tres puertos peer.'
+}
+if ($PublicUrls.Count -gt 0 -and $PublicUrls.Count -ne 3) {
+  throw 'Debes proporcionar exactamente tres PUBLIC_URL o no proporcionar ninguno.'
+}
+
+$normalizedPublicUrls = @()
+if ($PublicUrls.Count -eq 3) {
+  foreach ($publicUrl in $PublicUrls) {
+    try {
+      $publicUri = [Uri]$publicUrl
+      if ($publicUri.Scheme -notin @('ws', 'wss') -or
+          [string]::IsNullOrWhiteSpace($publicUri.Host) -or
+          $publicUri.UserInfo -or $publicUri.Query -or $publicUri.Fragment -or
+          $publicUri.AbsolutePath -notin @('', '/')) {
+        throw 'PUBLIC_URL debe usar ws:// o wss:// sin credenciales, ruta, query ni fragmento.'
+      }
+      $normalizedPublicUrls += $publicUri.GetLeftPart([System.UriPartial]::Authority)
+    } catch {
+      throw 'Cada PUBLIC_URL debe ser una URL WebSocket válida (ws:// o wss://).'
+    }
+  }
+  if (($normalizedPublicUrls | Select-Object -Unique).Count -ne 3) {
+    throw 'Cada coordinador debe tener una PUBLIC_URL distinta.'
+  }
 }
 
 $allPorts = @($HttpPorts) + @($PeerPorts)
@@ -108,7 +133,11 @@ try {
     $httpPort = $HttpPorts[$index]
     $peerPort = $PeerPorts[$index]
     $coordinatorId = "coord-$instanceNumber"
-    $publicUrl = "ws://localhost:$httpPort"
+    $publicUrl = if ($normalizedPublicUrls.Count -eq 3) {
+      $normalizedPublicUrls[$index]
+    } else {
+      "ws://localhost:$httpPort"
+    }
     $peerUrl = "ws://localhost:$peerPort"
     $normalizedAuthUrl = $authUri.GetLeftPart([System.UriPartial]::Authority) + $authUri.PathAndQuery.TrimEnd('/')
 

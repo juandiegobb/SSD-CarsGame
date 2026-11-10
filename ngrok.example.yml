@@ -1,0 +1,19 @@
+version: 3
+agent: {}
+
+endpoints:
+  - name: auth
+    upstream:
+      url: 4000
+  - name: client
+    upstream:
+      url: 3000
+  - name: coordinator-1
+    upstream:
+      url: 5001
+  - name: coordinator-2
+    upstream:
+      url: 5002
+  - name: coordinator-3
+    upstream:
+      url: 5003

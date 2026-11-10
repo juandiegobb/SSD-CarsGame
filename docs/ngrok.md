@@ -1,160 +1,257 @@
-# Despliegue local con ngrok
+# Exponer cinco servicios con ngrok
 
-Esta guía publica los tres servicios locales con tres endpoints ngrok distintos. No
-incluyas el authtoken, secretos ni URLs públicas reales en archivos del repositorio.
+Esta guía publica Auth, Client y tres procesos Coordinator mediante cinco
+endpoints HTTP(S) independientes. ngrok termina HTTPS y también transporta
+WebSocket sobre el mismo endpoint del coordinador; no se crea un segundo
+túnel para WebSocket.
 
-## Prerrequisitos
+## Requisitos
 
-- Instala ngrok para Windows desde Microsoft Store o
-  [la página oficial de descargas](https://ngrok.com/download/windows).
-- Inicia sesión en ngrok y configura el authtoken en tu equipo, sin compartirlo:
+- Node.js y dependencias instaladas para `auth-service`, `client` y
+  `coordinator`.
+- ngrok Agent v3 instalado desde la
+  [página oficial para Windows](https://ngrok.com/download/windows).
+- Una cuenta ngrok con capacidad para mantener **cinco endpoints online a la
+  vez** y cinco URLs/dominios distintos utilizables.
 
-  ```powershell
-  ngrok config add-authtoken <TU_AUTHTOKEN>
-  ngrok version
-  ngrok config check
-  ```
+Según la [tabla oficial de precios](https://ngrok.com/pricing), Free y Hobbyist
+permiten hasta tres endpoints online; no bastan para este objetivo. El plan
+Pay-as-you-go indica endpoints online ilimitados, pero el uso de endpoints
+activos puede generar cargos por hora. La cuenta también debe permitir asignar
+cinco dominios distintos. Revisa precios y límites actuales antes de iniciar;
+ngrok puede cambiarlos.
 
-- Instala las dependencias de cada servicio (`npm install` desde sus carpetas).
-- En `auth-service/.env` y `coordinator/.env`, configura la misma `JWT_SECRET`.
-- Arranca un servicio por terminal, desde la raíz del repositorio:
+## 1. Instalar y autenticar ngrok
 
-  ```powershell
-  npm start --prefix auth-service
-  npm start --prefix coordinator
-  npm start --prefix client
-  ```
-
-- Comprueba la disponibilidad local antes de abrir túneles:
-
-  ```powershell
-  Invoke-WebRequest http://localhost:4000/health
-  Invoke-WebRequest http://localhost:5000/health
-  Invoke-WebRequest http://localhost:3000/
-  ```
-
-  La ruta `/` del cliente redirige a `/login.html`.
-
-## Abrir los túneles
-
-La sintaxis verificada con ngrok Agent `3.39.9-msix-stable` es `ngrok http
-[address:port] [--url URL]`; se puede consultar con `ngrok http --help`.
-Ejecuta cada comando en una terminal separada y asígnale un dominio distinto
-disponible en tu cuenta:
+Verifica la CLI:
 
 ```powershell
-ngrok http 4000 --url https://<dominio-auth-asignado>
-ngrok http 5000 --url https://<dominio-coordinador-asignado>
-ngrok http 3000 --url https://<dominio-cliente-asignado>
+ngrok version
+ngrok config check
 ```
 
-Asocia cada URL HTTPS publicada al servicio correspondiente:
+Configura el authtoken desde tu propio terminal. Pégalo solo en el prompt o
+comando local y **no** lo guardes en este repositorio, archivos `.env`,
+configuración versionada, capturas ni logs:
 
-| Servicio | Puerto local | URL pública que se debe configurar |
+```powershell
+ngrok config add-authtoken <TU_AUTHTOKEN>
+```
+
+ngrok conserva las credenciales en su configuración de usuario, fuera del
+repositorio. El proyecto no necesita conocer ni leer el authtoken.
+
+## 2. Preparar cinco túneles
+
+La plantilla versionada [`../ngrok.example.yml`](../ngrok.example.yml) usa
+formato de configuración v3 y define los upstreams:
+
+| Endpoint | Puerto local | Uso |
 |---|---:|---|
-| Auth | 4000 | `https://<dominio-auth-asignado>` |
-| Coordinador | 5000 | `https://<dominio-coordinador-asignado>` |
-| Cliente | 3000 | `https://<dominio-cliente-asignado>` |
+| `auth` | 4000 | API de autenticación y directorio |
+| `client` | 3000 | Sitio web |
+| `coordinator-1` | 5001 | HTTP, tickets y WebSocket del coordinador 1 |
+| `coordinator-2` | 5002 | HTTP, tickets y WebSocket del coordinador 2 |
+| `coordinator-3` | 5003 | HTTP, tickets y WebSocket del coordinador 3 |
 
-Las tres URLs deben ser **distintas**. Si la cuenta o el plan no permite
-asignar tres dominios distintos, revisa en el dashboard de ngrok los dominios
-disponibles. Según la [página oficial de planes de ngrok](https://ngrok.com/pricing),
-el plan Free incluye tres endpoints online y un dominio de desarrollo; por eso
-el límite observado puede ser de dominios, no de sesiones simultáneas. Considera
-un plan con varios dominios ngrok o dominios propios que puedas asignar a los
-endpoints. No reutilices una URL para varios puertos: los clientes no tendrían
-tres destinos inequívocos.
+Copia la plantilla a un archivo local ignorado por Git:
 
-## Variables de entorno para URLs públicas
+```powershell
+Copy-Item .\ngrok.example.yml .\ngrok.local.yml
+```
 
-Después de confirmar las tres URLs asignadas, actualiza los `.env` locales.
-No agregues barra al final de las URLs:
+En cada endpoint de `ngrok.local.yml`, añade un campo `url` con **el dominio
+distinto que hayas asignado a ese servicio en tu cuenta**. Usa las URLs HTTPS
+que realmente muestra ngrok o tu dashboard; no copies URLs de ejemplo ni
+reutilices el mismo dominio. El archivo queda excluido de Git.
+Asigna o reserva los dominios en el dashboard de ngrok antes de iniciar el
+grupo; al arrancar, la CLI también muestra la URL pública de cada endpoint en
+sus líneas `Forwarding`.
+
+```yaml
+endpoints:
+  - name: auth
+    url: https://<DOMINIO-REAL-DE-AUTH>
+    upstream:
+      url: 4000
+  - name: client
+    url: https://<DOMINIO-REAL-DEL-CLIENT>
+    upstream:
+      url: 3000
+  - name: coordinator-1
+    url: https://<DOMINIO-REAL-DEL-COORDINADOR-1>
+    upstream:
+      url: 5001
+  - name: coordinator-2
+    url: https://<DOMINIO-REAL-DEL-COORDINADOR-2>
+    upstream:
+      url: 5002
+  - name: coordinator-3
+    url: https://<DOMINIO-REAL-DEL-COORDINADOR-3>
+    upstream:
+      url: 5003
+```
+
+El fragmento ilustra dónde colocar las URLs, no es una configuración ejecutable
+hasta reemplazar cada marcador por una URL asignada. Si tu cuenta no permite
+cinco endpoints o cinco dominios distintos, no hay una configuración local
+que evite ese límite: usa un plan que lo permita o reduce la demostración a los
+servicios que admite la cuenta.
+
+Valida el archivo local y luego inicia los cinco endpoints:
+
+```powershell
+ngrok config check --config .\ngrok.local.yml
+ngrok start --all --config .\ngrok.local.yml
+```
+
+La configuración v3 usa `endpoints` y `upstream.url`; el endpoint HTTP del
+coordinador también soporta el upgrade WebSocket de `/connect`. No configures
+ni abras `PEER_PORT`.
+
+## 3. Variables de entorno
+
+Usa las URLs de tu cuenta únicamente en los `.env` locales. No cambies los
+valores de los `.env.example` por dominios reales.
+
+### Auth
+
+En `auth-service/.env`, configura el origen exacto del Client público y
+mantén el secreto compartido que ya usa el servicio:
 
 ```dotenv
-# client/.env
+CORS_ORIGINS=http://localhost:3000,https://<DOMINIO-REAL-DEL-CLIENT>
+```
+
+`COORDINATOR_SHARED_SECRET` debe coincidir con el valor usado por los
+coordinadores. No se imprime ni se envía al Client.
+
+### Client
+
+En `client/.env`:
+
+```dotenv
 PORT=3000
-AUTH_URL=https://<dominio-auth-asignado>
-COORDINATOR_WS_URL=wss://<dominio-coordinador-asignado>
+AUTH_URL=https://<DOMINIO-REAL-DE-AUTH>
+COORDINATOR_WS_URL=wss://<DOMINIO-REAL-DEL-COORDINADOR-1>
 ```
+
+El navegador usa `AUTH_URL` para registro, login y selección de coordinador.
+Cuando Auth devuelve un coordinador, el Client conecta a su `PUBLIC_URL`;
+`COORDINATOR_WS_URL` es el fallback del coordinador único para una versión
+antigua de Auth. La página pública es HTTPS, por lo que la URL WebSocket debe
+ser `wss://`, no `ws://`.
+
+### Coordinadores
+
+En `coordinator/.env`, configura la URL pública del Auth y los orígenes web
+permitidos:
 
 ```dotenv
-# auth-service/.env
-CORS_ORIGINS=http://localhost:3000,https://<dominio-cliente-asignado>
+AUTH_URL=https://<DOMINIO-REAL-DE-AUTH>
+CLIENT_ORIGINS=http://localhost:3000,https://<DOMINIO-REAL-DEL-CLIENT>
 ```
 
-`coordinator/.env` normalmente no requiere cambios: conserva `PORT` y la misma
-`JWT_SECRET` que Auth. Reinicia Auth, Coordinador y Cliente para cargar sus
-respectivos `.env`. En el navegador, recarga el cliente y comprueba
-`/config.js`; el cliente debe mostrar `AUTH_URL` con `https://` y
-`COORDINATOR_WS_URL` con `wss://`.
-
-## Pruebas públicas
-
-Usa las URLs reales solo en la terminal, Thunder Client y el navegador; no las
-pegues en archivos versionados:
+Con `start-three.ps1`, pasa la URL WebSocket de cada endpoint público mediante
+`-PublicUrls`; el script asigna una a cada instancia como `PUBLIC_URL`:
 
 ```powershell
-Invoke-RestMethod https://<dominio-auth-asignado>/health
-Invoke-RestMethod https://<dominio-coordinador-asignado>/health
-Invoke-WebRequest https://<dominio-cliente-asignado>/
+$publicCoordinatorUrls = @(
+  "wss://<DOMINIO-REAL-DEL-COORDINADOR-1>",
+  "wss://<DOMINIO-REAL-DEL-COORDINADOR-2>",
+  "wss://<DOMINIO-REAL-DEL-COORDINADOR-3>"
+)
+.\coordinator\start-three.ps1 -PublicUrls $publicCoordinatorUrls
 ```
 
-En `coordinator/.env`, configura `CLIENT_ORIGINS=https://<dominio-cliente-asignado>`
-(separado por coma si también conservas `http://localhost:3000`) y reinicia el
-coordinador. Desde la URL pública del cliente, registra un usuario, inicia sesión y confirma
-que el lobby conecta por `wss://`. Repite la prueba con un segundo navegador o
-dispositivo y confirma que las listas se actualizan en ambos sin recargar.
-Thunder Client debe probar `POST /register` y `POST /login` contra la URL
-pública de Auth. Para probar el endpoint WebSocket público, solicita un ticket
-efímero por HTTPS y conéctate usando subprotocolos:
+Si omites `-PublicUrls`, el script mantiene su comportamiento local anterior:
+anuncia `ws://localhost:5001`, `:5002` y `:5003`, URLs que no sirven para
+clientes remotos.
+
+`PEER_PORT` solo reserva un número local y `PEER_URL` es un dato anunciado que
+el directorio devuelve; no existe un listener en ese puerto. No configures
+túneles ni URLs públicas para `PEER_PORT`/`PEER_URL` ni los trates como un
+endpoint operativo. Comunicación P2P, handshake y replicación pertenecen al
+Turno 3 y no están implementados.
+
+Reinicia los servicios después de modificar sus `.env`. El script de tres
+coordinadores lee `AUTH_URL` y `COORDINATOR_SHARED_SECRET` desde su entorno o
+`coordinator/.env`, y exige un `PUBLIC_URL` distinto para cada proceso al
+usar ngrok.
+
+## 4. Iniciar servicios locales
+
+Abre terminales en la raíz y ejecuta:
 
 ```powershell
-$login = Invoke-RestMethod -Method Post https://<dominio-auth-asignado>/login -ContentType "application/json" -Body '{"username":"alice","password":"<CONTRASEÑA>"}'
-$ticket = (Invoke-RestMethod -Method Post https://<dominio-coordinador-asignado>/ws-ticket -Headers @{ Authorization = "Bearer $($login.token)"; "ngrok-skip-browser-warning" = "true" }).ticket
-wscat -c "wss://<dominio-coordinador-asignado>/connect" -s carsgame.v1 -s "auth.$ticket"
+npm start --prefix auth-service
+npm start --prefix client
 ```
 
-El JWT viaja solo en el header HTTPS `Authorization`; no lo pongas en una URL
-ni en mensajes WebSocket. El ticket es una credencial temporal: dura hasta 15
-segundos y se consume una vez. Configura proxies y herramientas de inspección
-para no registrar el header `Authorization` ni `Sec-WebSocket-Protocol`. No
-guardes ni publiques el JWT ni el ticket.
+Inicia los túneles con `ngrok start --all` desde otra terminal. Después, en
+una terminal adicional, inicia los tres coordinadores con las tres URLs
+`wss://` mostradas/asignadas por ngrok:
 
-## Diagnóstico
+```powershell
+.\coordinator\start-three.ps1 -PublicUrls $publicCoordinatorUrls
+```
 
-- **CORS o preflight fallido:** agrega el origen HTTPS exacto del cliente a
-  `CORS_ORIGINS` en `auth-service/.env` y `CLIENT_ORIGINS` en
-  `coordinator/.env`, y reinicia ambos servicios. Auth debe permitir
-  `Content-Type` y `ngrok-skip-browser-warning`; el coordinador debe permitir
-  `Authorization` y `ngrok-skip-browser-warning` en `POST /ws-ticket`.
-- **Mixed content o WebSocket bloqueado:** con una página HTTPS usa `https://`
-  para Auth y `wss://` para el Coordinador; no uses `http://` ni `ws://`.
-- **Intersticial de ngrok:** el cliente añade
-  `ngrok-skip-browser-warning: true` a sus peticiones HTTP.
-- **Cierre 4001 al conectar:** solicita un ticket nuevo; comprueba que Auth y
-  Coordinador tengan la misma `JWT_SECRET` y que el JWT no esté vencido.
-- **Credencial visible en un proxy:** aunque el JWT no está en la URL, puede
-  aparecer en `Authorization` al solicitar el ticket y el ticket en
-  `Sec-WebSocket-Protocol`. No registres esos headers en proxies o herramientas
-  de inspección ni compartas capturas del handshake. El ticket dura 15 segundos
-  y se consume una vez.
-- **502 o ERR_NGROK:** confirma que el servicio local está escuchando en el
-  puerto correspondiente y que ngrok apunta a ese puerto.
-- **Una misma URL pública para varios túneles:** no configures esa URL en los
-  `.env`; revisa las asignaciones de dominios/endpoints del plan de ngrok antes
-  de continuar.
+En la práctica, prepara primero las URLs asignadas en el dashboard y
+`ngrok.local.yml`; el orden de arranque de los túneles y upstreams puede
+intercambiarse. Una respuesta 502 antes de que arranque el upstream es
+temporal.
 
-## Verificación de esta fase
+## 5. Verificar los cinco servicios
 
-En la ejecución local de Fase 4, los tres comandos `ngrok http 4000`,
-`ngrok http 5000` y `ngrok http 3000` iniciaron, pero cada inspector local
-reportó la misma URL pública para un upstream distinto. Se detuvieron las tres
-sesiones para no dejar una URL ambigua apuntando a servicios diferentes. Por
-esto aún no se completaron las pruebas públicas de Auth, Coordinador, lobby,
-CORS, `wscat`, ni registro/login por ngrok. Se deben repetir cuando la cuenta
-disponga de tres URLs distintas.
+Comprueba primero los servicios locales:
 
-En el plan gratuito, las URLs asignadas pueden cambiar al reiniciar los
-túneles. Si cambian, actualiza `client/.env` y `auth-service/.env`, reinicia
-los tres servicios y vuelve a probar el flujo antes de la sustentación. Mantén
-los tres túneles activos durante la demostración.
+```powershell
+Invoke-RestMethod http://localhost:4000/health
+Invoke-RestMethod http://localhost:5001/health
+Invoke-RestMethod http://localhost:5002/health
+Invoke-RestMethod http://localhost:5003/health
+Invoke-WebRequest http://localhost:3000/
+```
+
+Luego usa las URLs HTTPS reales que ngrok muestra:
+
+```powershell
+Invoke-RestMethod https://<DOMINIO-REAL-DE-AUTH>/health
+Invoke-WebRequest https://<DOMINIO-REAL-DEL-CLIENT>/
+Invoke-RestMethod https://<DOMINIO-REAL-DEL-COORDINADOR-1>/health
+Invoke-RestMethod https://<DOMINIO-REAL-DEL-COORDINADOR-2>/health
+Invoke-RestMethod https://<DOMINIO-REAL-DEL-COORDINADOR-3>/health
+```
+
+En Auth, `GET /coordinators` debe mostrar los tres IDs como vigentes. Desde el
+Client público, registra/inicia sesión y verifica que el navegador se conecte
+al coordinador seleccionado usando `wss://`. Estas son instrucciones; no se
+han iniciado túneles ni probado conexiones externas como parte de esta tarea.
+
+## 6. Diagnóstico y seguridad
+
+- **Endpoint limitado por el plan:** Free y Hobbyist permiten tres endpoints
+  online según la tabla de precios enlazada arriba; cinco requieren una cuenta
+  que permita esa cantidad simultánea. Revisa también el costo por endpoint
+  activo y la disponibilidad de dominios.
+- **URL o dominio duplicado:** cada uno de los cinco endpoints requiere un
+  destino público inequívoco; asigna cinco URLs distintas.
+- **502 / `ERR_NGROK`:** comprueba que el servicio está activo en el puerto
+  correcto y que el `upstream.url` coincide con la tabla.
+- **CORS o preflight:** incluye el origen HTTPS exacto del Client en
+  `CORS_ORIGINS` y `CLIENT_ORIGINS`; reinicia Auth y coordinadores.
+- **Mixed content:** usa `https://` para Auth y `wss://` para Coordinator
+  cuando el Client se sirve por HTTPS.
+- **Ticket o WebSocket rechazado:** usa el `PUBLIC_URL` correspondiente a cada
+  instancia, revisa que Auth y Coordinator compartan `JWT_SECRET`, y solicita
+  un ticket nuevo. No copies el JWT ni el ticket a URLs, logs o capturas.
+- **Credenciales:** el authtoken queda en la configuración privada de ngrok;
+  `ngrok.local.yml` y los `.env` reales están ignorados por Git. No muestres
+  `COORDINATOR_SHARED_SECRET`, `JWT_SECRET`, tokens ni tickets.
+- **Intersticial de ngrok:** las peticiones `fetch` del Client ya envían
+  `ngrok-skip-browser-warning: true`.
+
+Aunque Auth devuelve las URLs públicas de los coordinadores y cada instancia
+descubre las otras mediante `GET /peers`, no hay conexiones entre
+coordinadores. No existe listener peer, handshake, replicación de jugadores o
+salas ni sincronización: son funcionalidades del Turno 3.
