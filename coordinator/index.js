@@ -997,6 +997,7 @@ wss.on('connection', (ws, payload) => {
   // Taller 5: welcome con el mundo, para que el cliente dimensione el canvas
   sendWs(ws, {
     type: 'welcome',
+    coordinatorId: COORDINATOR_ID,
     you: { userId, username, provider },
     world: {
       width: WORLD_WIDTH,
