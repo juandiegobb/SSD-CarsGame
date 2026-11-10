@@ -5,6 +5,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { timingSafeEqual } = require('node:crypto');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 const dotenv = require('dotenv');
 const express = require('express');
@@ -40,6 +41,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = Number(process.env.PORT) || 4000;
 const DB_PATH = process.env.DB_PATH || 'users.db';
 const ENV_PATH = path.join(__dirname, '.env');
+const coordinators = new Map();
 
 // Almacena en memoria el último valor válido de expiración (por defecto el del arranque o '1h')
 let currentJwtExpiresIn = process.env.JWT_EXPIRES_IN || '1h';
@@ -208,6 +210,33 @@ function sendError(res, status, code, message, hint, details = undefined, extra 
   return res.status(status).json(payload);
 }
 
+function hasValidCoordinatorSecret(providedSecret) {
+  const expectedSecret = process.env.COORDINATOR_SHARED_SECRET;
+  if (typeof expectedSecret !== 'string' || expectedSecret.length === 0 ||
+      typeof providedSecret !== 'string' || providedSecret.length === 0) {
+    return false;
+  }
+
+  const expected = Buffer.from(expectedSecret, 'utf8');
+  const provided = Buffer.from(providedSecret, 'utf8');
+  return expected.length === provided.length && timingSafeEqual(expected, provided);
+}
+
+function isValidCoordinatorUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048 || value !== value.trim()) return false;
+  try {
+    const url = new URL(value);
+    return ['ws:', 'wss:'].includes(url.protocol) &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash;
+  } catch {
+    return false;
+  }
+}
+
 // Misma regla de username para /register y /auth/google (SPEC.md §3.2).
 function validateUsername(u) {
   return typeof u === 'string' && /^[A-Za-z0-9_]{3,32}$/.test(u.trim());
@@ -295,6 +324,45 @@ app.get('/health', (req, res) => {
     uptime: Math.floor(process.uptime()),
     jwtExpiresIn: String(activeExpiresIn)
   });
+});
+
+// POST /heartbeat - Registra o actualiza un coordinador autenticado en memoria.
+app.post('/heartbeat', (req, res) => {
+  if (!hasValidCoordinatorSecret(req.get('x-coordinator-secret'))) {
+    return sendError(
+      res,
+      401,
+      'UNAUTHORIZED',
+      'No autorizado.',
+      'Verifica las credenciales de servicio e inténtalo de nuevo.'
+    );
+  }
+
+  const { coordinatorId, publicUrl, peerUrl, load } = req.body || {};
+  const validCoordinatorId = typeof coordinatorId === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId);
+  const validLoad = Number.isSafeInteger(load) && load >= 0;
+
+  if (!validCoordinatorId || !isValidCoordinatorUrl(publicUrl) ||
+      !isValidCoordinatorUrl(peerUrl) || !validLoad) {
+    return sendError(
+      res,
+      400,
+      'INVALID_BODY',
+      'Los datos del coordinador son inválidos o están incompletos.',
+      'Envía coordinatorId, publicUrl y peerUrl válidos, junto con load como entero no negativo.'
+    );
+  }
+
+  coordinators.set(coordinatorId, {
+    coordinatorId,
+    publicUrl,
+    peerUrl,
+    load,
+    lastHeartbeat: new Date().toISOString()
+  });
+
+  return sendOk(res, 200, 'Heartbeat recibido.');
 });
 
 // POST /register - Registro de nuevo usuario
@@ -639,7 +707,7 @@ app.use((req, res) => {
     404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas disponibles: GET /health, POST /register, POST /login, POST /auth/google.'
+    'Rutas disponibles: GET /health, POST /heartbeat, POST /register, POST /login, POST /auth/google.'
   );
 });
 
@@ -672,4 +740,4 @@ const server = app.listen(PORT, () => {
   console.log(`Auth Service escuchando en http://localhost:${PORT}`);
 });
 
-module.exports = { app, server, db };
+module.exports = { app, server, db, coordinators };

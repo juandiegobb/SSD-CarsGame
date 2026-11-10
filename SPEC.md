@@ -254,12 +254,14 @@ JWT_EXPIRES_IN=1h
 BCRYPT_ROUNDS=10
 DB_PATH=users.db
 CORS_ORIGINS=http://localhost:3000
+COORDINATOR_SHARED_SECRET=replace-with-the-same-random-placeholder-in-auth-and-coordinators
 ```
 
 **`coordinator/.env.example`**
 ```
 PORT=5000
 JWT_SECRET=cambia-esto-por-una-clave-larga-y-aleatoria
+COORDINATOR_SHARED_SECRET=replace-with-the-same-random-placeholder-in-auth-and-coordinators
 CLIENT_ORIGINS=http://localhost:3000
 ```
 
@@ -271,6 +273,8 @@ COORDINATOR_WS_URL=ws://localhost:5000
 ```
 
 > `JWT_SECRET` debe ser **idéntica** en auth y coordinador (error típico #2). El navegador no lee `.env`, así que `client/server.js` expone `GET /config.js` generado dinámicamente con URLs públicas y el Client ID público de Google; no expone secretos ni JWT. Las URLs se validan y se eliminan sus credenciales, query y fragmento antes de exponerlas.
+>
+> `COORDINATOR_SHARED_SECRET` debe configurarse con el mismo valor secreto en auth y coordinadores. No se reutiliza el JWT de usuarios para autenticar heartbeats; los `.env.example` contienen solo un placeholder que debe reemplazarse en los `.env` locales.
 >
 > `CLIENT_ORIGINS` limita los orígenes permitidos para solicitar tickets al coordinador. En ngrok debe contener el origen HTTPS del cliente. El `.env.example` solo documenta el origen local.
 >
@@ -741,18 +745,21 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 
 ### 11.3 Auth — endpoints del directorio
 
-El auth guarda **en memoria** `Map<coordinatorId, { publicUrl, peerUrl, connectedPlayers, uptime, lastSeen }>`. **Un coordinador sin heartbeat en los últimos 6 s (3 ciclos) se considera muerto y se descarta.**
+El auth guarda **en memoria** un `Map` independiente de los usuarios, identificado por `coordinatorId`. Cada entrada contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load` y `lastHeartbeat`. El heartbeat registra o reemplaza la entrada con el mismo ID.
 
 **`POST /heartbeat`** — lo llama cada coordinador cada 2 s.
 
 ```json
-{ "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:5101", "connectedPlayers": 7, "uptime": 12345 }
+{ "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:5101", "load": 7 }
 ```
+
+Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth y coordinadores. Si falta la configuración o el header no coincide, se rechaza con un error genérico `401 UNAUTHORIZED`. Auth compara los valores con `crypto.timingSafeEqual` después de comprobar que tengan la misma longitud. `coordinatorId` debe ser una cadena de 1–64 caracteres alfanuméricos, guion o guion bajo, iniciando con un carácter alfanumérico; las URL deben usar `ws://` o `wss://` sin credenciales, query ni fragmento; `load` debe ser un entero no negativo.
 
 | HTTP | Forma | Cuándo |
 |---|---|---|
-| 200 | `{ "ok": true }` | Registrado o actualizado (`lastSeen = Date.now()`) |
+| 200 | `{ "ok": true, "message": "Heartbeat recibido." }` | Registrado o actualizado (`lastHeartbeat` con la fecha y hora actual) |
 | 400 | `INVALID_BODY` | Falta algún campo o tiene un tipo incorrecto |
+| 401 | `UNAUTHORIZED` | Falta el secreto, no coincide o no está configurado |
 
 **`GET /coordinator`** — lo llama el cliente después del login, antes de abrir el WebSocket.
 
