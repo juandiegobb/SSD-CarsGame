@@ -42,6 +42,44 @@ const PORT = Number(process.env.PORT) || 4000;
 const DB_PATH = process.env.DB_PATH || 'users.db';
 const ENV_PATH = path.join(__dirname, '.env');
 const coordinators = new Map();
+const COORDINATOR_TTL_MS = 6000;
+const COORDINATOR_CLEANUP_INTERVAL_MS = 1000;
+let coordinatorCleanupTimer = null;
+
+function isCoordinatorLive(coordinator, now = Date.now()) {
+  const lastHeartbeat = Date.parse(coordinator?.lastHeartbeat);
+  if (!Number.isFinite(lastHeartbeat)) return false;
+
+  const age = now - lastHeartbeat;
+  return age >= 0 && age <= COORDINATOR_TTL_MS;
+}
+
+function pruneExpiredCoordinators(now = Date.now()) {
+  let removed = 0;
+  for (const [coordinatorId, coordinator] of coordinators) {
+    if (!isCoordinatorLive(coordinator, now)) {
+      coordinators.delete(coordinatorId);
+      removed += 1;
+    }
+  }
+  return removed;
+}
+
+function startCoordinatorCleanup() {
+  if (coordinatorCleanupTimer) return;
+
+  coordinatorCleanupTimer = setInterval(
+    () => pruneExpiredCoordinators(),
+    COORDINATOR_CLEANUP_INTERVAL_MS
+  );
+  coordinatorCleanupTimer.unref();
+}
+
+function stopCoordinatorCleanup() {
+  if (!coordinatorCleanupTimer) return;
+  clearInterval(coordinatorCleanupTimer);
+  coordinatorCleanupTimer = null;
+}
 
 // Almacena en memoria el último valor válido de expiración (por defecto el del arranque o '1h')
 let currentJwtExpiresIn = process.env.JWT_EXPIRES_IN || '1h';
@@ -737,7 +775,16 @@ app.use((err, req, res, next) => {
 
 // 6. Arranque del servidor HTTP
 const server = app.listen(PORT, () => {
+  startCoordinatorCleanup();
   console.log(`Auth Service escuchando en http://localhost:${PORT}`);
 });
+server.once('close', stopCoordinatorCleanup);
 
-module.exports = { app, server, db, coordinators };
+module.exports = {
+  app,
+  server,
+  db,
+  coordinators,
+  isCoordinatorLive,
+  pruneExpiredCoordinators
+};

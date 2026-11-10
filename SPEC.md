@@ -745,7 +745,7 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 
 ### 11.3 Auth — endpoints del directorio
 
-El auth guarda **en memoria** un `Map` independiente de los usuarios, identificado por `coordinatorId`. Cada entrada contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load` y `lastHeartbeat`. El heartbeat registra o reemplaza la entrada con el mismo ID.
+El auth guarda **en memoria** un `Map` independiente de los usuarios, identificado por `coordinatorId`. Cada entrada contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load` y `lastHeartbeat`. El heartbeat registra o reemplaza la entrada con el mismo ID. Un coordinador es vigente hasta que transcurren 6 segundos desde `lastHeartbeat` (incluido el instante exacto de 6 segundos); al superar ese límite se considera expirado. Auth comprueba la vigencia con una función reutilizable y limpia periódicamente las entradas expiradas del `Map`; el temporizador es complementario a la comprobación por antigüedad.
 
 **`POST /heartbeat`** — lo llama cada coordinador cada 2 s.
 
