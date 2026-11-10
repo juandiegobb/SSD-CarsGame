@@ -389,6 +389,138 @@ function roomUpdateMessage(room) {
   };
 }
 
+function roomReplicationPayload(room) {
+  return {
+    roomId: room.roomId,
+    room: {
+      name: room.name,
+      hostUserId: room.hostUserId,
+      hostUsername: room.hostUsername,
+      status: room.status,
+      owner: room.owner,
+      members: [...room.members].map((userId) => {
+        const player = players.get(userId);
+        if (!player) return null;
+        return {
+          userId,
+          username: player.username,
+          provider: player.provider,
+          picture: player.picture,
+          x: player.x,
+          y: player.y,
+          extras: player.extras,
+          home: player.home
+        };
+      }).filter(Boolean)
+    }
+  };
+}
+
+function replicateRoom(room, op) {
+  broadcastPeer({
+    type: 'room_replicate',
+    op,
+    roomId: room.roomId,
+    room: roomReplicationPayload(room).room
+  });
+}
+
+function replicateRoomRemoval(roomId) {
+  broadcastPeer({ type: 'room_replicate', op: 'leave', roomId, room: null });
+}
+
+function sendLocalRoomsToPeer(ws) {
+  for (const room of rooms.values()) {
+    if (room.owner !== COORDINATOR_ID || !isOpenSocket(ws)) continue;
+    ws.send(JSON.stringify({
+      type: 'room_replicate',
+      origin: COORDINATOR_ID,
+      op: 'create',
+      ...roomReplicationPayload(room)
+    }));
+  }
+}
+
+function applyRemoteRoom(peerId, message) {
+  if (!['create', 'join', 'leave', 'start', 'color', 'host'].includes(message.op) ||
+      typeof message.roomId !== 'string' || !message.roomId ||
+      message.roomId.length > 128) return;
+
+  if (!message.room) {
+    if (message.op !== 'leave') return;
+    rooms.delete(message.roomId);
+    broadcastRoomList();
+    return;
+  }
+
+  const data = message.room;
+  if (typeof data.name !== 'string' ||
+      !/^[A-Za-z0-9ÁÉÍÓÚáéíóúÑñ _-]{3,32}$/.test(data.name) ||
+      typeof data.hostUserId !== 'string' ||
+      !['waiting', 'playing'].includes(data.status) ||
+      typeof data.owner !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(data.owner) ||
+      !Array.isArray(data.members) || data.members.length > 8) return;
+
+  const members = new Set();
+  for (const member of data.members) {
+    if (!member || typeof member.userId !== 'string' || !member.userId ||
+        typeof member.username !== 'string' ||
+        !Number.isFinite(member.x) || !Number.isFinite(member.y) ||
+        typeof member.home !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(member.home) ||
+        !isValidPeerExtras(member.extras)) return;
+    members.add(member.userId);
+  }
+  if (!members.has(data.hostUserId)) return;
+
+  const previousRoom = rooms.get(message.roomId);
+  for (const member of data.members) {
+    const existing = players.get(member.userId);
+    if (existing?.local) {
+      if (!existing.roomId || existing.roomId === message.roomId) existing.roomId = message.roomId;
+      continue;
+    }
+    players.set(member.userId, {
+      username: member.username.trim().toLowerCase(),
+      provider: member.provider === 'google' ? 'google' : 'local',
+      picture: typeof member.picture === 'string' && member.picture.startsWith('https://') ? member.picture : null,
+      socket: null,
+      connectedAt: existing?.connectedAt || new Date().toISOString(),
+      expirationTimer: null,
+      x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, member.x)),
+      y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, member.y)),
+      intent: existing?.intent || { x: 0, y: 0 },
+      extras: member.extras,
+      roomId: message.roomId,
+      home: member.home,
+      local: false
+    });
+  }
+  if (previousRoom) {
+    for (const previousMemberId of previousRoom.members) {
+      if (!members.has(previousMemberId)) {
+        const player = players.get(previousMemberId);
+        if (player?.roomId === message.roomId) player.roomId = null;
+      }
+    }
+  }
+
+  const room = {
+    roomId: message.roomId,
+    name: data.name,
+    hostUserId: data.hostUserId,
+    hostUsername: data.hostUsername || players.get(data.hostUserId)?.username || '',
+    members,
+    status: data.status,
+    owner: data.owner
+  };
+  rooms.set(room.roomId, room);
+  broadcastRoomList();
+  broadcastRoom(room.roomId, roomUpdateMessage(room));
+  broadcastPlayers();
+}
+
 function broadcastRoomList() {
   const payload = {
     type: 'room_list',
@@ -791,6 +923,7 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       peerConnections.set(peerId, ws);
       pendingPeerConnections.delete(peerId);
       sendLocalPlayersToPeer(ws);
+      sendLocalRoomsToPeer(ws);
       return;
     }
 
@@ -805,6 +938,8 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       acceptRemoteExtras(peerId, msg);
     } else if (msg.type === 'player_sync') {
       acceptRemotePositions(peerId, msg);
+    } else if (msg.type === 'room_replicate') {
+      applyRemoteRoom(peerId, msg);
     }
   });
 
@@ -1129,11 +1264,12 @@ wss.on('connection', (ws, payload) => {
           sendWs(ws, { type: 'error', ok: false, code: 'ROOM_ALREADY_JOINED', message: 'Ya estás dentro de una sala.', hint: 'Sal de la sala actual antes de crear otra.' });
           break;
         }
-        const roomId = `room-${Date.now()}-${nextRoomId++}`;
-        const room = { roomId, name, hostUserId: userId, hostUsername: username, members: new Set([userId]), status: 'waiting' };
+        const roomId = `${COORDINATOR_ID}-room-${Date.now()}-${nextRoomId++}`;
+        const room = { roomId, name, hostUserId: userId, hostUsername: username, members: new Set([userId]), status: 'waiting', owner: COORDINATOR_ID };
         rooms.set(roomId, room);
         entry.roomId = roomId;
         assignAvailableRoomColor(room, userId);
+        replicateRoom(room, 'create');
         broadcastRoomList();
         sendWs(ws, { type: 'room_created', roomId, name, hostUserId: userId, hostUsername: username, players: roomPlayerList(room) });
         sendWs(ws, { type: 'room_joined', roomId, name, hostUserId: userId, hostUsername: username, players: roomPlayerList(room) });
@@ -1162,6 +1298,7 @@ wss.on('connection', (ws, payload) => {
         room.members.add(userId);
         entry.roomId = room.roomId;
         assignAvailableRoomColor(room, userId);
+        replicateRoom(room, 'join');
         broadcastRoomList();
         sendWs(ws, { type: 'room_joined', roomId: room.roomId, name: room.name, hostUserId: room.hostUserId, hostUsername: room.hostUsername, players: roomPlayerList(room) });
         broadcastRoom(room.roomId, { type: 'room_updated', roomId: room.roomId, players: roomPlayerList(room), status: room.status });
@@ -1174,15 +1311,18 @@ wss.on('connection', (ws, payload) => {
           sendWs(ws, { type: 'error', ok: false, code: 'ROOM_NOT_JOINED', message: 'No estás dentro de una sala.', hint: 'Elige una sala del listado para entrar.' });
           break;
         }
+        const roomId = room.roomId;
         room.members.delete(userId);
         entry.roomId = null;
-        if (room.members.size === 0) rooms.delete(room.roomId);
+        if (room.members.size === 0) rooms.delete(roomId);
         else if (room.hostUserId === userId) {
           room.hostUserId = [...room.members][0];
           room.hostUsername = players.get(room.hostUserId)?.username || '';
         }
+        if (rooms.has(roomId)) replicateRoom(room, 'leave');
+        else replicateRoomRemoval(roomId);
         sendWs(ws, { type: 'room_left', ok: true, message: 'Has salido de la sala.' });
-        broadcastRoom(room.roomId, { type: 'room_updated', roomId: room.roomId, players: roomPlayerList(room), status: room.status, hostUserId: room.hostUserId, hostUsername: room.hostUsername });
+        broadcastRoom(roomId, roomUpdateMessage(room));
         broadcastRoomList();
         break;
       }
@@ -1239,6 +1379,7 @@ wss.on('connection', (ws, payload) => {
           break;
         }
         room.status = 'playing';
+        replicateRoom(room, 'start');
         broadcastRoomList();
         broadcastRoom(room.roomId, { type: 'game_started', roomId: room.roomId, players: roomPlayerList(room) });
         break;
@@ -1268,6 +1409,7 @@ wss.on('connection', (ws, payload) => {
         }
         entry.extras = { ...entry.extras, color };
         broadcastPeer({ type: 'extras_replicate', userId, extras: entry.extras });
+        replicateRoom(room, 'color');
         broadcastRoom(room.roomId, { type: 'room_updated', roomId: room.roomId, players: roomPlayerList(room), status: room.status });
         break;
       }
@@ -1419,6 +1561,8 @@ wss.on('connection', (ws, payload) => {
             // para que su lista de pilotos y su paleta de colores se actualicen.
             broadcastRoom(roomId, { type: 'room_updated', roomId, players: roomPlayerList(room), status: room.status, hostUserId: room.hostUserId, hostUsername: room.hostUsername });
           }
+          if (rooms.has(roomId)) replicateRoom(room, 'leave');
+          else replicateRoomRemoval(roomId);
         }
         broadcastRoomList();
       }
