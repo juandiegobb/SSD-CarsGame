@@ -1352,6 +1352,7 @@ wss.on('connection', (ws, payload) => {
 
         room.hostUserId = targetUserId;
         room.hostUsername = target.username;
+        replicateRoom(room, 'host');
         broadcastRoom(room.roomId, {
           type: 'room_updated',
           roomId: room.roomId,
