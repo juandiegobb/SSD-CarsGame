@@ -720,11 +720,12 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 ### 11.1 Alcance nuevo
 
 - **Arranque en paralelo:** este objetivo prepara la configuración para ejecutar tres procesos coordinadores independientes. La selección de coordinador usa el directorio implementado en Auth.
-- **Heartbeats periódicos:** el endpoint de Auth está listo; el envío desde Coordinator cada 2 segundos corresponde al objetivo 7 y todavía no está implementado.
+- **Heartbeats periódicos:** cada Coordinator envía a Auth su estado y carga local por `POST /heartbeat` cada 2 segundos (objetivo 7).
+- **Descubrimiento periódico:** cada Coordinator consulta `GET /peers?coordinatorId=<ID>` al iniciar y cada 2 segundos (objetivo 8); esto solo obtiene URLs y no establece conexiones entre coordinadores.
 - **Mesh:** la topología de abajo es el diseño objetivo. El servidor peer, las conexiones entre coordinadores y la replicación aún no están implementados.
 - **Cliente:** login → `GET /coordinator` → WebSocket al coordinador asignado. Muestra a cuál está conectado y, si se cae, pide otro.
 
-El objetivo 6 solo prepara configuración y arranque: `PEER_PORT` no escucha conexiones, y no hay comunicación P2P ni estado compartido entre las instancias.
+Los objetivos 6–8 preparan el arranque, el heartbeat al Auth y el descubrimiento periódico de peers. `PEER_PORT` no escucha conexiones; conocer URLs de otros coordinadores no crea comunicación P2P ni estado compartido.
 
 ```
                          Arquitectura objetivo (mesh aún no implementado)
@@ -760,7 +761,9 @@ Para una sola instancia, configura `coordinator/.env` y ejecuta `npm start --pre
 
 El script verifica los tres puertos HTTP antes de arrancar, da a cada proceso su propio conjunto de variables y restaura el entorno del proceso PowerShell al finalizar. También acepta `-HttpPorts` y `-PeerPorts` para usar otros puertos libres en pruebas. Cada instancia comparte `AUTH_URL` y `COORDINATOR_SHARED_SECRET` del entorno del script o de `coordinator/.env`; el secreto nunca se muestra.
 
-**Límite de alcance:** este objetivo prepara configuración y arranque únicamente. No abre un listener en `PEER_PORT`, no envía heartbeats ni consulta peers, y no implementa conexiones P2P, mesh o replicación.
+**Límite de alcance del objetivo 6:** prepara configuración y arranque únicamente. El heartbeat y la consulta periódica de peers se describen en los objetivos 7 y 8. No abre un listener en `PEER_PORT` ni implementa conexiones P2P, mesh o replicación.
+
+**Descubrimiento del objetivo 8:** cada coordinador consulta `GET /peers?coordinatorId=<COORDINATOR_ID>` al iniciar y cada 2 segundos. Guarda solo las entradas válidas (`coordinatorId`, `publicUrl`, `peerUrl`) y descarta defensivamente su propio ID. Si Auth falla o la respuesta no es válida, conserva la última lista válida y vuelve a intentar en el siguiente ciclo; un error no inventa ni incorpora peers. El temporizador y cualquier solicitud activa se detienen al cerrar el servidor.
 
 ### 11.3 Auth — endpoints del directorio
 

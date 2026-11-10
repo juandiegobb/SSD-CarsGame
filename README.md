@@ -199,7 +199,7 @@ Copia los archivos de ejemplo en cada servicio:
    ```powershell
    .\coordinator\start-three.ps1
    ```
-   El script comprueba que los puertos HTTP estén libres, comparte `AUTH_URL` y el secreto configurados en el entorno o en `coordinator/.env`, y restaura las variables temporales al terminar. No abre los puertos peer ni implementa comunicación entre coordinadores.
+   El script comprueba que los puertos HTTP estén libres, comparte `AUTH_URL` y el secreto configurados en el entorno o en `coordinator/.env`, y restaura las variables temporales al terminar. Cada instancia registra heartbeats en Auth y consulta `GET /peers?coordinatorId=<ID>` al iniciar y cada 2 segundos; esto solo descubre URLs: no abre los puertos peer ni implementa comunicación entre coordinadores.
 
 4. **Configurar `client/.env`:**
    ```dotenv

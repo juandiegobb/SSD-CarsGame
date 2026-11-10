@@ -97,6 +97,8 @@ const WS_TICKET_TTL_MS = 15_000;
 const MAX_PENDING_WS_TICKETS = 1000;
 const HEARTBEAT_INTERVAL_MS = 2000;
 const HEARTBEAT_TIMEOUT_MS = 5000;
+const PEER_DISCOVERY_INTERVAL_MS = 2000;
+const PEER_DISCOVERY_TIMEOUT_MS = 5000;
 
 // ── Taller 5: parámetros del mundo y del game loop (desde .env) ─────────────
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH) || 800;
@@ -116,6 +118,11 @@ const wsTickets = new Map();
 let heartbeatTimer = null;
 let heartbeatInFlight = false;
 let heartbeatAbortController = null;
+let peerDiscoveryTimer = null;
+let peerDiscoveryInFlight = false;
+let peerDiscoveryAbortController = null;
+let peerDiscoveryStopped = false;
+let peers = [];
 let gameLoopTimer = null;
 function normalizeUsername(username) {
   return typeof username === 'string' ? username.trim().toLowerCase() : username;
@@ -188,8 +195,92 @@ function stopHeartbeat() {
   if (heartbeatAbortController) heartbeatAbortController.abort();
 }
 
+function isValidPeerUrl(value) {
+  if (typeof value !== 'string' || value.length > 2048 || value !== value.trim()) return false;
+  try {
+    const url = new URL(value);
+    return ['ws:', 'wss:'].includes(url.protocol) &&
+      Boolean(url.hostname) &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash;
+  } catch {
+    return false;
+  }
+}
+
+function isValidDiscoveredPeer(peer) {
+  return peer !== null &&
+    typeof peer === 'object' &&
+    !Array.isArray(peer) &&
+    typeof peer.coordinatorId === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(peer.coordinatorId) &&
+    isValidPeerUrl(peer.publicUrl) &&
+    isValidPeerUrl(peer.peerUrl);
+}
+
+async function refreshPeers() {
+  if (peerDiscoveryInFlight || peerDiscoveryStopped) return;
+
+  peerDiscoveryInFlight = true;
+  const controller = new AbortController();
+  peerDiscoveryAbortController = controller;
+  const timeout = setTimeout(() => controller.abort(), PEER_DISCOVERY_TIMEOUT_MS);
+  timeout.unref();
+
+  try {
+    const endpoint = new URL(`${AUTH_URL}/peers`);
+    endpoint.searchParams.set('coordinatorId', COORDINATOR_ID);
+    const response = await fetch(endpoint, { signal: controller.signal });
+    if (!response.ok) {
+      console.error(`[coordinator] Auth rechazó la consulta de peers (HTTP ${response.status}).`);
+      return;
+    }
+
+    const payload = await response.json();
+    if (!payload || !Array.isArray(payload.peers) || !payload.peers.every(isValidDiscoveredPeer)) {
+      console.error('[coordinator] Auth devolvió una lista de peers inválida.');
+      return;
+    }
+
+    peers = payload.peers
+      .filter((peer) => peer.coordinatorId !== COORDINATOR_ID)
+      .map(({ coordinatorId, publicUrl, peerUrl }) => ({ coordinatorId, publicUrl, peerUrl }));
+  } catch {
+    if (!peerDiscoveryStopped) {
+      console.error('[coordinator] No se pudo consultar la lista de peers en Auth.');
+    }
+  } finally {
+    clearTimeout(timeout);
+    if (peerDiscoveryAbortController === controller) peerDiscoveryAbortController = null;
+    peerDiscoveryInFlight = false;
+  }
+}
+
+function startPeerDiscovery() {
+  if (peerDiscoveryTimer) return;
+
+  peerDiscoveryStopped = false;
+  void refreshPeers();
+  peerDiscoveryTimer = setInterval(() => {
+    void refreshPeers();
+  }, PEER_DISCOVERY_INTERVAL_MS);
+  peerDiscoveryTimer.unref();
+}
+
+function stopPeerDiscovery() {
+  peerDiscoveryStopped = true;
+  if (peerDiscoveryTimer) {
+    clearInterval(peerDiscoveryTimer);
+    peerDiscoveryTimer = null;
+  }
+  if (peerDiscoveryAbortController) peerDiscoveryAbortController.abort();
+}
+
 function shutdownCoordinator() {
   stopHeartbeat();
+  stopPeerDiscovery();
   if (gameLoopTimer) {
     clearInterval(gameLoopTimer);
     gameLoopTimer = null;
@@ -1011,9 +1102,11 @@ server.listen(PORT, () => {
   console.log(`Coordinador ${COORDINATOR_ID} escuchando en http://localhost:${PORT} (PORT HTTP/WebSocket; PEER_PORT reservado: ${PEER_PORT}).`);
   console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
   startHeartbeat();
+  startPeerDiscovery();
 });
 server.once('close', () => {
   stopHeartbeat();
+  stopPeerDiscovery();
   if (gameLoopTimer) {
     clearInterval(gameLoopTimer);
     gameLoopTimer = null;
@@ -1031,6 +1124,11 @@ module.exports = {
   countOpenLocalPlayers,
   sendHeartbeat,
   stopHeartbeat,
+  refreshPeers,
+  stopPeerDiscovery,
+  get peers() {
+    return peers;
+  },
   config: {
     COORDINATOR_ID,
     PORT,
