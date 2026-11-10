@@ -133,7 +133,7 @@ let nextRoomId = 1;
 function countOpenLocalPlayers() {
   let count = 0;
   for (const player of players.values()) {
-    if (player.socket?.readyState === WebSocket.OPEN) count += 1;
+    if (isOpenSocket(player.socket)) count += 1;
   }
   return count;
 }
@@ -301,8 +301,12 @@ function sendError(res, status, code, message, hint) {
 }
 
 // ── Helper para enviar un mensaje WS a un socket (si está abierto) ──────────
+function isOpenSocket(socket) {
+  return Boolean(socket && socket.readyState === WebSocket.OPEN);
+}
+
 function sendWs(ws, payload) {
-  if (ws.readyState === ws.OPEN) {
+  if (isOpenSocket(ws)) {
     ws.send(JSON.stringify(payload));
   }
 }
@@ -336,7 +340,7 @@ function broadcastRoomList() {
 
 function broadcastToLobby(payload) {
   for (const player of players.values()) {
-    if (!player.roomId && player.socket.readyState === player.socket.OPEN) {
+    if (!player.roomId && isOpenSocket(player.socket)) {
       sendWs(player.socket, payload);
     }
   }
@@ -347,7 +351,7 @@ function broadcastRoom(roomId, payload) {
   if (!room) return;
   for (const memberId of room.members) {
     const player = players.get(memberId);
-    if (player && player.socket.readyState === player.socket.OPEN) sendWs(player.socket, payload);
+    if (player && isOpenSocket(player.socket)) sendWs(player.socket, payload);
   }
 }
 
@@ -370,10 +374,8 @@ function broadcastPlayers() {
   }
   const msg = JSON.stringify({ type: 'players_update', players: playerList });
 
-  for (const [, entry] of players) {
-    if (entry.socket.readyState === entry.socket.OPEN) {
-      entry.socket.send(msg);
-    }
+  for (const entry of players.values()) {
+    if (isOpenSocket(entry.socket)) entry.socket.send(msg);
   }
 }
 
@@ -398,9 +400,7 @@ function snapshot(roomId = null) {
 function broadcast(payload) {
   const msg = JSON.stringify(payload);
   for (const p of players.values()) {
-    if (p.socket.readyState === p.socket.OPEN) {
-      p.socket.send(msg);
-    }
+    if (isOpenSocket(p.socket)) p.socket.send(msg);
   }
 }
 
@@ -414,7 +414,7 @@ function tick() {
   const dt = (now - lastTick) / 1000; // segundos reales desde el tick anterior
   lastTick = now;
 
-  if (players.size === 0) return; // nadie conectado: no hay a quién enviar
+  if (players.size === 0) return;
 
   for (const p of players.values()) {
     if (p.roomId && !rooms.has(p.roomId)) continue;
@@ -706,7 +706,7 @@ wss.on('connection', (ws, payload) => {
     // Cancela el timer de expiración de la sesión anterior
     clearTimeout(existing.expirationTimer);
     // Cierra el socket viejo con el código 4002 (el cliente sabrá que fue reemplazado)
-    if (existing.socket.readyState === existing.socket.OPEN) {
+    if (isOpenSocket(existing.socket)) {
       existing.socket.close(4002, 'session replaced');
     }
     console.log(`Sesión reemplazada para: ${username}`);

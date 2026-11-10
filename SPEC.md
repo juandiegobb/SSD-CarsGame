@@ -765,6 +765,8 @@ El script verifica los tres puertos HTTP antes de arrancar, da a cada proceso su
 
 **Descubrimiento del objetivo 8:** cada coordinador consulta `GET /peers?coordinatorId=<COORDINATOR_ID>` al iniciar y cada 2 segundos. Guarda solo las entradas válidas (`coordinatorId`, `publicUrl`, `peerUrl`) y descarta defensivamente su propio ID. Si Auth falla o la respuesta no es válida, conserva la última lista válida y vuelve a intentar en el siguiente ciclo; un error no inventa ni incorpora peers. El temporizador y cualquier solicitud activa se detienen al cerrar el servidor.
 
+**Compatibilidad del objetivo 9:** las operaciones del coordinador toleran entradas de jugadores sin socket local; los mensajes se envían únicamente a sockets locales abiertos y `load` cuenta únicamente esos sockets. Esto no crea jugadores remotos ni implementa comunicación o replicación entre coordinadores.
+
 ### 11.3 Auth — endpoints del directorio
 
 El auth guarda **en memoria** un `Map` independiente de los usuarios, identificado por `coordinatorId`. Cada entrada contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load` y `lastHeartbeat`. El heartbeat registra o reemplaza la entrada con el mismo ID. Un coordinador es vigente hasta que transcurren 6 segundos desde `lastHeartbeat` (incluido el instante exacto de 6 segundos); al superar ese límite se considera expirado. Auth comprueba la vigencia con una función reutilizable y limpia periódicamente las entradas expiradas del `Map`; el temporizador es complementario a la comprobación por antigüedad.
