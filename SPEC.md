@@ -260,6 +260,11 @@ COORDINATOR_SHARED_SECRET=replace-with-the-same-random-placeholder-in-auth-and-c
 **`coordinator/.env.example`**
 ```
 PORT=5000
+COORDINATOR_ID=coord-5000
+PEER_PORT=6000
+PUBLIC_URL=ws://localhost:5000
+PEER_URL=ws://localhost:6000
+AUTH_URL=http://localhost:4000
 JWT_SECRET=cambia-esto-por-una-clave-larga-y-aleatoria
 COORDINATOR_SHARED_SECRET=replace-with-the-same-random-placeholder-in-auth-and-coordinators
 CLIENT_ORIGINS=http://localhost:3000
@@ -714,34 +719,48 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 
 ### 11.1 Alcance nuevo
 
-- **Varios coordinadores en paralelo**, intercambiables y con el mismo estado del juego.
-- **El auth también es directory service:** los coordinadores le avisan que siguen vivos (`POST /heartbeat`) y el cliente le pregunta a cuál conectarse (`GET /coordinator`).
-- **Mesh:** cada coordinador se conecta por WebSocket con todos los demás y les replica lo que pasa con sus jugadores locales.
+- **Arranque en paralelo:** este objetivo prepara la configuración para ejecutar tres procesos coordinadores independientes. La selección de coordinador usa el directorio implementado en Auth.
+- **Heartbeats periódicos:** el endpoint de Auth está listo; el envío desde Coordinator cada 2 segundos corresponde al objetivo 7 y todavía no está implementado.
+- **Mesh:** la topología de abajo es el diseño objetivo. El servidor peer, las conexiones entre coordinadores y la replicación aún no están implementados.
 - **Cliente:** login → `GET /coordinator` → WebSocket al coordinador asignado. Muestra a cuál está conectado y, si se cae, pide otro.
 
+El objetivo 6 solo prepara configuración y arranque: `PEER_PORT` no escucha conexiones, y no hay comunicación P2P ni estado compartido entre las instancias.
+
 ```
+                         Arquitectura objetivo (mesh aún no implementado)
                  ┌───────────── Auth :4000 (usuarios + directorio) ─────────────┐
    heartbeat c/2s│  POST /heartbeat   GET /coordinator   GET /peers             │
                  └───────▲──────────────────▲───────────────────▲───────────────┘
                          │                  │ (cliente)         │
    coord-a :5001 ◄═══ mesh WS ═══► coord-b :5002 ◄═══ mesh WS ═══► coord-c :5003
-   (peers :5101)                   (peers :5102)                   (peers :5103)
+   (peers :6001)                   (peers :6002)                   (peers :6003)
         ▲ clientes                      ▲ clientes                      ▲ clientes
 ```
 
-### 11.2 Variables de entorno de cada coordinador
+### 11.2 Variables de entorno y arranque de coordinadores
 
 | Variable | Ejemplo | Para qué |
 |---|---|---|
-| `COORDINATOR_ID` | `coord-a` | Identificador único en el mesh |
-| `PORT` | `5001` | WebSocket de clientes (`/connect`, ticket temporal por subprotocolo) |
-| `PEER_PORT` | `5101` | WebSocket de **peers** (otros coordinadores) |
-| `PUBLIC_URL` | `ws://localhost:5001` (o el `wss://` de ngrok) | URL que el auth le da a los clientes |
-| `PEER_URL` | `ws://localhost:5101` | URL a la que se conectan los otros coordinadores |
-| `AUTH_URL` | `http://localhost:4000` | Dónde mandar los heartbeats y pedir `/peers` |
-| `JWT_SECRET` | igual en todos | Mismo secreto que el auth |
+| `COORDINATOR_ID` | `coord-1` | Identificador único de esta instancia |
+| `PORT` | `5001` | Puerto HTTP/WebSocket real para health, jugadores y `/connect` |
+| `PEER_PORT` | `6001` | Puerto reservado para el futuro servidor peer; no se abre en este objetivo |
+| `PUBLIC_URL` | `ws://localhost:5001` (o `wss://...`) | URL de WebSocket anunciada para clientes |
+| `PEER_URL` | `ws://localhost:6001` (o `wss://...`) | URL reservada para anunciar el futuro canal peer |
+| `AUTH_URL` | `http://localhost:4000` | URL base del Auth |
+| `COORDINATOR_SHARED_SECRET` | placeholder local reemplazado por un secreto común | Secreto compartido con Auth; no se imprime en logs |
+| `JWT_SECRET` | igual que en Auth | Firma de los JWT de usuario |
 
-**[Decisión]** Puerto de peers separado del de clientes, como recomienda el PDF: el tráfico entre coordinadores no se mezcla con el de los jugadores y los peers no necesitan túnel de ngrok si corren en la misma máquina.
+`PORT` y `PEER_PORT` son independientes y deben ser distintos. Los valores predeterminados conservan una instancia compatible: `PORT=5000`, `COORDINATOR_ID=coord-5000`, `PEER_PORT=6000`, URLs locales y `AUTH_URL=http://localhost:4000`. `JWT_SECRET` sigue siendo obligatoria; el secreto compartido es opcional durante esta fase para no romper instalaciones anteriores y se validará cuando se use en heartbeats.
+
+Para una sola instancia, configura `coordinator/.env` y ejecuta `npm start --prefix coordinator` desde la raíz. Para levantar tres instancias locales con IDs `coord-1` a `coord-3`, puertos HTTP `5001`–`5003` y puertos peer reservados `6001`–`6003`, ejecuta:
+
+```powershell
+.\coordinator\start-three.ps1
+```
+
+El script verifica los tres puertos HTTP antes de arrancar, da a cada proceso su propio conjunto de variables y restaura el entorno del proceso PowerShell al finalizar. También acepta `-HttpPorts` y `-PeerPorts` para usar otros puertos libres en pruebas. Cada instancia comparte `AUTH_URL` y `COORDINATOR_SHARED_SECRET` del entorno del script o de `coordinator/.env`; el secreto nunca se muestra.
+
+**Límite de alcance:** este objetivo prepara configuración y arranque únicamente. No abre un listener en `PEER_PORT`, no envía heartbeats ni consulta peers, y no implementa conexiones P2P, mesh o replicación.
 
 ### 11.3 Auth — endpoints del directorio
 
@@ -750,7 +769,7 @@ El auth guarda **en memoria** un `Map` independiente de los usuarios, identifica
 **`POST /heartbeat`** — lo llama cada coordinador cada 2 s.
 
 ```json
-{ "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:5101", "load": 7 }
+{ "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:6001", "load": 7 }
 ```
 
 Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth y coordinadores. Si falta la configuración o el header no coincide, se rechaza con un error genérico `401 UNAUTHORIZED`. Auth compara los valores con `crypto.timingSafeEqual` después de comprobar que tengan la misma longitud. `coordinatorId` debe ser una cadena de 1–64 caracteres alfanuméricos, guion o guion bajo, iniciando con un carácter alfanumérico; las URL deben usar `ws://` o `wss://` sin credenciales, query ni fragmento; `load` debe ser un entero no negativo.
@@ -773,7 +792,7 @@ Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth
 **`GET /peers?coordinatorId=<ID>`** — lo llaman los coordinadores para descubrir a los demás. Responde con `{ "peers": [...] }`; cada elemento contiene exclusivamente `coordinatorId`, `publicUrl` y `peerUrl`. Solo incluye coordinadores vigentes, excluye el ID solicitante, y no modifica el directorio. Si no hay peers vigentes, responde `{ "peers": [] }`. Un `coordinatorId` ausente o inválido devuelve `400 INVALID_COORDINATOR_ID`.
 
 ```json
-{ "peers": [ { "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:5101" }, { "coordinatorId": "coord-c", "publicUrl": "ws://localhost:5003", "peerUrl": "ws://localhost:5103" } ] }
+{ "peers": [ { "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:6001" }, { "coordinatorId": "coord-c", "publicUrl": "ws://localhost:5003", "peerUrl": "ws://localhost:6003" } ] }
 ```
 
 El directorio conserva todos los coordinadores vigentes, incluido el solicitante; solo se omite de la respuesta.
@@ -825,10 +844,11 @@ El directorio conserva todos los coordinadores vigentes, incluido el solicitante
 ```bash
 # Heartbeat a mano
 curl -X POST http://localhost:4000/heartbeat -H "Content-Type: application/json" \
-  -d '{"coordinatorId":"coord-x","publicUrl":"ws://localhost:5009","peerUrl":"ws://localhost:5109","connectedPlayers":0,"uptime":1}'
+  -H "x-coordinator-secret: <secreto-local-compartido>" \
+  -d '{"coordinatorId":"coord-x","publicUrl":"ws://localhost:5009","peerUrl":"ws://localhost:6009","load":0}'
 
 curl http://localhost:4000/coordinator   # el menos cargado, o 503
-curl http://localhost:4000/peers         # los vivos (coord-x desaparece a los 6 s)
+curl "http://localhost:4000/peers?coordinatorId=coord-x"  # los peers vigentes
 ```
 
 Prueba manual (sustentación):

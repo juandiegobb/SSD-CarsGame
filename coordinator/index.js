@@ -20,8 +20,71 @@ if (!process.env.JWT_SECRET) {
   process.exit(1);
 }
 
+function parsePort(name, value, fallback) {
+  const port = value === undefined || value === '' ? fallback : Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error(`Error de configuración: ${name} debe ser un puerto entre 1 y 65535.`);
+    process.exit(1);
+  }
+  return port;
+}
+
+function parseServiceUrl(name, value, fallback, protocols) {
+  let url;
+  try {
+    url = new URL(value || fallback);
+  } catch {
+    console.error(`Error de configuración: ${name} no es una URL válida.`);
+    process.exit(1);
+  }
+
+  if (!protocols.includes(url.protocol) || !url.hostname ||
+      url.username || url.password || url.search || url.hash) {
+    console.error(`Error de configuración: ${name} debe usar ${protocols.join(' o ')} sin credenciales, query ni fragmento.`);
+    process.exit(1);
+  }
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+const PORT = parsePort('PORT', process.env.PORT, 5000);
+const defaultPeerPort = PORT <= 64535 ? PORT + 1000 : PORT - 1000;
+const PEER_PORT = parsePort('PEER_PORT', process.env.PEER_PORT, defaultPeerPort);
+if (PEER_PORT === PORT) {
+  console.error('Error de configuración: PEER_PORT debe ser distinto de PORT.');
+  process.exit(1);
+}
+
+const COORDINATOR_ID = (process.env.COORDINATOR_ID || `coord-${PORT}`).trim();
+if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(COORDINATOR_ID)) {
+  console.error('Error de configuración: COORDINATOR_ID debe tener de 1 a 64 caracteres alfanuméricos, guion o guion bajo.');
+  process.exit(1);
+}
+
+const PUBLIC_URL = parseServiceUrl(
+  'PUBLIC_URL',
+  process.env.PUBLIC_URL,
+  `ws://localhost:${PORT}`,
+  ['ws:', 'wss:']
+);
+const PEER_URL = parseServiceUrl(
+  'PEER_URL',
+  process.env.PEER_URL,
+  `ws://localhost:${PEER_PORT}`,
+  ['ws:', 'wss:']
+);
+const AUTH_URL = parseServiceUrl(
+  'AUTH_URL',
+  process.env.AUTH_URL,
+  'http://localhost:4000',
+  ['http:', 'https:']
+);
+const COORDINATOR_SHARED_SECRET = process.env.COORDINATOR_SHARED_SECRET;
+if (COORDINATOR_SHARED_SECRET !== undefined && !COORDINATOR_SHARED_SECRET.trim()) {
+  console.error('Error de configuración: COORDINATOR_SHARED_SECRET no puede estar vacío.');
+  process.exit(1);
+}
+
 const JWT_SECRET = process.env.JWT_SECRET;
-const PORT = Number(process.env.PORT) || 5000;
 const CLIENT_ORIGINS = new Set(
   (process.env.CLIENT_ORIGINS || 'http://localhost:3000')
     .split(',')
@@ -862,8 +925,23 @@ wss.on('connection', (ws, payload) => {
 
 // ── Arranque del servidor ─────────────────────────────────────────────────────
 server.listen(PORT, () => {
-  console.log(`Coordinador escuchando en http://localhost:${PORT}`);
+  console.log(`Coordinador ${COORDINATOR_ID} escuchando en http://localhost:${PORT} (PORT HTTP/WebSocket; PEER_PORT reservado: ${PEER_PORT}).`);
   console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
 });
 
-module.exports = { app, server, wss, players, rooms };
+module.exports = {
+  app,
+  server,
+  wss,
+  players,
+  rooms,
+  config: {
+    COORDINATOR_ID,
+    PORT,
+    PEER_PORT,
+    PUBLIC_URL,
+    PEER_URL,
+    AUTH_URL,
+    hasCoordinatorSharedSecret: Boolean(COORDINATOR_SHARED_SECRET)
+  }
+};

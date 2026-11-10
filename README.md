@@ -99,7 +99,8 @@ SSD-CarsGame/
 ├── coordinator/               # Coordinador de Sesiones WebSocket (Puerto 5000)
 │   ├── index.js               # Verificación en upgrade, Map de jugadores, game loop y broadcast
 │   ├── package.json           # Dependencias: express, ws, jsonwebtoken, dotenv
-│   └── .env.example           # Plantilla de variables de entorno del Coordinador
+│   ├── .env.example           # Plantilla de variables de entorno del Coordinador
+│   └── start-three.ps1        # Arranque local de tres instancias aisladas
 ├── client/                    # Cliente Web Frontend y Servidor Estático (Puerto 3000)
 │   ├── server.js              # Servidor Express estático y endpoint dinámico /config.js
 │   ├── package.json           # Dependencias: express, dotenv
@@ -171,6 +172,7 @@ Copia los archivos de ejemplo en cada servicio:
    BCRYPT_ROUNDS=10
    DB_PATH=users.db
    CORS_ORIGINS=http://localhost:3000
+   COORDINATOR_SHARED_SECRET=reemplaza_con_un_secreto_local_compartido
    GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com   # Taller 5 (opcional)
    ```
    > `JWT_SECRET` debe tener **al menos 32 caracteres** (exigencia del Taller 5); si no, el auth no arranca.
@@ -179,9 +181,25 @@ Copia los archivos de ejemplo en cada servicio:
    > ⚠️ **CRÍTICO:** La variable `JWT_SECRET` debe ser **EXACTAMENTE LA MISMA** que la configurada en `auth-service/.env`. Si difieren, el Coordinador rechazará los tokens con error `TOKEN_INVALID_SIGNATURE`.
    ```dotenv
    PORT=5000
+   COORDINATOR_ID=coord-5000
+   PEER_PORT=6000
+   PUBLIC_URL=ws://localhost:5000
+   PEER_URL=ws://localhost:6000
+   AUTH_URL=http://localhost:4000
    JWT_SECRET=pega_aqui_la_clave_generada
+   COORDINATOR_SHARED_SECRET=reemplaza_con_el_mismo_secreto_local_de_auth
    # Taller 5 (opcionales): WORLD_WIDTH=800 WORLD_HEIGHT=600 PLAYER_RADIUS=20 PLAYER_SPEED=200 TICK_RATE=20
    ```
+   `COORDINATOR_SHARED_SECRET` debe coincidir con el valor local de `auth-service/.env`; no reutilices `JWT_SECRET` para ese propósito.
+   `PORT` es el puerto HTTP/WebSocket activo; `PEER_PORT` es independiente y queda reservado para una fase futura. Para iniciar una instancia:
+   ```powershell
+   npm start --prefix coordinator
+   ```
+   Para iniciar tres coordinadores independientes en puertos HTTP `5001`–`5003` (con `PEER_PORT` reservado en `6001`–`6003`):
+   ```powershell
+   .\coordinator\start-three.ps1
+   ```
+   El script comprueba que los puertos HTTP estén libres, comparte `AUTH_URL` y el secreto configurados en el entorno o en `coordinator/.env`, y restaura las variables temporales al terminar. No abre los puertos peer ni implementa comunicación entre coordinadores.
 
 4. **Configurar `client/.env`:**
    ```dotenv
