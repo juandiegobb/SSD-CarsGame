@@ -228,11 +228,24 @@
                     const item = document.createElement("li");
                     const displayUsername = normalizeUsername(player.username);
                     const name = document.createElement("span");
-                    name.textContent = player.userId === String(currentRoomHostId) ? `${displayUsername} · Creador` : displayUsername;
+                    const isRoomHost = String(player.userId) === String(currentRoomHostId);
+                    name.textContent = isRoomHost ? `${displayUsername} · Creador` : displayUsername;
                     item.append(avatarElement(displayUsername, player.picture), name);
+                    if (String(currentUserId) === String(currentRoomHostId) &&
+                        !isRoomHost) {
+                        const transferButton = document.createElement("button");
+                        transferButton.type = "button";
+                        transferButton.textContent = "Hacer creador";
+                        transferButton.addEventListener("click", () => {
+                            socket.send(JSON.stringify({ type: "room_transfer_host", targetUserId: String(player.userId) }));
+                        });
+                        item.append(transferButton);
+                    }
                     roomMembersList.append(item);
                 }
-                if (currentRoomStatus === "waiting") startGameButton.hidden = String(currentUserId) !== String(currentRoomHostId) || players.length < 2;
+                startGameButton.hidden = String(currentUserId) !== String(currentRoomHostId) ||
+                    currentRoomStatus !== "waiting" ||
+                    players.length < 2;
             }
 
             // Foto de perfil de Google si existe; si no (cuenta local o la imagen no carga), la inicial.

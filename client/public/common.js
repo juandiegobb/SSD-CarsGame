@@ -230,8 +230,10 @@ function friendlyFeedback(payload, fallbackMessage = "No se pudo completar la ac
         ROOM_FULL: { message: "Esta sala ya está completa.", hint: "Elige una sala con espacio para nuevos pilotos." },
         ROOM_ALREADY_STARTED: { message: "Esta partida ya comenzó.", hint: "Espera a que termine o elige otra sala." },
         ROOM_ALREADY_JOINED: { message: "Ya estás dentro de una sala.", hint: "Sal de la sala actual antes de cambiar de sala." },
-        NOT_ROOM_HOST: { message: "Solo el creador puede iniciar la carrera.", hint: "Espera a que el creador pulse Iniciar partida." },
+        NOT_ROOM_HOST: { message: "Solo el creador actual puede realizar esta acción.", hint: "Espera a que el creador inicie la partida o transfiera el rol." },
         MIN_PLAYERS_REQUIRED: { message: "Todavía faltan pilotos.", hint: "Necesitas al menos 2 jugadores para iniciar." },
+        HOST_TRANSFER_TO_SELF: { message: "No puedes transferirte el rol de creador a ti mismo.", hint: "Selecciona a otro participante de la sala." },
+        ROOM_MEMBER_NOT_FOUND: { message: "Ese participante ya no está en la sala.", hint: "Elige a un participante que siga dentro de la sala." },
         COLOR_INVALID: { message: "Ese color de carro no es válido.", hint: "Elige uno usando el selector de color." },
         COLOR_TAKEN: { message: "Otro piloto ya eligió ese color.", hint: "Elige un color diferente para tu carro." },
         ROOM_NOT_JOINED: { message: "Todavía no estás dentro de una sala.", hint: "Crea una sala o únete a una disponible." }

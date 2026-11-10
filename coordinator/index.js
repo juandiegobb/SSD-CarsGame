@@ -891,6 +891,43 @@ wss.on('connection', (ws, payload) => {
         break;
       }
 
+      case 'room_transfer_host': {
+        const room = entry.roomId ? rooms.get(entry.roomId) : null;
+        if (!room) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_NOT_JOINED', message: 'Debes estar dentro de una sala.', hint: 'Entra en una sala antes de cambiar su creador.' });
+          break;
+        }
+        if (room.hostUserId !== userId) {
+          sendWs(ws, { type: 'error', ok: false, code: 'NOT_ROOM_HOST', message: 'Solo el creador actual puede transferir el rol.', hint: 'Solicita al creador actual que realice el cambio.' });
+          break;
+        }
+
+        const targetUserId = typeof msg.targetUserId === 'string' ? msg.targetUserId : '';
+        if (targetUserId === userId) {
+          sendWs(ws, { type: 'error', ok: false, code: 'HOST_TRANSFER_TO_SELF', message: 'No puedes transferirte el rol de creador a ti mismo.', hint: 'Selecciona a otro participante de la sala.' });
+          break;
+        }
+
+        const target = players.get(targetUserId);
+        if (!room.members.has(targetUserId) || !target || target.roomId !== room.roomId) {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_MEMBER_NOT_FOUND', message: 'El participante seleccionado no pertenece a esta sala.', hint: 'Elige a un participante que siga dentro de la sala.' });
+          break;
+        }
+
+        room.hostUserId = targetUserId;
+        room.hostUsername = target.username;
+        broadcastRoom(room.roomId, {
+          type: 'room_updated',
+          roomId: room.roomId,
+          players: roomPlayerList(room),
+          status: room.status,
+          hostUserId: room.hostUserId,
+          hostUsername: room.hostUsername
+        });
+        broadcastRoomList();
+        break;
+      }
+
       case 'game_start': {
         const room = entry.roomId ? rooms.get(entry.roomId) : null;
         if (!room) {

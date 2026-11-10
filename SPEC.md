@@ -657,6 +657,7 @@ userId → { username, provider, socket, connectedAt, expirationTimer,
 - Las salas viven en memoria en el coordinador. Una sala tiene nombre, usuario anfitrión, estado (`waiting` o `playing`) y entre 0 y 8 miembros.
 - Crear una sala une automáticamente al creador y requiere un nombre de 3–32 caracteres, letras, números, espacios o guiones.
 - El anfitrión es el único usuario autorizado para iniciar la partida. No puede iniciar con menos de 2 miembros.
+- El creador actual puede transferir manualmente el rol a otro miembro; el servidor valida creador y pertenencia, y notifica el nuevo `hostUserId` a toda la sala. No se inicia la partida automáticamente.
 - Los usuarios pueden consultar las salas disponibles y entrar en una sala con espacio y estado `waiting`.
 - Cada sala tiene su propio estado de juego; los estados y movimientos solo se difunden a los miembros de esa sala.
 - El color de cada jugador se representa como hexadecimal `#rrggbb`. No puede haber dos jugadores con el mismo color dentro de la misma sala; el servidor valida y rechaza la duplicidad.
@@ -668,6 +669,7 @@ userId → { username, provider, socket, connectedAt, expirationTimer,
 | `room_list` | `{"type":"room_list"}` | `room_list` solo al solicitante |
 | `room_join` | `{"type":"room_join","roomId":"..."}` | `room_joined`, lista global actualizada |
 | `room_leave` | `{"type":"room_leave"}` | `room_left`, lista global actualizada |
+| `room_transfer_host` | `{"type":"room_transfer_host","targetUserId":"<userId>"}` | Solo el creador actual; el destinatario debe ser otro miembro de la sala |
 | `game_start` | `{"type":"game_start"}` | Solo el anfitrión; exige al menos 2 miembros |
 | `room_color_update` | `{"type":"room_color_update","color":"#rrggbb"}` | Rechaza colores ya usados en la sala |
 
@@ -676,10 +678,11 @@ userId → { username, provider, socket, connectedAt, expirationTimer,
 | `room_list` | `{"type":"room_list","rooms":[{"roomId","name","hostUserId","hostUsername","playerCount","maxPlayers", "status"}]}` |
 | `room_created` | Incluye los datos de la sala y confirma que el creador entró |
 | `room_joined` | Incluye `roomId`, `name`, `hostUserId`, `hostUsername`, `players` |
+| `room_updated` | Incluye `roomId`, `status`, `hostUserId`, `hostUsername` y `players`; actualiza el creador visible y sus permisos |
 | `room_left` | Confirma la salida y permite volver al lobby |
 | `game_started` | Confirma el inicio y identifica a los jugadores de la sala |
 
-Códigos nuevos de sala: `INVALID_ROOM_NAME`, `ROOM_NOT_FOUND`, `ROOM_FULL`, `ROOM_ALREADY_STARTED`, `ROOM_ALREADY_JOINED`, `NOT_ROOM_HOST`, `MIN_PLAYERS_REQUIRED`, `COLOR_INVALID`, `COLOR_TAKEN`, `ROOM_NOT_JOINED`.
+Códigos nuevos de sala: `INVALID_ROOM_NAME`, `ROOM_NOT_FOUND`, `ROOM_FULL`, `ROOM_ALREADY_STARTED`, `ROOM_ALREADY_JOINED`, `NOT_ROOM_HOST`, `HOST_TRANSFER_TO_SELF`, `ROOM_MEMBER_NOT_FOUND`, `MIN_PLAYERS_REQUIRED`, `COLOR_INVALID`, `COLOR_TAKEN`, `ROOM_NOT_JOINED`.
 
 ### 10.5 Cliente
 
