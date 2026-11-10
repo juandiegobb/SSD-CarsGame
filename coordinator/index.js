@@ -458,6 +458,31 @@ function removePlayersFromPeer(peerId) {
   }
 }
 
+function acceptRemoteIntent(peerId, message) {
+  const player = typeof message.userId === 'string' ? players.get(message.userId) : null;
+  const dir = message.intent && message.intent.dir;
+  if (!player || player.local || player.home !== peerId ||
+      !dir || typeof dir.x !== 'number' || typeof dir.y !== 'number' ||
+      !Number.isFinite(dir.x) || !Number.isFinite(dir.y)) return;
+  player.intent = { x: Math.sign(dir.x), y: Math.sign(dir.y) };
+}
+
+function acceptRemoteExtras(peerId, message) {
+  const player = typeof message.userId === 'string' ? players.get(message.userId) : null;
+  if (!player || player.local || player.home !== peerId || !isValidPeerExtras(message.extras)) return;
+  player.extras = message.extras;
+  if (player.roomId && rooms.has(player.roomId)) {
+    broadcastRoom(player.roomId, {
+      type: 'room_updated',
+      roomId: player.roomId,
+      players: roomPlayerList(rooms.get(player.roomId)),
+      status: rooms.get(player.roomId).status,
+      hostUserId: rooms.get(player.roomId).hostUserId,
+      hostUsername: rooms.get(player.roomId).hostUsername
+    });
+  }
+}
+
 function assignAvailableRoomColor(room, userId) {
   const used = new Set(roomPlayerList(room).map((player) => player.color));
   const color = ROOM_COLORS.find((candidate) => !used.has(candidate));
@@ -722,6 +747,10 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       acceptRemotePlayer(peerId, msg);
     } else if (msg.type === 'player_left') {
       removeRemotePlayer(peerId, msg.userId);
+    } else if (msg.type === 'intent_replicate') {
+      acceptRemoteIntent(peerId, msg);
+    } else if (msg.type === 'extras_replicate') {
+      acceptRemoteExtras(peerId, msg);
     }
   });
 
@@ -1023,6 +1052,11 @@ wss.on('connection', (ws, payload) => {
         }
         // Sanitizar a -1, 0, 1: NO confiar en el cliente ({x: 9999} queda en 1)
         entry.intent = { x: Math.sign(dir.x), y: Math.sign(dir.y) };
+        broadcastPeer({
+          type: 'intent_replicate',
+          userId,
+          intent: { dir: entry.intent }
+        });
         break;
       }
 
@@ -1178,6 +1212,7 @@ wss.on('connection', (ws, payload) => {
           break;
         }
         entry.extras = { ...entry.extras, color };
+        broadcastPeer({ type: 'extras_replicate', userId, extras: entry.extras });
         broadcastRoom(room.roomId, { type: 'room_updated', roomId: room.roomId, players: roomPlayerList(room), status: room.status });
         break;
       }
@@ -1198,6 +1233,7 @@ wss.on('connection', (ws, payload) => {
         }
         // Se replica a todos en el próximo state (persistente durante la sesión)
         entry.extras = extras;
+        broadcastPeer({ type: 'extras_replicate', userId, extras: entry.extras });
         break;
       }
 
