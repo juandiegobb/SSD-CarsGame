@@ -213,5 +213,5 @@ try {
   }
 }
 
-Write-Host 'Las tres instancias iniciaron. PEER_PORT queda reservado; aún no hay servidor P2P.'
+Write-Host 'Las tres instancias iniciaron; los coordinadores establecen el mesh por sus puertos peer.'
 $startedInstances.ToArray()

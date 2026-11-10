@@ -252,6 +252,7 @@ async function refreshPeers() {
     peers = payload.peers
       .filter((peer) => peer.coordinatorId !== COORDINATOR_ID)
       .map(({ coordinatorId, publicUrl, peerUrl }) => ({ coordinatorId, publicUrl, peerUrl }));
+    connectDiscoveredPeers();
   } catch {
     if (!peerDiscoveryStopped) {
       console.error('[coordinator] No se pudo consultar la lista de peers en Auth.');
@@ -293,6 +294,8 @@ function shutdownCoordinator() {
   for (const client of wss.clients) {
     client.close(1001, 'server shutdown');
   }
+  for (const client of peerWss.clients) client.close(1001, 'server shutdown');
+  peerHttpServer.close();
   server.close();
 }
 
@@ -579,10 +582,18 @@ peerHttpServer.on('upgrade', (req, socket, head) => {
   peerWss.handleUpgrade(req, socket, head, (ws) => peerWss.emit('connection', ws));
 });
 
-peerWss.on('connection', (ws) => {
+function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = false) {
   const helloTimer = setTimeout(() => ws.close(4000, 'hello timeout'), PEER_HELLO_TIMEOUT_MS);
   helloTimer.unref();
   let peerId = null;
+
+  const sendHello = () => {
+    if (isOpenSocket(ws)) {
+      ws.send(JSON.stringify({ type: 'hello', coordinatorId: COORDINATOR_ID }));
+    }
+  };
+  if (initiatedLocally) ws.once('open', sendHello);
+  else sendHello();
 
   ws.on('message', (raw) => {
     let msg;
@@ -596,29 +607,50 @@ peerWss.on('connection', (ws) => {
     if (!peerId) {
       if (msg.type !== 'hello' || typeof msg.coordinatorId !== 'string' ||
           !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(msg.coordinatorId) ||
-          msg.coordinatorId === COORDINATOR_ID) {
+          msg.coordinatorId === COORDINATOR_ID ||
+          (expectedPeerId && msg.coordinatorId !== expectedPeerId)) {
         ws.close(4000, 'invalid hello');
         return;
       }
       peerId = msg.coordinatorId;
-      if (COORDINATOR_ID < peerId || peerConnections.has(peerId)) {
+      const shouldInitiate = COORDINATOR_ID < peerId;
+      if (initiatedLocally !== shouldInitiate ||
+          (peerConnections.has(peerId) && peerConnections.get(peerId) !== ws)) {
         ws.close(4000, 'duplicate peer');
         return;
       }
       clearTimeout(helloTimer);
       peerConnections.set(peerId, ws);
+      pendingPeerConnections.delete(peerId);
       return;
     }
   });
 
   ws.on('close', () => {
     clearTimeout(helloTimer);
+    if (expectedPeerId && pendingPeerConnections.get(expectedPeerId) === ws) {
+      pendingPeerConnections.delete(expectedPeerId);
+    }
     if (peerId && peerConnections.get(peerId) === ws) peerConnections.delete(peerId);
   });
   ws.on('error', (err) => {
     console.error(`[coordinator] Error en peer ${peerId || 'sin identificar'} (${err.code || 'UNKNOWN'}).`);
   });
-});
+}
+
+peerWss.on('connection', (ws) => attachPeerConnection(ws));
+
+function connectDiscoveredPeers() {
+  for (const peer of peers) {
+    if (COORDINATOR_ID >= peer.coordinatorId ||
+        peerConnections.has(peer.coordinatorId) ||
+        pendingPeerConnections.has(peer.coordinatorId)) continue;
+
+    const ws = new WebSocket(`${peer.peerUrl.replace(/\/+$/, '')}/mesh`);
+    pendingPeerConnections.set(peer.coordinatorId, ws);
+    attachPeerConnection(ws, peer.coordinatorId, true);
+  }
+}
 
 // ── Servidor WebSocket (noServer: true — el upgrade se maneja manualmente) ───
 // ── Helper para clasificar errores de verificación JWT (reutilizado en upgrade y verify) ──
@@ -1197,14 +1229,16 @@ wss.on('connection', (ws, payload) => {
 
 // ── Arranque del servidor ─────────────────────────────────────────────────────
 server.listen(PORT, () => {
-  console.log(`Coordinador ${COORDINATOR_ID} escuchando en http://localhost:${PORT} (PORT HTTP/WebSocket; PEER_PORT reservado: ${PEER_PORT}).`);
+  console.log(`Coordinador ${COORDINATOR_ID} escuchando en http://localhost:${PORT} y peers en ws://localhost:${PEER_PORT}/mesh.`);
   console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
+  peerHttpServer.listen(PEER_PORT);
   startHeartbeat();
   startPeerDiscovery();
 });
 server.once('close', () => {
   stopHeartbeat();
   stopPeerDiscovery();
+  if (peerHttpServer.listening) peerHttpServer.close();
   if (gameLoopTimer) {
     clearInterval(gameLoopTimer);
     gameLoopTimer = null;
@@ -1217,6 +1251,8 @@ module.exports = {
   app,
   server,
   wss,
+  peerWss,
+  peerConnections,
   players,
   rooms,
   countOpenLocalPlayers,
