@@ -78,7 +78,7 @@ function getJwtExpiresIn() {
       }
     }
   } catch (err) {
-    console.warn('[auth-service] Advertencia al leer .env para JWT_EXPIRES_IN:', err.message || err);
+    console.warn('[auth-service] No se pudo leer la configuración dinámica de JWT_EXPIRES_IN.');
   }
   return currentJwtExpiresIn;
 }
@@ -638,7 +638,7 @@ app.use((req, res) => {
     res,
     404,
     'NOT_FOUND',
-    `Ruta ${req.method} ${req.originalUrl} no encontrada.`,
+    'La ruta solicitada no existe.',
     'Rutas disponibles: GET /health, POST /register, POST /login, POST /auth/google.'
   );
 });
@@ -657,7 +657,7 @@ app.use((err, req, res, next) => {
   }
 
   // Errores internos no controlados: nunca exponer stack traces, SQL ni secretos
-  console.error('Error interno no controlado:', err.message || err);
+  console.error(`[auth-service] Error interno no controlado (${err.code || err.name || 'UNKNOWN'}).`);
   return sendError(
     res,
     500,

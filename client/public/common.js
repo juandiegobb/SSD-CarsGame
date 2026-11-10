@@ -46,6 +46,18 @@ async function apiPost(path, body) {
 // Taller 6: el auth (directory service) dice a qué coordinador conectarse.
 // Devuelve { ok: true, coordinatorId, publicUrl } o { ok: false, status, payload }
 // (o { ok: false, networkError: true } si el auth no responde).
+function normalizeCoordinatorUrl(value) {
+    try {
+        const url = new URL(value);
+        if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+            return null;
+        }
+        return url.origin;
+    } catch {
+        return null;
+    }
+}
+
 async function requestCoordinator() {
     let response;
     let payload = null;
@@ -61,20 +73,47 @@ async function requestCoordinator() {
         return { ok: false, networkError: true };
     }
 
-    if (
-        response.ok &&
-        payload &&
-        typeof payload.coordinatorId === "string" &&
-        typeof payload.publicUrl === "string"
-    ) {
+    if (response.ok && payload && typeof payload.coordinatorId === "string" && typeof payload.publicUrl === "string") {
+        const publicUrl = normalizeCoordinatorUrl(payload.publicUrl);
+        if (!publicUrl) return { ok: false, status: response.status, payload: null };
         return {
             ok: true,
             coordinatorId: payload.coordinatorId,
-            publicUrl: payload.publicUrl.replace(/\/+$/, "")
+            publicUrl
         };
     }
 
     return { ok: false, status: response.status, payload };
+}
+
+async function requestWsTicket(coordinatorUrl, token) {
+    try {
+        const normalizedUrl = normalizeCoordinatorUrl(coordinatorUrl);
+        if (!normalizedUrl) return { ok: false };
+        const endpoint = new URL(normalizedUrl);
+        if (endpoint.protocol === "wss:") endpoint.protocol = "https:";
+        else if (endpoint.protocol === "ws:") endpoint.protocol = "http:";
+        else return { ok: false };
+        endpoint.pathname = "/ws-ticket";
+        endpoint.search = "";
+        endpoint.hash = "";
+
+        const response = await fetch(endpoint, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${token}`,
+                "ngrok-skip-browser-warning": "true"
+            },
+            cache: "no-store"
+        });
+        const payload = await response.json().catch(() => null);
+        if (response.ok && payload?.ok === true && typeof payload.ticket === "string") {
+            return { ok: true, ticket: payload.ticket };
+        }
+        return { ok: false, status: response.status, payload };
+    } catch {
+        return { ok: false, networkError: true };
+    }
 }
 
 function getToken() {
@@ -150,9 +189,17 @@ function friendlyFeedback(payload, fallbackMessage = "No se pudo completar la ac
             message: "Tu sesión no es válida.",
             hint: "Inicia sesión nuevamente para continuar."
         },
+        TICKET_INVALID: {
+            message: "La conexión segura ya no es válida.",
+            hint: "Vuelve a conectarte para solicitar un ticket nuevo."
+        },
         TOKEN_MISMATCH: {
             message: "Esta sesión corresponde a otra cuenta.",
             hint: "Inicia sesión en la cuenta que quieres usar."
+        },
+        TOKEN_TRANSPORT_UNSUPPORTED: {
+            message: "La conexión usa un método de autenticación antiguo.",
+            hint: "Recarga la página para usar el método seguro actual."
         },
         NO_COORDINATORS_AVAILABLE: {
             message: "No hay coordinadores de juego disponibles en este momento.",

@@ -9,7 +9,7 @@ Este archivo define **cómo debe trabajar el agente** (Claude Code, Cursor, Copi
 Taller 4 de Sistemas Distribuidos (Universidad de Boyacá): primera parte del proyecto final, un videojuego web multijugador. Esta parte implementa **identidad**:
 
 - **Auth Service** (HTTP, :4000): registro, login, JWT de 1 h, SQLite propia.
-- **Coordinador** (HTTP + WS, :5000): WS en `/connect?token=...`, verifica JWT, `Map` en memoria de jugadores, broadcast `players_update`.
+- **Coordinador** (HTTP + WS, :5000): valida JWT en `POST /ws-ticket`, consume ticket de un solo uso en `/connect`, mantiene `Map` en memoria de jugadores y hace broadcast `players_update`.
 - **Cliente Web** (HTML + JS plano, :3000): login/registro, lobby en vivo, logout.
 - Los tres se despliegan con **ngrok**, cada uno en su propio túnel.
 
@@ -63,13 +63,13 @@ SSD-C.../
 
 ### Seguridad
 1. **Nunca** guardar contraseñas en claro. `bcrypt` con ≥ 10 rounds desde el primer commit.
-2. **Nunca** imprimir en logs contraseñas, hashes, tokens completos ni `req.body`.
+2. **Nunca** imprimir en logs contraseñas, hashes, JWT, tickets de conexión ni `req.body`.
 3. **Nunca** hardcodear `JWT_SECRET`, puertos ni URLs. Todo va en `.env` (dotenv) y se documenta en `.env.example`.
 4. **Nunca** versionar `.env`, `*.db` ni `node_modules/`.
 5. `JWT_SECRET` debe ser **la misma** en `auth-service` y `coordinator`.
 6. Verificar el JWT con `algorithms: ['HS256']` explícito.
 7. `/login` responde un `401 INVALID_CREDENTIALS` idéntico para "usuario inexistente" y "clave incorrecta".
-8. Verificar el token en el evento **`upgrade`**, no dentro de `connection`.
+8. Validar el JWT en `POST /ws-ticket` y consumir el ticket en el evento **`upgrade`**, antes de registrar al jugador.
 9. En el cliente, renderizar nombres con `textContent` (nunca `innerHTML` con datos del servidor).
 
 ### Contrato y consistencia (requisito del estudiante)
@@ -134,7 +134,7 @@ Los roles son **modos de trabajo** de un mismo agente (o de varios, si se ejecut
 - [ ] Instalar `express ws jsonwebtoken dotenv`.
 - [ ] Servidor `http` + `WebSocketServer({ noServer: true })`.
 - [ ] `GET /health`, `GET /players`, `404`.
-- [ ] `upgrade`: solo ruta `/connect`; verificar JWT; clasificar `TOKEN_MISSING | TOKEN_MALFORMED | TOKEN_INVALID_SIGNATURE | TOKEN_EXPIRED`; en fallo → mensaje `error` + `close(4001, 'invalid token')`.
+- [ ] `POST /ws-ticket`: verificar JWT; en `upgrade`, consumir ticket efímero de un solo uso antes de aceptar el WebSocket; en fallo → mensaje `error` + `close(4001, 'invalid token')`.
 - [ ] `players` Map (`userId → { username, socket, connectedAt }`) y `broadcastPlayers()` a **todos** los sockets abiertos.
 - [ ] Política de doble pestaña (reemplazar con `4002 "session replaced"`): el `close` del socket viejo **no** debe borrar la entrada del nuevo (comparar `players.get(userId).socket === ws`).
 - [ ] Enviar `connected` al socket nuevo; luego `players_update` a todos.
@@ -199,7 +199,7 @@ El PDF indica que **se revisará el historial** y que un único commit final es 
   - `chore(repo): reorganizar estructura según taller`
   - `feat(auth): registro con bcrypt y manejo de duplicados`
   - `feat(auth): login con emisión de JWT de 1 hora`
-  - `feat(coordinator): verificación de JWT en el upgrade`
+  - `feat(coordinator): ticket efímero para handshake autenticado`
   - `fix(coordinator): evitar que el close del socket viejo borre al nuevo`
   - `feat(client): lobby con lista de jugadores en vivo`
   - `docs: README con diagrama y comandos de ngrok`

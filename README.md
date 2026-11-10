@@ -60,8 +60,8 @@ flowchart TD
     BrowserB -->|HTTPS| TunnelClient
     BrowserA -->|HTTPS POST| TunnelAuth
     BrowserB -->|HTTPS POST| TunnelAuth
-    BrowserA -->|WSS /connect?token=JWT| TunnelCoord
-    BrowserB -->|WSS /connect?token=JWT| TunnelCoord
+    BrowserA -->|WSS /connect + ticket efímero| TunnelCoord
+    BrowserB -->|WSS /connect + ticket efímero| TunnelCoord
 
     %% Túneles -> Backend
     TunnelClient --> ClientApp
@@ -79,9 +79,11 @@ flowchart TD
 ### Flujo de Vida de una Sesión:
 1. **Registro:** El cliente envía `POST /register` con `{ username, password }` al Auth Service. El password se hashea con `bcrypt` (10 rounds) y se guarda en SQLite.
 2. **Login:** El cliente envía `POST /login`. El Auth Service valida las credenciales y genera un **JWT** firmado (algoritmo `HS256`, vigencia configurable).
-3. **Handshake WebSocket:** El cliente abre conexión a `ws://host:5000/connect?token=<JWT>` (o `wss://`). El Coordinador intercepta el evento HTTP `upgrade` y valida el token antes de aceptar el socket.
+3. **Handshake WebSocket:** El cliente envía el JWT al coordinador por `POST /ws-ticket` en el header `Authorization` y recibe un ticket aleatorio de un solo uso, válido por 15 segundos. El ticket viaja en un subprotocolo del handshake `ws://` (o `wss://`); el JWT no aparece en la URL ni en mensajes WebSocket.
 4. **Presencia en Vivo:** El Coordinador registra al jugador en un `Map` en memoria (`userId -> { username, socket, ... }`) y emite un broadcast `players_update` a todos los clientes conectados.
 5. **Juego (Taller 5):** El cliente envía `intent` con la dirección de las teclas; el game loop del Coordinador mueve a cada jugador y difunde un `state` 20 veces por segundo. Con Google, el paso 2 se reemplaza por `POST /auth/google` y el resto es idéntico (mismo JWT).
+
+**Riesgo residual del cliente:** el JWT de login se guarda en `localStorage` para que la aplicación web pueda recuperarlo al recargar. Cualquier JavaScript ejecutado en el origen del cliente podría leerlo; por ello se evita insertar datos del servidor con `innerHTML` y no se deben agregar scripts de terceros sin revisión. Cambiar a una sesión `HttpOnly` exigiría una arquitectura de sesión/proxy distinta y queda fuera de este cambio.
 
 ---
 
@@ -248,7 +250,7 @@ Todas las respuestas JSON del sistema respetan un estándar uniforme:
 * **Cliente → Servidor:**
   * `{"type":"ping"}` → Responde `{"type":"pong", "ok":true, "serverTime":"..."}`
   * `{"type":"who"}` → Responde `players_update` únicamente al socket que solicitó.
-  * `{"type":"verify","token":"<JWT>"}` → Valida si el token es vigente y pertenece a esta sesión. Si es válido responde `verified`. Si es inválido/malformado/de otro usuario responde `error` y desconecta con `4001`. Si expiró responde `error TOKEN_EXPIRED` y desconecta con `4003`.
+  * `{"type":"verify"}` → Valida la sesión activa. Para confirmar un JWT actualizado se solicita un ticket por HTTPS y se envía `{"type":"verify","ticket":"<TICKET>"}`; el JWT no viaja en el mensaje.
   * Mensaje no reconocido → Responde error `UNKNOWN_MESSAGE_TYPE` (no cierra socket).
   * Texto no JSON → Responde error `INVALID_JSON` (no cierra socket).
 
@@ -371,9 +373,11 @@ En Thunder Client:
 
 Con el Coordinador ejecutándose en el puerto 5000:
 
-#### 1. Conexión exitosa con token
-```bash
-wscat -c "ws://localhost:5000/connect?token=<TOKEN_JWT>"
+#### 1. Conexión autenticada con ticket de un solo uso
+```powershell
+$login = Invoke-RestMethod -Method Post http://localhost:4000/login -ContentType "application/json" -Body '{"username":"alice","password":"<CONTRASEÑA>"}'
+$ticket = (Invoke-RestMethod -Method Post http://localhost:5000/ws-ticket -Headers @{ Authorization = "Bearer $($login.token)" }).ticket
+wscat -c "ws://localhost:5000/connect" -s carsgame.v1 -s "auth.$ticket"
 ```
 *Salida inmediata recibida:*
 ```json
@@ -388,33 +392,18 @@ Estando conectado en `wscat`:
 * Enviar: `{"type":"who"}`
   * Recibe: `{"type":"players_update","players":[{"userId":"1","username":"alice"}]}` (solo al emisor).
 
-#### 3. Casos de Error en Handshake (Cierre 4001)
-* **Sin token:** `wscat -c "ws://localhost:5000/connect"`  
-  → Recibe `TOKEN_MISSING` y desconexión con código `4001 (invalid token)`.
-* **Token malformado:** `wscat -c "ws://localhost:5000/connect?token=basura"`  
-  → Recibe `TOKEN_MALFORMED` y desconexión con código `4001`.
-* **Firma errónea:** Conectar con un token firmado con otra secret  
-  → Recibe `TOKEN_INVALID_SIGNATURE` y desconexión con código `4001`.
-* **Token expirado:** Conectar con un token cuyo `exp` ya pasó  
-  → Recibe `TOKEN_EXPIRED` y desconexión con código `4001`.
+#### 3. Casos de error de autenticación
+* **Sin ticket:** conectar sin el subprotocolo `auth.<ticket>` → recibe `TOKEN_MISSING` y cierre `4001`.
+* **Ticket inválido, vencido o repetido:** conectar con un ticket que no fue emitido para esa sesión → recibe `TICKET_INVALID` y cierre `4001`.
+* **JWT malformado, con firma errónea o expirado:** `POST /ws-ticket` lo rechaza con HTTP `401`; el JWT no se envía en la URL ni en el handshake.
 
 #### 4. Validación de Sesión en Vivo (`verify`)
 Estando conectado en `wscat`:
-* **Token válido del mismo usuario:**  
-  Enviar `{"type":"verify","token":"<TOKEN_ALICE>"}`  
+* **Sesión actual:** enviar `{"type":"verify"}`. Para confirmar una sesión actualizada, solicitar un ticket nuevo por `POST /ws-ticket` y enviar `{"type":"verify","ticket":"<TICKET>"}`.
   → Recibe `verified` con confirmación y `expiresAt`.
-* **Token malformado / basura:**  
-  Enviar `{"type":"verify","token":"basura"}`  
-  → Recibe `error TOKEN_MALFORMED` y desconexión con código `4001 (invalid token)`.
-* **Sin campo token:**  
-  Enviar `{"type":"verify"}`  
-  → Recibe `error TOKEN_MISSING` y desconexión con código `4001`.
-* **Token expirado:**  
-  Enviar token vencido  
-  → Recibe `error TOKEN_EXPIRED` y desconexión con código `4003 (token expired)`.
-* **Token de otro usuario:**  
-  Enviar token válido emitido para Bob en el socket de Alice  
-  → Recibe `error TOKEN_MISMATCH` ("El token no corresponde a esta sesión") y desconexión con código `4001`.
+* **Ticket inválido, vencido o de otro usuario:** enviar `{"type":"verify","ticket":"<TICKET_INVALIDO>"}`
+  → Recibe un error y desconexión con código `4001`.
+* **JWT malformado o expirado:** `POST /ws-ticket` lo rechaza con HTTP `401` antes de abrir el WebSocket.
 
 ---
 
@@ -427,9 +416,9 @@ Esta sección sustenta los requerimientos clave exigidos en el taller:
    * *Por qué:* Los refrescos de página (`F5`) o micro-cortes de red dejan sockets "zombi" en el servidor. Rechazar la nueva conexión bloquearía al usuario. Al dar prioridad a la intención más reciente, se cierra el socket viejo con `4002 "session replaced"`.
    * *Detalle crítico:* En el evento `close`, solo se elimina del `Map` si el socket que cierra es el socket actualmente activo (`players.get(userId)?.socket === ws`), evitando que el cierre asíncrono del viejo borre al nuevo. Además, el cliente no borra el token en `4002` para evitar bucles de expulsión mutua entre pestañas.
 
-2. **Verificación de JWT en el evento `upgrade` HTTP:**
-   * *Decisión:* La validación criptográfica ocurre antes de completar el handshake del WebSocket, no dentro del evento `connection`.
-   * *Por qué:* Cumple el Error Típico #3 del PDF. Evita reservar recursos de socket a conexiones no autorizadas. Para permitir que el cliente reciba el JSON descriptivo de error, el servidor acepta el upgrade de manera temporal, emite el payload `type: 'error'` y acto seguido cierra con `4001 'invalid token'`.
+2. **Autenticación del WebSocket con ticket efímero:**
+   * *Decisión:* El coordinador valida el JWT por HTTPS en `POST /ws-ticket`, devuelve un ticket aleatorio de un solo uso y consume ese ticket en `upgrade` antes de registrar al jugador.
+   * *Por qué:* El JWT no aparece en la URL ni en mensajes WebSocket, y no se aceptan jugadores sin autenticación. El ticket dura hasta 15 segundos; viaja como subprotocolo y no se devuelve como subprotocolo seleccionado. Debe usarse `wss://` públicamente y evitar registrar `Authorization` o `Sec-WebSocket-Protocol`, porque proxies que registran esos headers podrían ver el JWT o el ticket. El coordinador rechaza con HTTP `400` cualquier query en `/connect`; aun así, un proxy podría registrar una URL antigua antes del rechazo, por lo que no se deben conservar clientes obsoletos que envíen JWT en la URL.
 
 3. **Temporizador de Expiración en Caliente (Cierre 4003):**
    * *Decisión:* Al conectarse, el Coordinador calcula `msUntilExpiry = payload.exp * 1000 - Date.now()` y programa un `setTimeout`.
@@ -455,8 +444,8 @@ Esta sección sustenta los requerimientos clave exigidos en el taller:
    * *Por qué:* Permite cambiar entre pruebas locales (`localhost`) y URLs públicas de ngrok simplemente ajustando variables de entorno, sin tener que reconstruir o editar código del frontend.
 
 9. **Detección Inmediata de Tokens Alterados (Session Watcher y Mensaje WS `verify`):**
-   * *Decisión:* El cliente en `lobby.html` implementa un session watcher periódico (~300 ms por `setInterval`) que compara `localStorage.getItem('token')` con el token de apertura, complementado con el evento `storage` y un latido secundario cada ~5 s enviando `{"type":"verify","token":"..."}`.
-   * *Por qué:* El evento nativo `storage` del navegador **no** se dispara en la misma pestaña que ejecuta la modificación en DevTools. Con este sondeo activo, al ensuciar o alterar el token en DevTools, el cliente envía `verify` al Coordinador en ≤ 300 ms, quien lo rechaza criptográficamente y cierra el socket con código `4001`. El usuario es expulsado de inmediato (≤ 1 s) sin recargar la página. Si el token es borrado (`null`), se cierra de forma local con `1000 'logout'` y aviso visible.
+   * *Decisión:* El cliente en `lobby.html` implementa un session watcher periódico (~300 ms por `setInterval`) y un latido secundario cada ~5 s con `{"type":"verify"}`. Si cambia el JWT en `localStorage`, pide un ticket de un solo uso por HTTPS y envía solo ese ticket en `verify`.
+   * *Por qué:* El evento nativo `storage` del navegador **no** se dispara en la misma pestaña que ejecuta la modificación en DevTools. El JWT no aparece en la URL ni en mensajes WS; el ticket se valida para el mismo usuario y se consume una sola vez. Si el token es borrado (`null`), se cierra de forma local con `1000 'logout'` y aviso visible.
 
 10. **Recarga en Caliente de `JWT_EXPIRES_IN` en Auth Service:**
     * *Decisión:* `auth-service` relee su archivo `.env` en cada petición `POST /login` mediante `dotenv.parse`, validando formatos numéricos (segundos) o sufijos de tiempo (`10s`, `30s`, `1h`).
@@ -503,7 +492,7 @@ ngrok start --all --config ngrok.example.yml
 
 ## 10. Errores Típicos y Cómo Evitarlos
 
-* **Verificar JWT en `connection` en lugar de `upgrade`:** Permite que conexiones no autenticadas abran sockets. Se evitó interceptando el evento `server.on('upgrade')`.
+* **Aceptar el WebSocket sin verificar en `upgrade`:** Permitiría que conexiones no autenticadas abran sesiones. El coordinador consume el ticket en `server.on('upgrade')` antes de registrar al jugador.
 * **Cierre del socket viejo borrando al nuevo:** Al abrir dos pestañas con el mismo usuario, el cierre asíncrono del primero podía borrar la entrada recién creada del segundo. Se evitó validando `if (players.get(userId)?.socket === ws)`.
 * **Bloqueo por Mixed Content:** Conectar a `ws://` desde un cliente HTTPS. Se resolvió forzando `wss://` en las variables de entorno de ngrok.
 * **Página intersticial de ngrok en peticiones fetch:** ngrok gratuito muestra una pantalla HTML si falta la cabecera adecuada. Se solucionó enviando `"ngrok-skip-browser-warning": "true"` en cada `fetch()` de [client/public/common.js](client/public/common.js).
@@ -538,7 +527,9 @@ sequenceDiagram
         B->>A: POST /auth/google { idToken, username }
     end
     A-->>B: 200 { token (JWT propio), username }
-    B->>C: WSS /connect?token=JWT
+    B->>C: POST /ws-ticket (Authorization: Bearer JWT)
+    C-->>B: ticket efímero de un solo uso
+    B->>C: WSS /connect (subprotocolo auth.<ticket>)
     C-->>B: connected + welcome { you, world }
     loop 20 veces por segundo
         B->>C: intent { dir } (solo cuando cambia la tecla)
@@ -635,8 +626,10 @@ Errores nuevos (no cierran el socket): `INVALID_INTENT`, `INVALID_EXTRAS`.
 | cliente → servidor | `room_color_update` | `{ color: "#rrggbb" }` — uno de los 8 colores, sin repetir dentro de la sala |
 | servidor → cliente | `room_list`, `room_created`, `room_joined`, `room_updated`, `room_left`, `game_started` | ver `SPEC.md` |
 
-```bash
-wscat -c "ws://localhost:5000/connect?token=<JWT>"
+```powershell
+$login = Invoke-RestMethod -Method Post http://localhost:4000/login -ContentType "application/json" -Body '{"username":"alice","password":"<CONTRASEÑA>"}'
+$ticket = (Invoke-RestMethod -Method Post http://localhost:5000/ws-ticket -Headers @{ Authorization = "Bearer $($login.token)" }).ticket
+wscat -c "ws://localhost:5000/connect" -s carsgame.v1 -s "auth.$ticket"
 > {"type":"intent","intent":{"dir":{"x":1,"y":0}}}       # avanza a la derecha
 > {"type":"intent","intent":{"dir":{"x":9999,"y":0}}}    # se sanea a 1: no se teletransporta
 > {"type":"intent","intent":{"dir":{"x":0,"y":0}}}       # se detiene

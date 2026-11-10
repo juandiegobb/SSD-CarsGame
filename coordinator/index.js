@@ -1,8 +1,9 @@
 
-// Responsabilidad: aceptar conexiones WebSocket autenticadas con JWT, mantener
+// Responsabilidad: aceptar conexiones WebSocket autenticadas, mantener
 // un Map de jugadores en línea y hacer broadcast de la lista ante cada cambio.
-// Puerto por defecto: 5000. WebSocket en /connect?token=<JWT>.
+// El JWT se intercambia por un ticket de un solo uso antes del handshake WS.
 
+const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -21,6 +22,16 @@ if (!process.env.JWT_SECRET) {
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const PORT = Number(process.env.PORT) || 5000;
+const CLIENT_ORIGINS = new Set(
+  (process.env.CLIENT_ORIGINS || 'http://localhost:3000')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+const APP_WS_PROTOCOL = 'carsgame.v1';
+const WS_TICKET_PROTOCOL_PREFIX = 'auth.';
+const WS_TICKET_TTL_MS = 15_000;
+const MAX_PENDING_WS_TICKETS = 1000;
 
 // ── Taller 5: parámetros del mundo y del game loop (desde .env) ─────────────
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH) || 800;
@@ -36,6 +47,7 @@ const ROOM_COLORS = ['#2f6fed', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#ec
 // Map: userId (string) → { username, provider, socket, connectedAt, expirationTimer,
 //                          x, y, intent: { x, y }, extras }
 const players = new Map();
+const wsTickets = new Map();
 function normalizeUsername(username) {
   return typeof username === 'string' ? username.trim().toLowerCase() : username;
 }
@@ -196,6 +208,77 @@ setInterval(tick, TICK_MS);
 const app = express();
 app.use(express.json());
 
+function allowTicketOrigin(req, res) {
+  const origin = req.get('origin');
+  if (!origin) return true;
+  if (!CLIENT_ORIGINS.has(origin)) return false;
+
+  res.set('Access-Control-Allow-Origin', origin);
+  res.set('Vary', 'Origin');
+  res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Authorization, ngrok-skip-browser-warning');
+  res.set('Access-Control-Max-Age', '600');
+  return true;
+}
+
+function pruneWsTickets(now = Date.now()) {
+  for (const [ticket, entry] of wsTickets) {
+    if (entry.expiresAt <= now) wsTickets.delete(ticket);
+  }
+}
+
+function consumeWsTicket(ticket) {
+  if (typeof ticket !== 'string' || !ticket) return null;
+  const entry = wsTickets.get(ticket);
+  wsTickets.delete(ticket);
+  if (!entry || entry.expiresAt <= Date.now()) return null;
+  return entry.payload;
+}
+
+app.options('/ws-ticket', (req, res) => {
+  if (!allowTicketOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+  return res.status(204).end();
+});
+
+app.post('/ws-ticket', (req, res) => {
+  res.set('Cache-Control', 'no-store, private');
+  res.set('Pragma', 'no-cache');
+  if (!allowTicketOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+
+  const authorization = req.get('authorization') || '';
+  const match = authorization.match(/^Bearer ([^\s]+)$/i);
+  if (!match) {
+    return sendError(res, 401, 'TOKEN_MISSING', 'No se proporcionó autenticación.', 'Inicia sesión y vuelve a solicitar la conexión.');
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(match[1], JWT_SECRET, { algorithms: ['HS256'] });
+  } catch (err) {
+    const { code, message, hint } = classifyJwtError(err);
+    return sendError(res, 401, code, message, hint);
+  }
+
+  const now = Date.now();
+  pruneWsTickets(now);
+  if (wsTickets.size >= MAX_PENDING_WS_TICKETS) {
+    return sendError(res, 503, 'TICKET_SERVICE_BUSY', 'No se pueden preparar más conexiones en este momento.', 'Espera unos segundos e inténtalo de nuevo.');
+  }
+
+  const ticket = randomBytes(32).toString('base64url');
+  const expiresAt = Math.min(now + WS_TICKET_TTL_MS, payload.exp * 1000);
+  wsTickets.set(ticket, { payload, expiresAt });
+
+  return sendOk(res, 200, 'Ticket de conexión emitido.', {
+    ticket,
+    expiresIn: Math.max(1, Math.ceil((expiresAt - now) / 1000))
+  });
+});
+
 // GET /health
 app.get('/health', (req, res) => {
   sendOk(res, 200, 'Coordinador operativo.', {
@@ -222,9 +305,18 @@ app.use((req, res) => {
   sendError(
     res, 404,
     'NOT_FOUND',
-    `Ruta ${req.method} ${req.originalUrl} no encontrada.`,
-    'Rutas HTTP disponibles: GET /health, GET /players. El WebSocket está en /connect?token=<JWT>.'
+    'La ruta solicitada no existe.',
+    'Rutas HTTP disponibles: GET /health, GET /players y POST /ws-ticket. Solicita un ticket antes de conectar al WebSocket.'
   );
+});
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400 && 'body' in err)) {
+    return sendError(res, 400, 'INVALID_BODY', 'El cuerpo JSON no es válido.', 'Envía una petición sin cuerpo o JSON válido.');
+  }
+  console.error(`[coordinator] Error HTTP no controlado (${err.code || err.name || 'UNKNOWN'}).`);
+  return sendError(res, 500, 'INTERNAL_ERROR', 'Ocurrió un error interno.', 'Intenta de nuevo; si persiste, revisa los logs del servicio.');
 });
 
 // ── Servidor HTTP (http.createServer es requerido para el upgrade manual) ────
@@ -235,12 +327,12 @@ const server = http.createServer(app);
 function classifyJwtError(err) {
   let code = 'TOKEN_MALFORMED';
   let message = 'El token es inválido o no puede procesarse.';
-  let hint = 'Copia el token completo devuelto por POST /login.';
+  let hint = 'Inicia sesión de nuevo y solicita otro ticket de conexión.';
 
   if (err.name === 'TokenExpiredError') {
     code = 'TOKEN_EXPIRED';
     message = 'El token de autenticación ha expirado.';
-    hint = 'Inicia sesión de nuevo en POST /login para obtener un token nuevo.';
+    hint = 'Inicia sesión de nuevo para obtener una sesión vigente.';
   } else if (err.name === 'JsonWebTokenError') {
     if (err.message === 'invalid signature') {
       code = 'TOKEN_INVALID_SIGNATURE';
@@ -280,10 +372,14 @@ function getLiveJwtExpiresInSeconds() {
   return null;
 }
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  handleProtocols(protocols) {
+    return protocols.has(APP_WS_PROTOCOL) ? APP_WS_PROTOCOL : false;
+  }
+});
 
-// ── Evento upgrade: verificación de JWT ANTES de aceptar la conexión WS ──────
-// Error típico: no verificar en upgrade sino dentro de connection.
+// ── Evento upgrade: consumir el ticket antes de aceptar la conexión WS ───────
 server.on('upgrade', (req, socket, head) => {
   let parsedUrl;
   try {
@@ -301,37 +397,56 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
 
-  const token = parsedUrl.searchParams.get('token');
+  if (parsedUrl.search) {
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+    return;
+  }
 
-  // Sin token
-  if (!token) {
+  const offeredProtocols = (req.headers['sec-websocket-protocol'] || '')
+    .split(',')
+    .map((protocol) => protocol.trim())
+    .filter(Boolean);
+  const ticketProtocol = offeredProtocols.find((protocol) => protocol.startsWith(WS_TICKET_PROTOCOL_PREFIX));
+  const ticket = ticketProtocol ? ticketProtocol.slice(WS_TICKET_PROTOCOL_PREFIX.length) : '';
+
+  if (!offeredProtocols.includes(APP_WS_PROTOCOL)) {
+    socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+
+  // El JWT nunca viaja en la URL ni en los subprotocolos; solo el ticket efímero.
+  const payload = consumeWsTicket(ticket);
+  if (!ticket) {
     wss.handleUpgrade(req, socket, head, (ws) => {
       sendWs(ws, {
         type: 'error',
         ok: false,
         code: 'TOKEN_MISSING',
-        message: 'No se proporcionó token de autenticación.',
-        hint: 'Conéctate con ws://host/connect?token=<JWT> obtenido en POST /login.'
+        message: 'No se proporcionó un ticket de conexión.',
+        hint: 'Solicita uno con POST /ws-ticket usando Authorization: Bearer <JWT>.'
       });
       ws.close(4001, 'invalid token');
     });
     return;
   }
 
-  // Verificación del token
-  let payload;
-  try {
-    payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-  } catch (err) {
-    const { code, message, hint } = classifyJwtError(err);
+  if (!payload) {
     wss.handleUpgrade(req, socket, head, (ws) => {
-      sendWs(ws, { type: 'error', ok: false, code, message, hint });
+      sendWs(ws, {
+        type: 'error',
+        ok: false,
+        code: 'TICKET_INVALID',
+        message: 'El ticket de conexión no es válido o ya fue usado.',
+        hint: 'Solicita un ticket nuevo y conecta dentro de su vigencia.'
+      });
       ws.close(4001, 'invalid token');
     });
     return;
   }
 
-  // Token válido → completar el handshake y emitir connection con el payload
+  // Ticket válido y consumido → completar el handshake con el payload ya verificado.
   wss.handleUpgrade(req, socket, head, (ws) => {
     wss.emit('connection', ws, payload);
   });
@@ -617,38 +732,40 @@ wss.on('connection', (ws, payload) => {
         break;
 
       case 'verify': {
-        // Validación de presencia y tipo de token
-        if (!msg.token || typeof msg.token !== 'string') {
+        if (Object.hasOwn(msg, 'token')) {
           sendWs(ws, {
             type: 'error',
             ok: false,
-            code: 'TOKEN_MISSING',
-            message: 'No se proporcionó token de autenticación.',
-            hint: 'Envía un token válido en el campo token: {"type":"verify","token":"<JWT>"}.'
+            code: 'TOKEN_TRANSPORT_UNSUPPORTED',
+            message: 'No se aceptan JWT en mensajes WebSocket.',
+            hint: 'Solicita un ticket de un solo uso con POST /ws-ticket.'
           });
           ws.close(4001, 'invalid token');
           return;
         }
 
-        let verifyPayload;
-        try {
-          verifyPayload = jwt.verify(msg.token, JWT_SECRET, { algorithms: ['HS256'] });
-        } catch (err) {
-          const { code, message, hint } = classifyJwtError(err);
-          sendWs(ws, { type: 'error', ok: false, code, message, hint });
-          const closeCode = (code === 'TOKEN_EXPIRED') ? 4003 : 4001;
-          const closeReason = (code === 'TOKEN_EXPIRED') ? 'token expired' : 'invalid token';
-          ws.close(closeCode, closeReason);
-          return;
+        let verifyPayload = payload;
+        if (msg.ticket !== undefined) {
+          verifyPayload = consumeWsTicket(msg.ticket);
+          if (!verifyPayload) {
+            sendWs(ws, {
+              type: 'error',
+              ok: false,
+              code: 'TICKET_INVALID',
+              message: 'El ticket de verificación no es válido o ya fue usado.',
+              hint: 'Solicita un ticket nuevo e inténtalo otra vez.'
+            });
+            ws.close(4001, 'invalid token');
+            return;
+          }
         }
 
-        // Token válido pero de otro usuario
         if (String(verifyPayload.userId) !== userId) {
           sendWs(ws, {
             type: 'error',
             ok: false,
             code: 'TOKEN_MISMATCH',
-            message: 'El token no corresponde a esta sesión.',
+            message: 'La sesión no corresponde a este usuario.',
             hint: 'Cierra sesión e inicia con el mismo usuario.'
           });
           ws.close(4001, 'invalid token');
@@ -700,7 +817,7 @@ wss.on('connection', (ws, payload) => {
           type: 'error',
           ok: false,
           code: 'UNKNOWN_MESSAGE_TYPE',
-          message: `Tipo de mensaje no reconocido: ${msg.type ?? '(sin tipo)'}.`,
+          message: 'Tipo de mensaje no reconocido.',
           hint: 'Tipos soportados: ping, who, verify, intent, extras_update, room_create, room_join, room_leave, room_list, game_start, room_color_update.'
         });
     }
@@ -739,14 +856,14 @@ wss.on('connection', (ws, payload) => {
 
   // ── Errores del socket (evita caídas del proceso) ──────────────────────────
   ws.on('error', (err) => {
-    console.error(`Error en el socket de ${username}:`, err.message || err.code || err);
+    console.error(`Error en el socket de ${username} (${err.code || 'UNKNOWN'}).`);
   });
 });
 
 // ── Arranque del servidor ─────────────────────────────────────────────────────
 server.listen(PORT, () => {
   console.log(`Coordinador escuchando en http://localhost:${PORT}`);
-  console.log(`WebSocket disponible en ws://localhost:${PORT}/connect?token=<JWT>`);
+  console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
 });
 
 module.exports = { app, server, wss, players, rooms };

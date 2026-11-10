@@ -5,24 +5,38 @@ const express = require("express");
 
 const app = express();
 const publicDirectory = path.join(__dirname, "public");
-	app.get("/config.js", (req, res) => {
+
+function publicServiceUrl(value, fallback, protocols) {
+  const url = new URL(value || fallback);
+  if (!protocols.includes(url.protocol) || url.username || url.password) {
+    throw new Error("URL de servicio inválida.");
+  }
+  url.search = "";
+  url.hash = "";
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+app.get("/config.js", (req, res) => {
   const host = req.headers["x-forwarded-host"] || req.headers.host || "";
   const isLocal = host.includes("localhost") || host.includes("127.0.0.1");
 
   let currentAuth;
   let currentWs;
 
-  if (isLocal) {
-    currentAuth = process.env.LOCAL_AUTH_URL || "http://localhost:4000";
-    currentWs = process.env.LOCAL_COORDINATOR_WS_URL || "ws://localhost:5000";
-  } else {
-    currentAuth = process.env.AUTH_URL || "http://localhost:4000";
-    currentWs = process.env.COORDINATOR_WS_URL || "ws://localhost:5000";
+  try {
+    if (isLocal) {
+      currentAuth = publicServiceUrl(process.env.LOCAL_AUTH_URL, "http://localhost:4000", ["http:", "https:"]);
+      currentWs = publicServiceUrl(process.env.LOCAL_COORDINATOR_WS_URL, "ws://localhost:5000", ["ws:", "wss:"]);
+    } else {
+      currentAuth = publicServiceUrl(process.env.AUTH_URL, "http://localhost:4000", ["http:", "https:"]);
+      currentWs = publicServiceUrl(process.env.COORDINATOR_WS_URL, "ws://localhost:5000", ["ws:", "wss:"]);
+    }
+  } catch {
+    console.error("[client] No se pudo generar la configuración pública: URL de servicio inválida.");
+    return res.status(500).type("text/plain").send("Configuración del cliente no disponible.");
   }
 
-  console.log(`[config.js] Solicitado desde '${host || req.ip}' (${isLocal ? "MODO LOCAL" : "MODO NGROK"}):`);
-  console.log(`  AUTH_URL: ${currentAuth}`);
-  console.log(`  COORDINATOR_WS_URL: ${currentWs}`);
+  console.log(`[config.js] Configuración solicitada (${isLocal ? "MODO LOCAL" : "MODO NGROK"}).`);
 
   // Taller 5: el Client ID de Google es público (va en el botón del navegador), no es un secreto.
   const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
@@ -31,13 +45,19 @@ const publicDirectory = path.join(__dirname, "public");
     .type("application/javascript")
     .set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
     .send(`window.APP_CONFIG = ${JSON.stringify({ AUTH_URL: currentAuth, COORDINATOR_WS_URL: currentWs, GOOGLE_CLIENT_ID: googleClientId })};\n`);
- });
+});
 
 app.get("/", (req, res) => {
   res.redirect(302, "/login.html");
 });
 
 app.use(express.static(publicDirectory));
+
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  console.error("[client] Error al servir una respuesta pública.");
+  return res.status(500).type("text/plain").send("No se pudo completar la solicitud.");
+});
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {

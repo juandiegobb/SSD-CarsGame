@@ -14,7 +14,7 @@ Tres componentes, tres procesos, tres puertos, tres túneles ngrok:
 | Componente | Tecnología | Puerto | Responsabilidad |
 |---|---|---|---|
 | `auth-service/` | Express + node:sqlite + bcryptjs + jsonwebtoken + dotenv + cors + google-auth-library (Taller 5; en el Taller 4 era better-sqlite3 + bcrypt) | 4000 | Registrar usuarios, validar credenciales, emitir JWT (1 h). SQLite propia. |
-| `coordinator/` | Express + ws + jsonwebtoken + dotenv | 5000 | Aceptar WS en `/connect?token=...`, verificar JWT, mantener `Map` de jugadores, hacer broadcast. |
+| `coordinator/` | Express + ws + jsonwebtoken + dotenv | 5000 | Emitir tickets WS de un solo uso, validar el ticket durante `/connect`, mantener `Map` de jugadores y hacer broadcast. |
 | `client/` | HTML + JS plano (servido por Express minúsculo) | 3000 | Login/registro, lobby con lista en vivo, logout, manejo de cierre inesperado. |
 
 ### Fuera de alcance (no hacer)
@@ -159,25 +159,31 @@ SSD-C.../
 |---|---|---|
 | GET | `/health` | `200 { ok, message, service:"coordinator", uptime, onlineCount }` |
 | GET | `/players` | `200 { ok, message, count, players:[{userId, username}] }` — **solo lectura/diagnóstico**, permite verificar el `Map` desde Thunder Client sin abrir WS. Nunca expone sockets ni tokens. |
+| POST | `/ws-ticket` | Header `Authorization: Bearer <JWT>`; devuelve un ticket aleatorio, de un solo uso, válido hasta 15 segundos. Requiere origen permitido cuando la petición viene de navegador. |
 | * | otras | `404 NOT_FOUND` con `hint` (rutas disponibles; el WS vive en `/connect`). |
 
-### 3.4 Coordinador — WebSocket `ws://localhost:5000/connect?token=<JWT>`
+Errores de `POST /ws-ticket`: `401 TOKEN_MISSING`, `TOKEN_MALFORMED`, `TOKEN_INVALID_SIGNATURE` o `TOKEN_EXPIRED`; `403 ORIGIN_NOT_ALLOWED`; `503 TICKET_SERVICE_BUSY`. Las respuestas de error no incluyen el JWT ni el ticket.
 
-**Handshake (verificación en el evento `upgrade`, antes de agregar al `Map`)**
+### 3.4 Coordinador — ticket y WebSocket `ws://localhost:5000/connect`
 
-1. Se extrae `token` del query param.
-2. Se verifica con `jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] })` **en el `upgrade`**, no dentro de `connection` (error típico #3 del PDF).
-3. Token válido → se completa el handshake y se emite `connection` con el payload.
-4. Token inválido → **[Decisión]** se completa el handshake solo para poder enviar un mensaje de error legible y cerrar con código `4001` y razón exacta `"invalid token"` (el PDF exige ese código y texto; un rechazo HTTP 401 antes del handshake no permite enviar close codes). El usuario **nunca** llega al `Map`.
+El JWT de usuario nunca se incluye en la URL ni en mensajes WebSocket:
+
+1. El cliente solicita `POST /ws-ticket` con el JWT en `Authorization: Bearer <JWT>`. El endpoint valida HS256 y la expiración.
+2. El coordinador genera un ticket aleatorio de 256 bits, lo asocia al payload validado y devuelve el ticket con `Cache-Control: no-store`. El ticket vence en un máximo de 15 segundos y se consume una sola vez.
+3. El cliente conecta a `/connect` usando los subprotocolos `carsgame.v1` y `auth.<ticket>`. No se pone credencial en la URL; el coordinador solo devuelve `carsgame.v1` como subprotocolo seleccionado.
+4. En `upgrade`, el coordinador consume el ticket antes de aceptar al usuario en el `Map`. Ticket inválido, vencido o repetido → mensaje de error y cierre `4001 "invalid token"`.
+
+El ticket sigue siendo una credencial temporal y puede ser visible para proxies que registren headers `Sec-WebSocket-Protocol`; el JWT también puede verse en proxies que registren `Authorization` en `POST /ws-ticket`. Por eso se usa TLS (`wss://`/`https://`) en público, no se registran esos headers y el ticket es corto y de un solo uso. El coordinador rechaza con HTTP `400` cualquier query en `/connect`; no se deben conservar clientes obsoletos que envíen JWT en la URL, ya que un proxy ascendente podría registrar la URL antes del rechazo. La `JWT_SECRET` y el JWT de usuario no se entregan en la configuración pública.
 
 **Mensajes servidor → cliente** (todos JSON con campo `type`):
+
 
 | `type` | Cuándo | Forma |
 |---|---|---|
 | `connected` | Solo al socket recién autenticado, justo después de agregarlo al `Map` | `{ "type":"connected", "ok":true, "message":"Conexión autenticada como alice.", "userId":"1", "username":"alice", "onlineCount":2 }` |
 | `players_update` | A **todos** los conectados (incluido el nuevo) cada vez que alguien entra o sale | `{ "type":"players_update", "players":[{"userId":"1","username":"alice"}, ...] }` ← formato exacto del PDF |
 | `pong` | Respuesta a `ping` | `{ "type":"pong", "ok":true, "message":"Conexión viva.", "serverTime":"2026-..." }` |
-| `verified` | Respuesta a `verify` cuando el token es válido y del mismo usuario | `{ "type":"verified", "ok":true, "message":"Token verificado.", "expiresAt":"<ISO de exp>" }` |
+| `verified` | Respuesta a `verify` para la sesión activa o un ticket válido del mismo usuario | `{ "type":"verified", "ok":true, "message":"Token verificado.", "expiresAt":"<ISO de exp>" }` |
 | `error` | Mensaje del cliente inválido o fallo de autenticación | `{ "type":"error", "ok":false, "code":"UNKNOWN_MESSAGE_TYPE", "message":"...", "hint":"..." }` |
 
 **Mensajes cliente → servidor** (para probar con `wscat`):
@@ -186,29 +192,30 @@ SSD-C.../
 |---|---|
 | `{"type":"ping"}` | Responde `pong`. |
 | `{"type":"who"}` | Responde `players_update` solo al que preguntó (útil para depurar). |
+| `{"type":"verify"}` o `{"type":"verify","ticket":"<TICKET>"}` | Verifica la sesión activa o consume un ticket de renovación de la misma identidad. Nunca envía el JWT en el mensaje. |
 | cualquier otra cosa | Responde `error` (ver tabla). El socket **no** se cierra por un mensaje inválido. |
 
 **Códigos de error WS (`code` dentro de `type:"error"`):**
 
 | `code` | Cuándo | `hint` sugerido |
 |---|---|---|
-| `TOKEN_MISSING` | No hay `?token=` | "Conéctate con ws://host/connect?token=<JWT> obtenido en POST /login." |
-| `TOKEN_MALFORMED` | El string no es un JWT | "Copia el token completo devuelto por POST /login." |
-| `TOKEN_INVALID_SIGNATURE` | Firmado con otra clave | "Verifica que JWT_SECRET sea idéntica en auth-service y coordinator." |
-| `TOKEN_EXPIRED` | `exp` vencido | "Inicia sesión de nuevo en POST /login para obtener un token nuevo." |
-| `TOKEN_MISMATCH` | Token válido pero con `userId` distinto al de este socket | "Cierra sesión e inicia con el mismo usuario." |
+| `TOKEN_MISSING` | No se ofrece el subprotocolo con ticket | "Solicita un ticket nuevo con POST /ws-ticket." |
+| `TICKET_INVALID` | Ticket inválido, vencido o ya consumido | "Solicita un ticket nuevo e inténtalo otra vez." |
+| `TOKEN_TRANSPORT_UNSUPPORTED` | Se envía un JWT en un mensaje WS antiguo | "Recarga y usa el ticket de un solo uso." |
+| `TOKEN_EXPIRED` | La sesión activa venció | "Inicia sesión de nuevo para obtener un token válido." |
+| `TOKEN_MISMATCH` | Ticket válido de otro `userId` en el socket | "Cierra sesión e inicia con el mismo usuario." |
 | `INVALID_JSON` | El cliente envió texto que no es JSON | "Envía JSON, por ejemplo {\"type\":\"ping\"}." |
 | `UNKNOWN_MESSAGE_TYPE` | `type` no soportado | "Tipos soportados: ping, who." |
 | `INTERNAL_ERROR` | Fallo inesperado | "Reconecta; si persiste, revisa los logs del coordinador." |
 
-Al fallar la validación en el handshake (`upgrade`) o en un mensaje `verify`, el servidor envía el `error` correspondiente y **a continuación** cierra el socket: con `4001 "invalid token"` para `TOKEN_MISSING`, `TOKEN_MALFORMED`, `TOKEN_INVALID_SIGNATURE` o `TOKEN_MISMATCH`; y con `4003 "token expired"` para `TOKEN_EXPIRED` (coherente con la expiración en caliente de §3.6).
+Al fallar la validación del ticket en el handshake o en un mensaje `verify`, el servidor envía el `error` correspondiente y cierra con `4001 "invalid token"`; la expiración activa conserva el cierre `4003 "token expired"`. Los errores del JWT se devuelven al pedir el ticket, antes del handshake.
 
 **Códigos de cierre (close codes):**
 
 | Código | Razón | Quién lo provoca | Reacción del cliente |
 |---|---|---|---|
 | `1000` | `"logout"` | El cliente (botón Cerrar sesión) | Cierre intencional: no mostrar alerta de error. |
-| `4001` | `"invalid token"` | Coordinador: token vencido/malformado/otra clave (obligatorio por PDF) | Mensaje + borrar token + volver a login. |
+| `4001` | `"invalid token"` | Coordinador: ticket inválido o sesión no autenticada | Mensaje + borrar token + volver a login. |
 | `4002` | `"session replaced"` | Coordinador: el mismo usuario abrió otra pestaña | Mensaje "Tu sesión se abrió en otra pestaña" + **no** borrar token (ver 3.5). |
 | `4003` | `"token expired"` | Coordinador: el JWT venció con el socket ya abierto | Mensaje + borrar token + volver a login. |
 | otros (`1006`, etc.) | Coordinador caído / red | Infraestructura | Mensaje "Se perdió la conexión con el coordinador" + volver a login. |
@@ -253,6 +260,7 @@ CORS_ORIGINS=http://localhost:3000
 ```
 PORT=5000
 JWT_SECRET=cambia-esto-por-una-clave-larga-y-aleatoria
+CLIENT_ORIGINS=http://localhost:3000
 ```
 
 **`client/.env.example`**
@@ -262,7 +270,9 @@ AUTH_URL=http://localhost:4000
 COORDINATOR_WS_URL=ws://localhost:5000
 ```
 
-> `JWT_SECRET` debe ser **idéntica** en auth y coordinador (error típico #2). El navegador no lee `.env`, así que `client/server.js` expone `GET /config.js` generado dinámicamente (`window.APP_CONFIG = { AUTH_URL, COORDINATOR_WS_URL }`) a partir de su `.env`.
+> `JWT_SECRET` debe ser **idéntica** en auth y coordinador (error típico #2). El navegador no lee `.env`, así que `client/server.js` expone `GET /config.js` generado dinámicamente con URLs públicas y el Client ID público de Google; no expone secretos ni JWT. Las URLs se validan y se eliminan sus credenciales, query y fragmento antes de exponerlas.
+>
+> `CLIENT_ORIGINS` limita los orígenes permitidos para solicitar tickets al coordinador. En ngrok debe contener el origen HTTPS del cliente. El `.env.example` solo documenta el origen local.
 >
 > `JWT_EXPIRES_IN` en `auth-service/.env` se relee dinámicamente en cada petición `POST /login` (permite cambiar la duración en caliente sin reiniciar el proceso). Las demás variables (`PORT`, `JWT_SECRET`, `BCRYPT_ROUNDS`, `CORS_ORIGINS`) se cargan al iniciar el proceso y requieren reinicio del servicio para aplicar cambios.
 
@@ -311,7 +321,7 @@ Cada fase termina con **criterios de aceptación verificables** y **al menos un 
 2. `GET /health`, `GET /players`, handler `404`.
 3. `Map` `players`: `userId → { username, socket, connectedAt }`.
 4. `broadcastPlayers()` a **todos** los sockets abiertos (incluido el recién conectado).
-5. Evento `upgrade`: aceptar solo la ruta `/connect`; verificar JWT con `algorithms:['HS256']`; clasificar el error (`TOKEN_MISSING`, `TOKEN_MALFORMED`, `TOKEN_INVALID_SIGNATURE`, `TOKEN_EXPIRED`) a partir de `err.name`/`err.message`; en fallo → enviar `error` + `close(4001, 'invalid token')`.
+5. `POST /ws-ticket`: validar JWT con `algorithms:['HS256']` y origen permitido; emitir ticket aleatorio de un solo uso. Evento `upgrade`: aceptar solo `/connect`, consumir ticket y rechazar ausente/inválido antes de agregar el jugador al `Map`.
 6. `connection`: manejar duplicado (3.5), agregar al `Map`, enviar `connected`, hacer broadcast, programar timer de expiración (3.6).
 7. Handler `message` (ping / who / errores) — sección 3.4.
 8. Handler `close`: limpiar timer, borrar del `Map` solo si el socket es el vigente, **y luego** broadcast.
@@ -319,7 +329,7 @@ Cada fase termina con **criterios de aceptación verificables** y **al menos un 
 
 **Pruebas (wscat)** — ver sección 6.2.
 **Aceptación:** casos de la tabla 6.2 pasan; cerrar una terminal de `wscat` hace que la otra reciba `players_update` sin ese usuario; el `Map` nunca queda con entradas fantasma.
-**Commits sugeridos:** `feat(coordinator): servidor http+ws y health`, `feat(coordinator): verificación JWT en upgrade`, `feat(coordinator): map de jugadores y broadcast`, `feat(coordinator): manejo de close y sesión duplicada`, `feat(coordinator): expiración de token en caliente`.
+**Commits sugeridos:** `feat(coordinator): servidor http+ws y health`, `feat(coordinator): ticket efímero para handshake autenticado`, `feat(coordinator): map de jugadores y broadcast`, `feat(coordinator): manejo de close y sesión duplicada`, `feat(coordinator): expiración de token en caliente`.
 
 ### Fase 3 — Cliente Web
 **Dependencias (solo para servirlo):** `express`, `dotenv`.
@@ -330,11 +340,11 @@ Cada fase termina con **criterios de aceptación verificables** y **al menos un 
 3. `lobby.html`:
    - Si no hay token → redirige a `login.html`.
    - Muestra el `username` actual (el guardado en login o el del mensaje `connected`).
-   - Abre `WebSocket(`${COORDINATOR_WS_URL}/connect?token=${token}`)`.
+   - Solicita `POST /ws-ticket` al coordinador elegido con el JWT en el header Authorization y abre WebSocket en `/connect` usando `carsgame.v1` y el ticket temporal.
    - `onmessage`: `players_update` → re-renderiza la lista "Jugadores en línea"; `connected` → confirma estado; `error` → muestra `message` + `hint`.
    - Botón **"Cerrar sesión"**: marca cierre intencional, borra el token, `ws.close(1000, 'logout')`, redirige a login.
    - `onclose` **inesperado** (flag de cierre intencional en `false`): muestra mensaje según el código (tabla 3.4) y vuelve a login (salvo `4002`).
-   - **Session watcher en cliente (`startSessionWatcher`):** sondeo cada ~300 ms comparando `localStorage.token` con el token activo + evento `storage` + latido secundario cada ~5 s enviando `{"type":"verify","token":"..."}` al coordinador. Si el token en `localStorage` cambia o se ensucia, envía `verify` y espera el veredicto del coordinador (o temporizador de seguridad de 2 s). Si el token fue eliminado (`null`), ejecuta cierre de sesión local inmediato con `ws.close(1000, "logout")` y mensaje. Se detiene al cerrar la sesión o recibir código `4002`.
+   - **Session watcher en cliente (`startSessionWatcher`):** sondeo cada ~300 ms comparando `localStorage.token` con el token activo + evento `storage` + latido secundario cada ~5 s enviando `{"type":"verify"}`. Si el token en `localStorage` cambia, solicita un ticket con el nuevo JWT por HTTPS y envía solo ese ticket en `verify`. Si el token fue eliminado (`null`), ejecuta cierre de sesión local inmediato con `ws.close(1000, "logout")` y mensaje. Se detiene al cerrar la sesión o recibir código `4002`.
 4. `common.js` (reutilizado): helpers compartidos (`API` para fetch con header `ngrok-skip-browser-warning`, lectura de config, manejo de token). `style.css` (reutilizado) para estilos.
 5. Escapar el `username` al renderizar (usar `textContent`, no `innerHTML`) para evitar XSS.
 
@@ -354,6 +364,7 @@ Cada fase termina con **criterios de aceptación verificables** y **al menos un 
 3. Actualizar los `.env`:
    - `client/.env`: `AUTH_URL=https://<auth>.ngrok-free.app` y `COORDINATOR_WS_URL=wss://<coord>.ngrok-free.app` (**`wss://`**, no `ws://`: contenido mixto, error típico #7).
    - `auth-service/.env`: `CORS_ORIGINS=https://<cliente>.ngrok-free.app`.
+   - `coordinator/.env`: `CLIENT_ORIGINS=https://<cliente>.ngrok-free.app` (además del origen local, separado por coma si se conservan ambos).
 4. Reiniciar los servicios para que lean el `.env`.
 5. Considerar el aviso intersticial de ngrok gratuito: el `fetch` del cliente envía `ngrok-skip-browser-warning: true`, por lo que `cors()` del auth debe incluirlo en `allowedHeaders` (si no, el preflight falla).
 6. Probar el flujo completo desde otro dispositivo/red usando solo la URL pública del cliente.
@@ -423,26 +434,35 @@ Guardar el `token` del #7 en una variable de Thunder Client (`{{TOKEN}}`) para u
 npm install -g wscat
 ```
 
+En PowerShell, autentica y conserva el ticket en variables (no lo pegues en la URL):
+
+```powershell
+$login = Invoke-RestMethod -Method Post http://localhost:4000/login -ContentType "application/json" -Body '{"username":"alice","password":"<CONTRASEÑA>"}'
+$ticket = (Invoke-RestMethod -Method Post http://localhost:5000/ws-ticket -Headers @{ Authorization = "Bearer $($login.token)" }).ticket
+```
+
 | # | Comando | Esperado |
 |---|---|---|
-| 1 | `wscat -c "ws://localhost:5000/connect?token=<TOKEN_ALICE>"` | Recibe `connected` y luego `players_update` con alice. |
-| 2 | En otra terminal, conectar a bob | Ambas terminales reciben `players_update` con alice y bob. |
+| 1 | `wscat -c "ws://localhost:5000/connect" -s carsgame.v1 -s "auth.$ticket"` | Recibe `connected` y luego `players_update` con alice. |
+| 2 | En otra terminal, autenticar a bob, pedir su ticket y conectarlo de igual forma | Ambas terminales reciben `players_update` con alice y bob. |
 | 3 | Cerrar la terminal de bob (Ctrl+C) | Alice recibe `players_update` solo con alice. |
-| 4 | `wscat -c "ws://localhost:5000/connect"` (sin token) | `error TOKEN_MISSING` y cierre `4001 invalid token`. |
-| 5 | `...?token=basura` | `error TOKEN_MALFORMED` y cierre `4001`. |
-| 6 | Token firmado con otra `JWT_SECRET` | `error TOKEN_INVALID_SIGNATURE` y cierre `4001`. |
-| 7 | Token vencido (generar con `JWT_EXPIRES_IN=5s` y esperar) | `error TOKEN_EXPIRED` y cierre `4001`. |
+| 4 | `wscat -c "ws://localhost:5000/connect" -s carsgame.v1` (sin ticket) | `error TOKEN_MISSING` y cierre `4001 invalid token`. |
+| 5 | Conectar con `-s carsgame.v1 -s "auth.basura"` | `error TICKET_INVALID` y cierre `4001`. |
+| 6 | JWT firmado con otra `JWT_SECRET` al solicitar `/ws-ticket` | HTTP `401 TOKEN_INVALID_SIGNATURE`; no se emite ticket. |
+| 7 | JWT vencido al solicitar `/ws-ticket` | HTTP `401 TOKEN_EXPIRED`; no se emite ticket. |
 | 8 | Conectado: enviar `{"type":"ping"}` | `pong` con `serverTime`. |
 | 9 | Conectado: enviar `{"type":"who"}` | `players_update` solo a quien preguntó. |
 | 10 | Conectado: enviar `hola` | `error INVALID_JSON` (el socket sigue abierto). |
 | 11 | Conectado: enviar `{"type":"x"}` | `error UNKNOWN_MESSAGE_TYPE` + `hint`. |
 | 12 | Conectar dos veces con el token de alice | La primera conexión recibe cierre `4002 session replaced`; la lista muestra a alice **una sola vez**. |
 | 13 | Conectar con `JWT_EXPIRES_IN=30s` y esperar | Al llegar `exp`: `error TOKEN_EXPIRED` y cierre `4003`; los demás reciben `players_update` sin ese usuario. |
-| 14 | Conectado: enviar `{"type":"verify","token":"<TOKEN_ALICE>"}` | `verified` con `expiresAt`. |
-| 15 | Conectado: enviar `{"type":"verify","token":"basura"}` | `error TOKEN_MALFORMED` y cierre `4001 invalid token`. |
-| 16 | Conectado: enviar `{"type":"verify"}` (sin token) | `error TOKEN_MISSING` y cierre `4001 invalid token`. |
-| 17 | Conectado: enviar token vencido | `error TOKEN_EXPIRED` y cierre `4003 token expired`. |
-| 18 | Conectado: enviar token válido de bob | `error TOKEN_MISMATCH` y cierre `4001 invalid token`. |
+| 14 | Conectado: enviar `{"type":"verify"}` | `verified` con `expiresAt`, sin reenviar JWT. |
+| 15 | Conectado: enviar `{"type":"verify","ticket":"basura"}` | `error TICKET_INVALID` y cierre `4001 invalid token`. |
+| 16 | Solicitar `/ws-ticket` con JWT inválido | HTTP `401`; no se emite ticket. |
+| 17 | Conectado: ticket vencido o ya usado | `error TICKET_INVALID` y cierre `4001 invalid token`. |
+| 18 | Conectado: ticket válido de otro usuario | `error TOKEN_MISMATCH` y cierre `4001 invalid token`. |
+| 19 | Conectado: enviar `{"type":"verify","token":"<JWT>"}` | `error TOKEN_TRANSPORT_UNSUPPORTED` y cierre `4001`; el JWT no se procesa ni se refleja. |
+| 20 | Conectar a `/connect?token=<JWT>` | Se rechaza el handshake HTTP `400`; no se acepta credencial en la URL. |
 
 Verificación cruzada desde Thunder Client: `GET {{COORD_URL}}/players` debe reflejar exactamente los usuarios conectados en cada momento.
 
@@ -466,8 +486,8 @@ Verificación cruzada desde Thunder Client: `GET {{COORD_URL}}/players` debe ref
 - [ ] Base de datos SQLite propia del servicio.
 
 **Coordinador**
-- [ ] WS en `/connect?token=XXX`.
-- [ ] JWT verificado **antes** de aceptar (en `upgrade`) con la misma secret; inválido → cierre `4001` + `"invalid token"`.
+- [ ] JWT validado por `POST /ws-ticket`; ticket aleatorio de un solo uso consumido en `upgrade`, sin JWT en URL ni mensajes WS.
+- [ ] Ticket inválido o ausente antes de agregar el jugador al `Map`; error WS + cierre `4001 "invalid token"`.
 - [ ] `Map` `userId → { username, socket, connectedAt }`.
 - [ ] Broadcast `{"type":"players_update","players":[{"userId","username"}]}` a todos (incluido el nuevo) al entrar o salir.
 - [ ] Evento `close` elimina del `Map` **antes** del broadcast.
@@ -503,7 +523,7 @@ Verificación cruzada desde Thunder Client: `GET {{COORD_URL}}/players` debe ref
 | 1 | Flujo: registrar usuario nuevo → login → lobby; **dos navegadores** viéndose entrar y salir en vivo. | Tener ambos navegadores listos, usuarios distintos. |
 | 1 | **Token inválido:** editar `localStorage.token`, recargar, mostrar rechazo del coordinador. | Saber abrir DevTools → Application → Local Storage. |
 | 2 | **Token vencido:** cambiar la expiración a 30 s **en vivo** (`JWT_EXPIRES_IN=30s` en `auth-service/.env`, reiniciar auth), hacer login y esperar el cierre `4003`. | Ensayar el reinicio rápido del servicio. Volver a `1h` después. |
-| 3 | **Código:** estructura del repo, verificación del JWT en `upgrade`, `Map` + `broadcastPlayers()`, manejo de `close`. | Tener abiertos `coordinator/index.js` y `auth-service/index.js`. |
+| 3 | **Código:** estructura del repo, consumo del ticket en `upgrade`, `Map` + `broadcastPlayers()`, manejo de `close`. | Tener abiertos `coordinator/index.js` y `auth-service/index.js`. |
 | 3 | **Preguntas:** doble pestaña (¿por qué reemplazar?), ¿por qué verificar en `upgrade`?, ¿por qué `401` genérico?, ¿por qué `wss://` con ngrok?, ¿qué pasa si las secrets difieren? | Repasar la sección 3 de este documento. |
 
 Antes de entrar: las **tres URLs de ngrok activas**, servicios corriendo, `.env` con URLs públicas, usuarios de prueba creados.
@@ -666,7 +686,7 @@ Códigos nuevos de sala: `INVALID_ROOM_NAME`, `ROOM_NOT_FOUND`, `ROOM_FULL`, `RO
 
 ### 10.7 Pruebas del Taller 5
 
-```bash
+```powershell
 # Cuenta de Google intentando /login → 401 USE_GOOGLE_LOGIN
 curl -X POST http://localhost:4000/login -H "Content-Type: application/json" -d '{"username":"<usuario_google>","password":"cualquiera"}'
 
@@ -674,7 +694,9 @@ curl -X POST http://localhost:4000/login -H "Content-Type: application/json" -d 
 curl -X POST http://localhost:4000/auth/google -H "Content-Type: application/json" -d '{"idToken":"esto.no.sirve"}'
 
 # Movimiento con wscat (el servidor manda state 20 veces por segundo)
-wscat -c "ws://localhost:5000/connect?token=<JWT>"
+$login = Invoke-RestMethod -Method Post http://localhost:4000/login -ContentType "application/json" -Body '{"username":"alice","password":"<CONTRASEÑA>"}'
+$ticket = (Invoke-RestMethod -Method Post http://localhost:5000/ws-ticket -Headers @{ Authorization = "Bearer $($login.token)" }).ticket
+wscat -c "ws://localhost:5000/connect" -s carsgame.v1 -s "auth.$ticket"
 > {"type":"intent","intent":{"dir":{"x":1,"y":0}}}
 > {"type":"intent","intent":{"dir":{"x":9999,"y":0}}}   # se sanea a 1, no teletransporta
 > {"type":"extras_update","extras":{"color":"#ff5500"}}
@@ -708,7 +730,7 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 | Variable | Ejemplo | Para qué |
 |---|---|---|
 | `COORDINATOR_ID` | `coord-a` | Identificador único en el mesh |
-| `PORT` | `5001` | WebSocket de **clientes** (`/connect?token=`) |
+| `PORT` | `5001` | WebSocket de clientes (`/connect`, ticket temporal por subprotocolo) |
 | `PEER_PORT` | `5101` | WebSocket de **peers** (otros coordinadores) |
 | `PUBLIC_URL` | `ws://localhost:5001` (o el `wss://` de ngrok) | URL que el auth le da a los clientes |
 | `PEER_URL` | `ws://localhost:5101` | URL a la que se conectan los otros coordinadores |

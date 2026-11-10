@@ -99,30 +99,45 @@ Invoke-RestMethod https://<dominio-coordinador-asignado>/health
 Invoke-WebRequest https://<dominio-cliente-asignado>/
 ```
 
-Desde la URL pública del cliente, registra un usuario, inicia sesión y confirma
+En `coordinator/.env`, configura `CLIENT_ORIGINS=https://<dominio-cliente-asignado>`
+(separado por coma si también conservas `http://localhost:3000`) y reinicia el
+coordinador. Desde la URL pública del cliente, registra un usuario, inicia sesión y confirma
 que el lobby conecta por `wss://`. Repite la prueba con un segundo navegador o
 dispositivo y confirma que las listas se actualizan en ambos sin recargar.
 Thunder Client debe probar `POST /register` y `POST /login` contra la URL
-pública de Auth. Para probar el endpoint WebSocket público, usa un token de
-prueba recién emitido:
+pública de Auth. Para probar el endpoint WebSocket público, solicita un ticket
+efímero por HTTPS y conéctate usando subprotocolos:
 
 ```powershell
-wscat -c "wss://<dominio-coordinador-asignado>/connect?token=<TOKEN>"
+$login = Invoke-RestMethod -Method Post https://<dominio-auth-asignado>/login -ContentType "application/json" -Body '{"username":"alice","password":"<CONTRASEÑA>"}'
+$ticket = (Invoke-RestMethod -Method Post https://<dominio-coordinador-asignado>/ws-ticket -Headers @{ Authorization = "Bearer $($login.token)"; "ngrok-skip-browser-warning" = "true" }).ticket
+wscat -c "wss://<dominio-coordinador-asignado>/connect" -s carsgame.v1 -s "auth.$ticket"
 ```
 
-No guardes ni publiques ese token.
+El JWT viaja solo en el header HTTPS `Authorization`; no lo pongas en una URL
+ni en mensajes WebSocket. El ticket es una credencial temporal: dura hasta 15
+segundos y se consume una vez. Configura proxies y herramientas de inspección
+para no registrar el header `Authorization` ni `Sec-WebSocket-Protocol`. No
+guardes ni publiques el JWT ni el ticket.
 
 ## Diagnóstico
 
 - **CORS o preflight fallido:** agrega el origen HTTPS exacto del cliente a
-  `CORS_ORIGINS` en `auth-service/.env` y reinicia Auth. El middleware de Auth
-  debe permitir `Content-Type` y `ngrok-skip-browser-warning`.
+  `CORS_ORIGINS` en `auth-service/.env` y `CLIENT_ORIGINS` en
+  `coordinator/.env`, y reinicia ambos servicios. Auth debe permitir
+  `Content-Type` y `ngrok-skip-browser-warning`; el coordinador debe permitir
+  `Authorization` y `ngrok-skip-browser-warning` en `POST /ws-ticket`.
 - **Mixed content o WebSocket bloqueado:** con una página HTTPS usa `https://`
   para Auth y `wss://` para el Coordinador; no uses `http://` ni `ws://`.
 - **Intersticial de ngrok:** el cliente añade
   `ngrok-skip-browser-warning: true` a sus peticiones HTTP.
-- **Cierre 4001 al conectar:** comprueba que Auth y Coordinador tengan la misma
-  `JWT_SECRET` y que el token no esté vencido.
+- **Cierre 4001 al conectar:** solicita un ticket nuevo; comprueba que Auth y
+  Coordinador tengan la misma `JWT_SECRET` y que el JWT no esté vencido.
+- **Credencial visible en un proxy:** aunque el JWT no está en la URL, puede
+  aparecer en `Authorization` al solicitar el ticket y el ticket en
+  `Sec-WebSocket-Protocol`. No registres esos headers en proxies o herramientas
+  de inspección ni compartas capturas del handshake. El ticket dura 15 segundos
+  y se consume una vez.
 - **502 o ERR_NGROK:** confirma que el servicio local está escuchando en el
   puerto correspondiente y que ngrok apunta a ese puerto.
 - **Una misma URL pública para varios túneles:** no configures esa URL en los

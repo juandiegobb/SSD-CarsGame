@@ -115,8 +115,10 @@
             let intentionalClose = false;
             let currentUserId = null;
             let socket;
+            let currentCoordinatorWsUrl = null;
             let activeToken = token;
             let lastVerifiedTokenCandidate = null;
+            let verificationInFlight = false;
             let verifySecurityTimer = null;
             let pollTimer = null;
             let heartbeatTimer = null;
@@ -130,6 +132,8 @@
             // Taller 6: reintentos cuando no hay coordinador disponible
             const RETRY_DELAY_MS = 2000;
             const MAX_RETRIES = 15; // ~30 s buscando coordinador antes de rendirse
+            const WS_APP_PROTOCOL = "carsgame.v1";
+            const WS_TICKET_PROTOCOL_PREFIX = "auth.";
             let retryCount = 0;
             let retryTimer = null;
             // Coordinador que se acaba de caer: mientras el auth no lo descarte
@@ -423,7 +427,6 @@
                                 if (socket && socket.readyState === WebSocket.OPEN) {
                                     socket.send(JSON.stringify({
                                         type: 'verify',
-                                        token: getToken(),
                                         forceExpired: true
                                     }));
                                 }
@@ -480,19 +483,32 @@
                     return;
                 }
 
-                // Token modificado / ensuciado -> enviar verify de inmediato
-                if (current !== activeToken) {
+                // Una sesión modificada se confirma con un ticket de un solo uso, no con el JWT.
+                if (current !== activeToken && !verificationInFlight) {
+                    if (!currentCoordinatorWsUrl || !socket || socket.readyState !== WebSocket.OPEN) return;
+                    const verificationSocket = socket;
+                    const verificationCoordinatorUrl = currentCoordinatorWsUrl;
                     lastVerifiedTokenCandidate = current;
-                    if (socket && socket.readyState === WebSocket.OPEN) {
-                        socket.send(JSON.stringify({ type: "verify", token: current }));
-                        if (!verifySecurityTimer) {
-                            verifySecurityTimer = setTimeout(() => {
-                                returnToLogin("No pudimos confirmar tu sesión. Inicia sesión nuevamente.");
-                            }, 2000);
+                    verificationInFlight = true;
+                    requestWsTicket(verificationCoordinatorUrl, current).then((result) => {
+                        if (!result.ok || getToken() !== current || socket !== verificationSocket || verificationSocket.readyState !== WebSocket.OPEN) {
+                            verificationInFlight = false;
+                            if (verifySecurityTimer) {
+                                clearTimeout(verifySecurityTimer);
+                                verifySecurityTimer = null;
+                            }
+                            if (lastVerifiedTokenCandidate === current) lastVerifiedTokenCandidate = null;
+                            if (getToken() !== current) return;
+                            if (socket !== verificationSocket || verificationSocket.readyState !== WebSocket.OPEN) return;
+                            returnToLogin("No pudimos confirmar tu sesión. Inicia sesión nuevamente.");
+                            return;
                         }
-                    } else if (socket && socket.readyState !== WebSocket.CONNECTING) {
-                        returnToLogin("Se perdió la conexión y no pudimos confirmar tu sesión.");
-                    }
+                        verificationSocket.send(JSON.stringify({ type: "verify", ticket: result.ticket }));
+                    });
+                    verifySecurityTimer = setTimeout(() => {
+                        verificationInFlight = false;
+                        returnToLogin("No pudimos confirmar tu sesión. Inicia sesión nuevamente.");
+                    }, 2000);
                 }
             }
 
@@ -512,11 +528,8 @@
                 // Latido secundario cada ~5 s como defensa adicional
                 heartbeatTimer = setInterval(() => {
                     if (intentionalClose) return;
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        const cur = getToken();
-                        if (cur) {
-                            ws.send(JSON.stringify({ type: "verify", token: cur }));
-                        }
+                    if (!verificationInFlight && ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "verify" }));
                     }
                 }, 5000);
 
@@ -561,11 +574,45 @@
 
             // Taller 6: la conexión vive en una función para poder reconectar a otro
             // coordinador sin recargar la página. `ws` es el socket de ESTA conexión.
-            function connectToCoordinator(wsUrl, coordinatorId) {
-                const ws = new WebSocket(`${wsUrl}/connect?token=${encodeURIComponent(token)}`);
+            let connectionAttempt = 0;
+            async function connectToCoordinator(wsUrl, coordinatorId) {
+                const attempt = ++connectionAttempt;
+                const coordinatorBaseUrl = normalizeCoordinatorUrl(wsUrl);
+                if (!coordinatorBaseUrl) {
+                    showNotice("La dirección del coordinador no es válida.", "Solicita una dirección segura y vuelve a intentarlo.");
+                    scheduleCoordinatorRetry("La dirección recibida para el coordinador no es válida.");
+                    return;
+                }
+                const connectionToken = getToken();
+                if (!connectionToken) {
+                    returnToLogin("Tu sesión no está disponible. Inicia sesión de nuevo.");
+                    return;
+                }
+                currentCoordinatorWsUrl = coordinatorBaseUrl;
+                currentCoordinatorId = coordinatorId;
+                connectionStatus.textContent = coordinatorId
+                    ? `Preparando conexión segura con ${coordinatorId}…`
+                    : "Preparando conexión segura con el coordinador…";
+
+                const ticketResult = await requestWsTicket(coordinatorBaseUrl, connectionToken);
+                if (attempt !== connectionAttempt || intentionalClose) return;
+                if (!ticketResult.ok) {
+                    if (ticketResult.status === 401) {
+                        returnToLogin("Tu sesión no es válida o venció. Inicia sesión de nuevo.");
+                        return;
+                    }
+                    const hint = ticketResult.payload?.hint || "Comprueba la conexión y vuelve a intentarlo.";
+                    showNotice("No pudimos preparar una conexión segura.", hint);
+                    scheduleCoordinatorRetry("No se pudo solicitar el ticket de conexión.");
+                    return;
+                }
+
+                const ws = new WebSocket(`${coordinatorBaseUrl}/connect`, [
+                    WS_APP_PROTOCOL,
+                    `${WS_TICKET_PROTOCOL_PREFIX}${ticketResult.ticket}`
+                ]);
                 socket = ws;
                 let opened = false;
-                currentCoordinatorId = coordinatorId;
                 connectionStatus.textContent = coordinatorId
                     ? `Conectando con ${coordinatorId}…`
                     : "Conectando con el coordinador…";
@@ -577,7 +624,7 @@
                     game.resume(); // vuelve a leer el teclado si venimos de una reconexión
                     connectionStatus.textContent = connectedLabel();
                     updateServerInfo();
-                    startSessionWatcher(ws, token);
+                    startSessionWatcher(ws, connectionToken);
                     ws.send(JSON.stringify({ type: "room_list" }));
                 });
 
@@ -642,6 +689,7 @@
                                 clearTimeout(verifySecurityTimer);
                                 verifySecurityTimer = null;
                             }
+                            verificationInFlight = false;
                             if (lastVerifiedTokenCandidate) {
                                 activeToken = lastVerifiedTokenCandidate;
                                 lastVerifiedTokenCandidate = null;
@@ -661,6 +709,7 @@
                 ws.addEventListener("close", (event) => {
                     if (ws !== socket) return; // cierre de una conexión vieja: ya hay otra
                     stopSessionWatcher();
+                    verificationInFlight = false;
                     game.stop(); // deja de leer el teclado
                     if (intentionalClose) {
                         return;
