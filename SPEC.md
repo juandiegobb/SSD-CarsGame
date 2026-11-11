@@ -973,7 +973,8 @@ CREATE TABLE IF NOT EXISTS replication_meta (key TEXT PRIMARY KEY, value TEXT NO
 | Lecturas (`/login`, Google de un usuario existente) | Normal | Responde si `leaderSeq - lastAppliedSeq <= READ_LAG_TOLERANCE`; si no, `503 not_leader` |
 | Emitir JWT | Sí | Solo si no está atrasada más de la tolerancia |
 | Heartbeat del mesh | Lo envía cada 2 s | Lo recibe; 6 s sin heartbeat → elección |
-| Directorio de coordinadores (`POST /heartbeat`, `GET /coordinator`, `GET /peers`) | Lo atiende | `503 not_leader` con `leaderUrl` |
+| Directorio de coordinadores (`POST /heartbeat`, `GET /coordinator`, `GET /peers?coordinatorId=…`, `GET /coordinators`) | Lo atiende | `503 not_leader` con `leaderUrl` |
+| Lista de auths (`GET /peers` sin parámetros) y `GET /status` | Responde | Responde |
 
 Durante una elección nadie sabe quién es el líder: escrituras, lecturas que no pueden atenderse localmente y directorio responden `503 { "error": "no_leader" }`. **Las escrituras pueden fallar unos segundos durante una elección; el cliente reintenta.**
 
@@ -992,7 +993,14 @@ Durante una elección nadie sabe quién es el líder: escrituras, lecturas que n
 
 `role` es `leader`, `replica` o `candidate` (durante una elección). `leaderUrl` es `null` si no se conoce líder. `knownPeers` lista los auths del mesh conectados.
 
-**`GET /auth-peers`** — los auths conocidos por este nodo. **[Decisión]** El PDF lo llama `GET /peers`, pero ese nombre ya lo usa el directorio de coordinadores del Taller 6. Para no romper a los coordinadores se publica en `/auth-peers`.
+**`GET /peers`** — **[Decisión]** el mismo endpoint sirve para dos listas, según el parámetro:
+
+| Petición | Devuelve | Quién la responde |
+|---|---|---|
+| `GET /peers` (sin parámetros) | **Los auth-services** conocidos por este nodo (Taller 7) | Cualquier auth, líder o réplica |
+| `GET /peers?coordinatorId=<ID>` | **Los coordinadores** vigentes, sin el solicitante (Taller 6) | Solo el líder; una réplica responde `503 not_leader` |
+
+Se conserva el nombre que pide el PDF del Taller 7 sin romper el Taller 6: los coordinadores **siempre** envían `coordinatorId` al descubrir a sus peers, así que siguen recibiendo la lista de coordinadores. Para ver todos los coordinadores en la demo se usa `GET /coordinators`.
 
 ```json
 { "peers": [ { "authId": "auth-a", "publicUrl": "http://…", "peerUrl": "ws://…", "role": "leader" },
@@ -1006,7 +1014,7 @@ Durante una elección nadie sabe quién es el líder: escrituras, lecturas que n
 
 | `type` | Forma | Quién → quién |
 |---|---|---|
-| `hello` | `{ type, authId, role, term, publicUrl, peerUrl, lastSeq }` | Primer mensaje en ambos sentidos. **[Extensión]** `publicUrl`, `peerUrl` y `lastSeq` permiten armar `/auth-peers` y detectar atraso al conectar |
+| `hello` | `{ type, authId, role, term, publicUrl, peerUrl, lastSeq }` | Primer mensaje en ambos sentidos. **[Extensión]** `publicUrl`, `peerUrl` y `lastSeq` permiten armar `GET /peers` y detectar atraso al conectar |
 | `heartbeat` | `{ type, authId, term, lastSeq }` | Líder → réplicas, cada 2 s |
 | `write_propagate` | `{ type, term, seq, op, data }` | Líder → réplicas, en cada escritura |
 | `write_ack` | `{ type, authId, seq }` | Réplica → líder. **[Extensión]** Necesario para la opción B |
