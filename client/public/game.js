@@ -88,20 +88,15 @@
 
         function resize() {
             const dpr = window.devicePixelRatio || 1;
-            const scale = stage
-                ? Math.min(stage.clientWidth / world.width, stage.clientHeight / world.height)
-                : 0;
-            canvas.style.width = `${world.width * scale}px`;
-            canvas.style.height = `${world.height * scale}px`;
-            if (canvas.width !== world.width * dpr) canvas.width = world.width * dpr;
-            if (canvas.height !== world.height * dpr) canvas.height = world.height * dpr;
+            const targetWidth = Math.round(world.width * dpr);
+            const targetHeight = Math.round(world.height * dpr);
+            if (canvas.width !== targetWidth) canvas.width = targetWidth;
+            if (canvas.height !== targetHeight) canvas.height = targetHeight;
             canvas.style.aspectRatio = `${world.width} / ${world.height}`;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
         resize();
-        if (stage && window.ResizeObserver) {
-            new ResizeObserver(resize).observe(stage);
-        }
+        window.addEventListener("resize", resize);
 
         // ── Entrada: teclado → intent ───────────────────────────────────────
         function currentDir() {
