@@ -991,7 +991,7 @@ Durante una elección nadie sabe quién es el líder: escrituras, lecturas que n
   "lastAppliedSeq": 142, "users": 27 }
 ```
 
-`role` es `leader`, `replica` o `candidate` (durante una elección). `leaderUrl` es `null` si no se conoce líder. `knownPeers` lista los auths del mesh conectados.
+`role` es `leader`, `replica` o `candidate` (durante una elección). `leaderUrl` es `null` si no se conoce líder. `knownPeers` lista los auths que este nodo conoce (los de `AUTH_PEERS` y los que se presenten por el mesh).
 
 **`GET /peers`** — **[Decisión]** el mismo endpoint sirve para dos listas, según el parámetro:
 

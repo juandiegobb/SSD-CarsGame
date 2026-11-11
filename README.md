@@ -859,12 +859,12 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
 
    ```powershell
    Invoke-RestMethod http://localhost:4000/coordinators
-   Invoke-RestMethod http://localhost:4000/peers
    Invoke-RestMethod "http://localhost:4000/peers?coordinatorId=coord-1"
    ```
 
-   Deben aparecer todas las instancias vigentes y cada consulta de `/peers` debe
-   listar los demás coordinadores alcanzables. El heartbeat lleva
+   Deben aparecer todas las instancias vigentes y la consulta de `/peers` con
+   `coordinatorId` debe listar los demás coordinadores alcanzables. Desde el
+   Taller 7, `GET /peers` **sin** parámetro lista los auth-services (SPEC.md §13.5). El heartbeat lleva
    `connectedPlayers` y `uptime`; `load` se mantiene como alias compatible.
 
 ### 12.3. Protocolo replicado
@@ -914,7 +914,7 @@ unirse y jugar juntos.
 ### 12.5. Guion de ensayo de sustentación
 
 1. Arranca Auth, Client y los coordinadores; enseña
-   `GET /coordinators` y `GET /peers` con todas las instancias vigentes.
+   `GET /coordinators` y `GET /peers?coordinatorId=coord-1` con todas las instancias vigentes.
 2. Abre varios navegadores con usuarios distintos. El indicador del lobby
    muestra **Coordinador** y **Tick: 20 Hz**. Deja pasar un heartbeat entre
    conexiones para que Auth vea las cargas actualizadas.

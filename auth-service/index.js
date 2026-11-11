@@ -507,11 +507,49 @@ app.get('/coordinator', (req, res) => {
 });
 
 // GET /peers - Lista coordinadores vigentes excepto el solicitante, sin mutar el directorio.
+// Taller 7: GET /status - estado de este auth dentro del grupo replicado. Lo responde
+// cualquier rol (líder, réplica o candidato) y nunca redirige: sirve para la demo y el debug.
+app.get('/status', (req, res) => {
+  const state = clusterState.describe();
+  return res.json({
+    authId: CLUSTER.authId,
+    role: state.role,
+    term: state.term,
+    publicUrl: CLUSTER.publicUrl,
+    peerUrl: CLUSTER.peerUrl,
+    leaderUrl: state.leaderUrl,
+    knownPeers: clusterState.listPeers().map((peer) => peer.authId),
+    lastAppliedSeq: state.lastAppliedSeq,
+    users: replicationLog.usersCount()
+  });
+});
+
+// Rol de un peer visto desde aquí: lo que dijo el mesh o, si aún no se sabe, se deduce del líder conocido
+function peerRole(peer, leaderId) {
+  if (peer.role) return peer.role;
+  if (!leaderId) return null;
+  return peer.authId === leaderId ? 'leader' : 'replica';
+}
+
+// GET /peers tiene dos usos, según el parámetro (SPEC.md §13.5):
+//   GET /peers                     → Taller 7: los auth-services conocidos por este nodo
+//   GET /peers?coordinatorId=<ID>  → Taller 6: el directorio de coordinadores (así lo llaman siempre)
 app.get('/peers', (req, res) => {
   const coordinatorId = req.query.coordinatorId;
-  if (coordinatorId !== undefined &&
-      (typeof coordinatorId !== 'string' ||
-       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId))) {
+  if (coordinatorId === undefined) {
+    const { leaderId } = clusterState.describe();
+    return res.json({
+      peers: clusterState.listPeers().map((peer) => ({
+        authId: peer.authId,
+        publicUrl: peer.publicUrl,
+        peerUrl: peer.peerUrl,
+        role: peerRole(peer, leaderId)
+      }))
+    });
+  }
+
+  if (typeof coordinatorId !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId)) {
     return sendError(
       res,
       400,
@@ -524,7 +562,7 @@ app.get('/peers', (req, res) => {
   const now = Date.now();
   const peers = [...coordinators.values()]
     .filter((coordinator) =>
-      (!coordinatorId || coordinator.coordinatorId !== coordinatorId) &&
+      coordinator.coordinatorId !== coordinatorId &&
       isCoordinatorLive(coordinator, now)
     )
     .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
@@ -914,7 +952,7 @@ app.use((req, res) => {
     404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas disponibles: GET /health, POST /heartbeat, GET /coordinator, GET /peers, GET /coordinators, POST /register, POST /login, POST /auth/google.'
+    'Rutas disponibles: GET /health, GET /status, GET /peers, GET /peers?coordinatorId=<ID>, POST /heartbeat, GET /coordinator, GET /coordinators, POST /register, POST /login, POST /auth/google.'
   );
 });
 
