@@ -20,6 +20,7 @@ const { OAuth2Client } = require('google-auth-library');
 const { hasCoordinatorEndpointConflict } = require('./coordinator-directory');
 const { loadClusterConfig, ClusterConfigError } = require('./cluster-config');
 const { createReplicationLog } = require('./replication-log');
+const { createClusterState } = require('./cluster-state');
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
@@ -245,6 +246,14 @@ const backfilledUsers = replicationLog.backfillExistingUsers();
 if (backfilledUsers > 0) {
   console.log(`[auth-service] ${backfilledUsers} usuario(s) existente(s) anotado(s) en replication_log.`);
 }
+
+// Taller 7: rol de este auth (leader / replica / candidate), term y líder conocido.
+// Mientras no exista la elección, el líder es provisional: el de ID más bajo del grupo.
+const clusterState = createClusterState({ config: CLUSTER, replicationLog });
+clusterState.startWithProvisionalLeader();
+clusterState.onChange((state, reason) => {
+  console.log(`[auth-service] Rol: ${state.role} · term ${state.term} · líder: ${state.leaderId || 'desconocido'} (${reason}).`);
+});
 
 // 3. Helpers únicos de respuesta según SPEC.md §3.1
 function sendOk(res, status, message, extra = {}) {
@@ -938,7 +947,8 @@ const server = app.listen(PORT, () => {
   startCoordinatorCleanup();
   console.log(`Auth Service ${CLUSTER.authId} escuchando en http://localhost:${PORT} (pública: ${CLUSTER.publicUrl}).`);
   console.log(`  Mesh de auth: ${CLUSTER.peerUrl} · peers: ${CLUSTER.peers.map((peer) => peer.authId).join(', ') || 'ninguno (auth único)'} · base: ${DB_PATH}`);
-  console.log(`  Usuarios: ${replicationLog.usersCount()} · lastAppliedSeq: ${replicationLog.lastAppliedSeq()} · term: ${replicationLog.currentTerm()}`);
+  const state = clusterState.describe();
+  console.log(`  Rol: ${state.role} · term: ${state.term} · líder: ${state.leaderId || 'desconocido'} · usuarios: ${replicationLog.usersCount()} · lastAppliedSeq: ${state.lastAppliedSeq}`);
 });
 server.once('close', stopCoordinatorCleanup);
 
