@@ -75,15 +75,24 @@
         const pressed = new Set();
         let lastDir = { x: 0, y: 0 };
         let running = true;
+        const stage = canvas.parentElement;
 
         function resize() {
             const dpr = window.devicePixelRatio || 1;
-            canvas.width = world.width * dpr;
-            canvas.height = world.height * dpr;
+            const scale = stage
+                ? Math.min(stage.clientWidth / world.width, stage.clientHeight / world.height)
+                : 0;
+            canvas.style.width = `${world.width * scale}px`;
+            canvas.style.height = `${world.height * scale}px`;
+            if (canvas.width !== world.width * dpr) canvas.width = world.width * dpr;
+            if (canvas.height !== world.height * dpr) canvas.height = world.height * dpr;
             canvas.style.aspectRatio = `${world.width} / ${world.height}`;
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
         resize();
+        if (stage && window.ResizeObserver) {
+            new ResizeObserver(resize).observe(stage);
+        }
 
         // ── Entrada: teclado → intent ───────────────────────────────────────
         function currentDir() {

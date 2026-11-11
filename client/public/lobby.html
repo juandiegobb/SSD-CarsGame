@@ -9,8 +9,7 @@
     <script src="/common.js"></script>
     <script src="/game.js"></script>
     <style>
-        /* Taller 5: el canvas mide el mundo del servidor (800x600) y se escala al ancho disponible */
-        #game-canvas { display: block; width: 100%; height: auto; border-radius: 8px; background: #2b2f36; }
+        #game-canvas { border-radius: 8px; background: #2b2f36; }
         .game-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
         .game-toolbar p { margin: 0; }
         .color-picker { display: flex; align-items: center; gap: 8px; font-weight: 600; }
@@ -171,6 +170,7 @@
             }
 
             function showRoomView(room) {
+                document.body.classList.add("room-active");
                 currentRoomId = room.roomId;
                 currentRoomHostId = room.hostUserId;
                 currentRoomStatus = room.status;
@@ -183,6 +183,7 @@
             }
 
             function showLobbyView() {
+                document.body.classList.remove("room-active");
                 currentRoomId = null;
                 currentRoomHostId = null;
                 roomsLobby.hidden = false;
