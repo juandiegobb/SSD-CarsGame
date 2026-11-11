@@ -181,7 +181,7 @@ El ticket sigue siendo una credencial temporal y puede ser visible para proxies 
 | `type` | Cuándo | Forma |
 |---|---|---|
 | `connected` | Solo al socket recién autenticado, justo después de agregarlo al `Map` | `{ "type":"connected", "ok":true, "message":"Conexión autenticada como alice.", "userId":"1", "username":"alice", "onlineCount":2 }` |
-| `players_update` | A **todos** los conectados (incluido el nuevo) cada vez que alguien entra o sale | `{ "type":"players_update", "players":[{"userId":"1","username":"alice"}, ...] }` ← formato exacto del PDF |
+| `players_update` | A **todos** los conectados (incluido el nuevo) cada vez que alguien entra o sale | `{ "type":"players_update", "players":[{"userId":"1","username":"alice","coordinatorId":"coord-a","coordinatorName":"Pista Norte"}, ...] }` |
 | `pong` | Respuesta a `ping` | `{ "type":"pong", "ok":true, "message":"Conexión viva.", "serverTime":"2026-..." }` |
 | `verified` | Respuesta a `verify` para la sesión activa o un ticket válido del mismo usuario | `{ "type":"verified", "ok":true, "message":"Token verificado.", "expiresAt":"<ISO de exp>" }` |
 | `error` | Mensaje del cliente inválido o fallo de autenticación | `{ "type":"error", "ok":false, "code":"UNKNOWN_MESSAGE_TYPE", "message":"...", "hint":"..." }` |
@@ -636,8 +636,8 @@ userId → { username, provider, socket, connectedAt, expirationTimer,
 
 | `type` | Cuándo | Forma |
 |---|---|---|
-| `welcome` | Al socket recién autenticado, después de `connected` | `{ "type":"welcome", "you":{ "userId","username","provider" }, "world":{ "width","height","playerRadius","tickRate" } }` |
-| `state` | A todos, una vez por tick | `{ "type":"state", "t":<ms>, "players":[{ "userId","username","provider","x","y","extras" }] }` |
+| `welcome` | Al socket recién autenticado, después de `connected` | `{ "type":"welcome", "coordinatorId":"coord-a", "coordinatorName":"Pista Norte", "you":{ "userId","username","provider" }, "world":{ "width","height","playerRadius","tickRate" } }` |
+| `state` | A todos, una vez por tick | `{ "type":"state", "t":<ms>, "players":[{ "userId","username","provider","coordinatorId","coordinatorName","x","y","extras" }] }` |
 
 **Mensajes cliente → servidor nuevos:**
 
@@ -747,6 +747,7 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 | Variable | Ejemplo | Para qué |
 |---|---|---|
 | `COORDINATOR_ID` | `coord-1` | Identificador único de esta instancia |
+| `COORDINATOR_NAME` | `Pista Norte` | Nombre visible, solicitado al iniciar si no está configurado |
 | `PORT` | `5001` | Puerto HTTP/WebSocket real para health, jugadores y `/connect` |
 | `PEER_PORT` | `6001` | Puerto del listener WebSocket de coordinadores |
 | `PUBLIC_URL` | `ws://localhost:5001` (o `wss://...`) | URL de WebSocket anunciada para clientes |
@@ -757,7 +758,7 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 
 `PORT` y `PEER_PORT` son independientes y deben ser distintos. Los valores predeterminados conservan una instancia compatible: `PORT=5000`, `COORDINATOR_ID=coord-5000`, `PEER_PORT=6000`, URLs locales y `AUTH_URL=http://localhost:4000`. `JWT_SECRET` y `COORDINATOR_SHARED_SECRET` son obligatorias; el segundo debe coincidir con la configuración de Auth para que el heartbeat autenticado funcione.
 
-Para una sola instancia, configura `coordinator/.env` y ejecuta `npm start --prefix coordinator` desde la raíz. Para levantar tres instancias locales con IDs `coord-1` a `coord-3`, puertos HTTP `5001`–`5003` y peer `6001`–`6003`, ejecuta:
+Para una sola instancia, configura `coordinator/.env` y ejecuta `npm start --prefix coordinator` desde la raíz. Si `COORDINATOR_NAME` está vacío, el proceso lo solicita en la terminal y exige entre 1 y 48 caracteres. Para levantar tres instancias locales con IDs `coord-1` a `coord-3`, puertos HTTP `5001`–`5003` y peer `6001`–`6003`, ejecuta:
 
 ```powershell
 .\coordinator\start-three.ps1
@@ -775,10 +776,10 @@ El script verifica los seis puertos antes de arrancar, da a cada proceso su prop
 
 El auth guarda **en memoria** un `Map` independiente de los usuarios, identificado por `coordinatorId`. Cada entrada contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load` y `lastHeartbeat`. El heartbeat registra o reemplaza la entrada con el mismo ID. Un coordinador es vigente hasta que transcurren 6 segundos desde `lastHeartbeat` (incluido el instante exacto de 6 segundos); al superar ese límite se considera expirado. Auth comprueba la vigencia con una función reutilizable y limpia periódicamente las entradas expiradas del `Map`; el temporizador es complementario a la comprobación por antigüedad.
 
-**`POST /heartbeat`** — lo llama cada coordinador cada 2 s. El contrato del PDF usa `connectedPlayers` y `uptime`; `load` se mantiene como alias compatible con clientes previos.
+**`POST /heartbeat`** — lo llama cada coordinador cada 2 s. El contrato del PDF usa `connectedPlayers` y `uptime`; `load` se mantiene como alias compatible con clientes previos. También registra `coordinatorName` para mostrar el nombre humano elegido al iniciar.
 
 ```json
-{ "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:6001", "connectedPlayers": 7, "uptime": 12345 }
+{ "coordinatorId": "coord-a", "coordinatorName": "Pista Norte", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:6001", "connectedPlayers": 7, "uptime": 12345 }
 ```
 
 Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth y coordinadores. Si falta la configuración o el header no coincide, se rechaza con un error genérico `401 UNAUTHORIZED`. Auth compara los valores con `crypto.timingSafeEqual` después de comprobar que tengan la misma longitud. `coordinatorId` debe ser una cadena de 1–64 caracteres alfanuméricos, guion o guion bajo, iniciando con un carácter alfanumérico; las URL deben usar `ws://` o `wss://` sin credenciales, query ni fragmento; `connectedPlayers` (o `load` por compatibilidad) y `uptime`, cuando se envía, deben ser enteros no negativos. Si se envían `connectedPlayers` y `load` juntos, sus valores deben coincidir.
@@ -793,12 +794,12 @@ Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth
 
 | HTTP | Forma | Cuándo |
 |---|---|---|
-| 200 | `{ "coordinatorId": "coord-b", "publicUrl": "ws://localhost:5002" }` | El coordinador vigente con menor `load`; empate por `coordinatorId` lexicográficamente menor |
+| 200 | `{ "coordinatorId": "coord-b", "coordinatorName": "Pista Norte", "publicUrl": "ws://localhost:5002" }` | El coordinador vigente con menor `load`; empate por `coordinatorId` lexicográficamente menor |
 | 503 | `{ "error": "no_coordinators_available" }` | No hay ningún coordinador vigente |
 
 **[Decisión]** Es *client-side load balancing*: el auth no proxea tráfico, solo le dice al cliente a dónde conectarse.
 
-**`GET /peers?coordinatorId=<ID>`** — lo llaman los coordinadores para descubrir a los demás. Responde con `{ "peers": [...] }`; cada elemento contiene `coordinatorId`, `publicUrl` y `peerUrl`. Si se incluye un `coordinatorId` válido, se excluye ese ID; si no se incluye, el coordinador solicitante filtra su propio ID al procesar la respuesta, como en el PDF. La consulta solo incluye coordinadores vigentes y no modifica el directorio. Si no hay peers vigentes, responde `{ "peers": [] }`. Un `coordinatorId` presente pero inválido devuelve `400 INVALID_COORDINATOR_ID`.
+**`GET /peers?coordinatorId=<ID>`** — lo llaman los coordinadores para descubrir a los demás. Responde con `{ "peers": [...] }`; cada elemento contiene `coordinatorId`, `coordinatorName`, `publicUrl` y `peerUrl`. Si se incluye un `coordinatorId` válido, se excluye ese ID; si no se incluye, el coordinador solicitante filtra su propio ID al procesar la respuesta, como en el PDF. La consulta solo incluye coordinadores vigentes y no modifica el directorio. Si no hay peers vigentes, responde `{ "peers": [] }`. Un `coordinatorId` presente pero inválido devuelve `400 INVALID_COORDINATOR_ID`.
 
 ```json
 { "peers": [ { "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:6001" }, { "coordinatorId": "coord-c", "publicUrl": "ws://localhost:5003", "peerUrl": "ws://localhost:6003" } ] }
@@ -806,7 +807,7 @@ Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth
 
 El directorio conserva todos los coordinadores vigentes, incluido el solicitante; solo se omite de la respuesta.
 
-**`GET /coordinators`** *(solo para depurar y para la demo)* — responde `{ "ok": true, "message": "Directorio de coordinadores.", "coordinators": [...] }`. Cada elemento contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load`, `lastHeartbeat` y `live` (booleano calculado con `isCoordinatorLive()` en el momento de la consulta). Puede incluir entradas expiradas que aún no haya retirado el ciclo de limpieza, marcadas con `live: false`; no son seleccionables por `GET /coordinator` ni aparecen en `GET /peers`. La consulta no modifica el directorio. La respuesta no incluye secretos ni credenciales. Si el directorio está vacío, devuelve `coordinators: []`.
+**`GET /coordinators`** *(solo para depurar y para la demo)* — responde `{ "ok": true, "message": "Directorio de coordinadores.", "coordinators": [...] }`. Cada elemento contiene `coordinatorId`, `coordinatorName`, `publicUrl`, `peerUrl`, `load`, `lastHeartbeat` y `live` (booleano calculado con `isCoordinatorLive()` en el momento de la consulta). Puede incluir entradas expiradas que aún no haya retirado el ciclo de limpieza, marcadas con `live: false`; no son seleccionables por `GET /coordinator` ni aparecen en `GET /peers`. La consulta no modifica el directorio. La respuesta no incluye secretos ni credenciales. Si el directorio está vacío, devuelve `coordinators: []`.
 
 ### 11.4 Protocolo del mesh (WebSocket entre coordinadores)
 
@@ -816,15 +817,17 @@ El directorio conserva todos los coordinadores vigentes, incluido el solicitante
 
 | `type` | Forma | Cuándo |
 |---|---|---|
-| `hello` | `{ type, coordinatorId }` | Primer mensaje al abrir la conexión |
-| `player_joined` | `{ type, origin, userId, username, provider, x, y, extras }` | Un cliente se conecta a `origin`. **También** se envía uno por cada jugador local al recibir un `hello` (así un coordinador que arranca tarde conoce a los que ya estaban) |
+| `hello` | `{ type, coordinatorId, coordinatorName }` | Primer mensaje al abrir la conexión |
+| `player_joined` | `{ type, origin, coordinatorName, userId, username, provider, x, y, extras }` | Un cliente se conecta a `origin`. **También** se envía uno por cada jugador local al recibir un `hello` (así un coordinador que arranca tarde conoce a los que ya estaban) |
 | `player_left` | `{ type, origin, userId }` | Un cliente se desconecta de `origin` |
 | `intent_replicate` | `{ type, origin, userId, intent: { dir: { x, y } } }` | Un cliente local manda un intent |
 | `extras_replicate` | `{ type, origin, userId, extras }` | Un cliente local cambia sus extras |
 | `player_sync` | `{ type, origin, players: [{ userId, x, y }] }` | **[Decisión]** Cada ~1 s, la posición real de los jugadores locales de `origin`, para corregir desviaciones |
 | `room_replicate` | `{ type, origin, op, roomId, ... }` | **[Propuesta]** Replicar salas: `op` = `create`, `join`, `leave`, `start`, `color`, `host` |
 
-**Jugadores remotos:** cada jugador del `Map` lleva `home` (el coordinador al que está conectado) y `local: true/false`. Los remotos **no tienen socket**: nunca se les manda nada directamente.
+**Nombre y consistencia entre coordinadores:** al iniciar, el proceso solicita un nombre visible (o se configura con `COORDINATOR_NAME`). Cada jugador conserva `coordinatorId`/`home` y `coordinatorName`; esos campos viajan en `player_joined`, snapshots, `players_update` y miembros replicados de sala. Así todos los coordinadores muestran el mismo nombre de origen para cada jugador, aunque cada navegador esté conectado a un coordinador distinto. El lobby usa `textContent` para representarlo.
+
+**Jugadores remotos:** cada jugador del `Map` lleva `home` (el coordinador al que está conectado), su nombre visible y `local: true/false`. Los remotos **no tienen socket**: nunca se les manda nada directamente.
 
 **Peer caído:** si se cierra la conexión con un peer, se borran todos los jugadores cuyo `home` sea ese peer (un coordinador muerto con Ctrl+C nunca manda `player_left`).
 
@@ -832,7 +835,7 @@ El directorio conserva todos los coordinadores vigentes, incluido el solicitante
 1. Aplica los intents de **todos** los jugadores, locales y remotos.
 2. Hace broadcast del `state` **solo a sus clientes locales** (nunca a los peers). Cada `state` incluye a todos los jugadores del mundo.
 
-**`welcome`:** se agrega `coordinatorId` para que el cliente muestre a qué coordinador está conectado.
+**`welcome`:** incluye `coordinatorId` y `coordinatorName` para que el cliente muestre el nombre del coordinador al que está conectado. La lista general y los miembros de sala muestran, por jugador, el nombre del coordinador donde vive su conexión.
 
 ### 11.5 Cliente
 

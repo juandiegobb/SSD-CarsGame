@@ -187,6 +187,7 @@ Copia los archivos de ejemplo en cada servicio:
    ```dotenv
    PORT=5000
    COORDINATOR_ID=coord-5000
+   COORDINATOR_NAME=
    PEER_PORT=6000
    PUBLIC_URL=ws://localhost:5000
    PEER_URL=ws://localhost:6000
@@ -200,6 +201,11 @@ Copia los archivos de ejemplo en cada servicio:
    ```powershell
    npm start --prefix coordinator
    ```
+   Si `COORDINATOR_NAME` está vacío, el proceso pregunta el nombre al iniciar.
+   En la lista de jugadores y de cada sala todos verán el nombre del coordinador
+   al que está conectado cada jugador. Para los scripts de varias instancias,
+   se pregunta un nombre por instancia; también se puede pasar
+   `-CoordinatorNames @("Norte", "Centro", "Sur")`.
    Para iniciar tres coordinadores independientes en puertos HTTP `5001`–`5003` y peer `6001`–`6003`:
 
    ```powershell
@@ -779,6 +785,7 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
    ```dotenv
    PORT=5004
    COORDINATOR_ID=coord-4
+   COORDINATOR_NAME=Servidor Centro
    PEER_PORT=6004
    PUBLIC_URL=wss://<URL-PUBLICA-PARA-CLIENTES>
    PEER_URL=wss://<URL-PUBLICA-DEL-MESH>

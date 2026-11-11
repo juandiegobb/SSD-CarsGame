@@ -21,6 +21,7 @@
         .server-info { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
         .server-info span { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; font-size: 14px; }
         .server-info strong { font-family: ui-monospace, monospace; }
+        .coordinator-tag { display: block; color: var(--muted); font-size: 12px; }
         /* Foto de perfil de Google (o inicial para cuentas locales) */
         .avatar { width: 28px; height: 28px; flex: none; border-radius: 50%; object-fit: cover; display: inline-flex; align-items: center; justify-content: center; background: #2f6fed; color: #fff; font-weight: 700; font-size: 13px; text-transform: uppercase; }
         .avatar-lg { width: 36px; height: 36px; font-size: 16px; }
@@ -130,6 +131,7 @@
             let currentRoomStatus = "waiting";
             let currentRace = { level: 1, phase: "waiting", countdownStartedAt: null, laps: {} };
             let currentCoordinatorId = null; // Taller 6: a qué coordinador estamos conectados
+            let currentCoordinatorName = null;
             let currentTickRate = null;
             // Taller 6: reintentos cuando no hay coordinador disponible
             const RETRY_DELAY_MS = 2000;
@@ -162,15 +164,18 @@
             const raceProgress = document.getElementById("race-progress");
             const serverInfo = document.getElementById("server-info");
 
-            // Taller 6: "Coordinador: coord-b · Tick: 20 Hz", visible en todo momento
+            // Muestra el nombre elegido al iniciar el coordinador conectado a esta pestaña.
             function updateServerInfo() {
-                document.getElementById("coordinator-name").textContent = currentCoordinatorId || "único (sin directorio)";
+                document.getElementById("coordinator-name").textContent =
+                    currentCoordinatorName || currentCoordinatorId || "único (sin directorio)";
                 document.getElementById("tick-rate").textContent = currentTickRate ? `${currentTickRate} Hz` : "—";
                 serverInfo.hidden = false;
             }
 
             function connectedLabel() {
-                return currentCoordinatorId ? `Conectado a ${currentCoordinatorId}.` : "Conectado al coordinador.";
+                return currentCoordinatorName
+                    ? `Conectado al coordinador ${currentCoordinatorName}.`
+                    : currentCoordinatorId ? `Conectado a ${currentCoordinatorId}.` : "Conectado al coordinador.";
             }
 
             function renderRaceProgress(race) {
@@ -255,7 +260,12 @@
                     const name = document.createElement("span");
                     const isRoomHost = String(player.userId) === String(currentRoomHostId);
                     name.textContent = isRoomHost ? `${displayUsername} · Creador` : displayUsername;
-                    item.append(avatarElement(displayUsername, player.picture), name);
+                    const coordinator = document.createElement("small");
+                    coordinator.className = "coordinator-tag";
+                    coordinator.textContent = `Coordinador: ${player.coordinatorName || player.coordinatorId || "desconocido"}`;
+                    const details = document.createElement("span");
+                    details.append(name, coordinator);
+                    item.append(avatarElement(displayUsername, player.picture), details);
                     if (String(currentUserId) === String(currentRoomHostId) &&
                         !isRoomHost) {
                         const transferButton = document.createElement("button");
@@ -391,7 +401,12 @@
                     const item = document.createElement("li");
                     const name = document.createElement("span");
                     name.textContent = normalizeUsername(player.username);
-                    item.append(avatarElement(name.textContent, player.picture), name);
+                    const coordinator = document.createElement("small");
+                    coordinator.className = "coordinator-tag";
+                    coordinator.textContent = `Coordinador: ${player.coordinatorName || player.coordinatorId || "desconocido"}`;
+                    const details = document.createElement("span");
+                    details.append(name, coordinator);
+                    item.append(avatarElement(name.textContent, player.picture), details);
                     if (
                         (currentUserId && player.userId === currentUserId) ||
                         (!currentUserId && normalizeUsername(player.username) === normalizeUsername(localStorage.getItem("username")))
@@ -613,7 +628,7 @@
             // Taller 6: la conexión vive en una función para poder reconectar a otro
             // coordinador sin recargar la página. `ws` es el socket de ESTA conexión.
             let connectionAttempt = 0;
-            async function connectToCoordinator(wsUrl, coordinatorId) {
+            async function connectToCoordinator(wsUrl, coordinatorId, coordinatorName = null) {
                 const attempt = ++connectionAttempt;
                 const coordinatorBaseUrl = normalizeCoordinatorUrl(wsUrl);
                 if (!coordinatorBaseUrl) {
@@ -628,8 +643,10 @@
                 }
                 currentCoordinatorWsUrl = coordinatorBaseUrl;
                 currentCoordinatorId = coordinatorId;
+                currentCoordinatorName = coordinatorName;
+                updateServerInfo();
                 connectionStatus.textContent = coordinatorId
-                    ? `Preparando conexión segura con ${coordinatorId}…`
+                    ? `Preparando conexión segura con ${coordinatorName || coordinatorId}…`
                     : "Preparando conexión segura con el coordinador…";
 
                 const ticketResult = await requestWsTicket(coordinatorBaseUrl, connectionToken);
@@ -685,9 +702,10 @@
                         case "welcome":
                             game.onWelcome(msg);
                             if (msg.world && msg.world.tickRate) currentTickRate = msg.world.tickRate;
-                            // Si el coordinador también se identifica en el welcome, usamos ese nombre
                             if (typeof msg.coordinatorId === "string") currentCoordinatorId = msg.coordinatorId;
+                            if (typeof msg.coordinatorName === "string") currentCoordinatorName = msg.coordinatorName;
                             updateServerInfo();
+                            connectionStatus.textContent = connectedLabel();
                             setupColorPicker();
                             break;
                         case "state":
@@ -821,7 +839,7 @@
                         scheduleCoordinatorRetry(`El directorio todavía anuncia a ${deadCoordinatorId}, que no responde. Esperando a que lo descarte…`);
                         return;
                     }
-                    connectToCoordinator(result.publicUrl, result.coordinatorId);
+                    connectToCoordinator(result.publicUrl, result.coordinatorId, result.coordinatorName);
                     return;
                 }
 

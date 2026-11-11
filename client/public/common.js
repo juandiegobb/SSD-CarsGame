@@ -44,7 +44,7 @@ async function apiPost(path, body) {
 }
 
 // Taller 6: el auth (directory service) dice a qué coordinador conectarse.
-// Devuelve { ok: true, coordinatorId, publicUrl } o { ok: false, status, payload }
+// Devuelve { ok: true, coordinatorId, coordinatorName, publicUrl } o { ok: false, status, payload }
 // (o { ok: false, networkError: true } si el auth no responde).
 function normalizeCoordinatorUrl(value) {
     try {
@@ -79,6 +79,7 @@ async function requestCoordinator() {
         return {
             ok: true,
             coordinatorId: payload.coordinatorId,
+            coordinatorName: typeof payload.coordinatorName === "string" ? payload.coordinatorName : payload.coordinatorId,
             publicUrl
         };
     }

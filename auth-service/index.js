@@ -275,6 +275,13 @@ function isValidCoordinatorUrl(value) {
   }
 }
 
+function isValidCoordinatorName(value) {
+  return typeof value === 'string' &&
+    value.trim().length > 0 &&
+    [...value.trim()].length <= 48 &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
 // Misma regla de username para /register y /auth/google (SPEC.md §3.2).
 function validateUsername(u) {
   return typeof u === 'string' && /^[A-Za-z0-9_]{3,32}$/.test(u.trim());
@@ -376,27 +383,29 @@ app.post('/heartbeat', (req, res) => {
     );
   }
 
-  const { coordinatorId, publicUrl, peerUrl, load, connectedPlayers, uptime } = req.body || {};
+  const { coordinatorId, coordinatorName, publicUrl, peerUrl, load, connectedPlayers, uptime } = req.body || {};
   const validCoordinatorId = typeof coordinatorId === 'string' &&
     /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId);
+  const displayName = coordinatorName === undefined ? coordinatorId : coordinatorName;
   const playerCount = connectedPlayers === undefined ? load : connectedPlayers;
   const validLoad = Number.isSafeInteger(playerCount) && playerCount >= 0 &&
     (load === undefined || connectedPlayers === undefined || load === connectedPlayers);
   const validUptime = uptime === undefined || (Number.isSafeInteger(uptime) && uptime >= 0);
 
-  if (!validCoordinatorId || !isValidCoordinatorUrl(publicUrl) ||
+  if (!validCoordinatorId || !isValidCoordinatorName(displayName) || !isValidCoordinatorUrl(publicUrl) ||
       !isValidCoordinatorUrl(peerUrl) || !validLoad || !validUptime) {
     return sendError(
       res,
       400,
       'INVALID_BODY',
       'Los datos del coordinador son inválidos o están incompletos.',
-      'Envía coordinatorId, publicUrl y peerUrl válidos, connectedPlayers como entero no negativo (o load por compatibilidad) y uptime opcional en segundos.'
+      'Envía coordinatorId, coordinatorName, publicUrl y peerUrl válidos, connectedPlayers como entero no negativo (o load por compatibilidad) y uptime opcional en segundos.'
     );
   }
 
   coordinators.set(coordinatorId, {
     coordinatorId,
+    coordinatorName: displayName.trim(),
     publicUrl,
     peerUrl,
     load: playerCount,
@@ -430,6 +439,7 @@ app.get('/coordinator', (req, res) => {
 
   return res.json({
     coordinatorId: selected.coordinatorId,
+    coordinatorName: selected.coordinatorName || selected.coordinatorId,
     publicUrl: selected.publicUrl
   });
 });
@@ -456,8 +466,9 @@ app.get('/peers', (req, res) => {
       isCoordinatorLive(coordinator, now)
     )
     .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
-    .map(({ coordinatorId: peerId, publicUrl, peerUrl }) => ({
+    .map(({ coordinatorId: peerId, coordinatorName, publicUrl, peerUrl }) => ({
       coordinatorId: peerId,
+      coordinatorName: coordinatorName || peerId,
       publicUrl,
       peerUrl
     }));
@@ -470,8 +481,9 @@ app.get('/coordinators', (req, res) => {
   const now = Date.now();
   const directory = [...coordinators.values()]
     .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
-    .map(({ coordinatorId, publicUrl, peerUrl, load, connectedPlayers, uptime, lastHeartbeat }) => ({
+    .map(({ coordinatorId, coordinatorName, publicUrl, peerUrl, load, connectedPlayers, uptime, lastHeartbeat }) => ({
       coordinatorId,
+      coordinatorName: coordinatorName || coordinatorId,
       publicUrl,
       peerUrl,
       load,

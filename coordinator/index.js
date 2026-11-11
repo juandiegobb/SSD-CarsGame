@@ -4,6 +4,7 @@
 // El JWT se intercambia por un ticket de un solo uso antes del handshake WS.
 
 const { randomBytes } = require('node:crypto');
+const readline = require('node:readline/promises');
 const fs = require('node:fs');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -58,6 +59,19 @@ if (PEER_PORT === PORT) {
 const COORDINATOR_ID = (process.env.COORDINATOR_ID || `coord-${PORT}`).trim();
 if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(COORDINATOR_ID)) {
   console.error('Error de configuración: COORDINATOR_ID debe tener de 1 a 64 caracteres alfanuméricos, guion o guion bajo.');
+  process.exit(1);
+}
+
+function isValidCoordinatorName(value) {
+  return typeof value === 'string' &&
+    value.trim().length > 0 &&
+    [...value.trim()].length <= 48 &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+let COORDINATOR_NAME = process.env.COORDINATOR_NAME?.trim() || '';
+if (COORDINATOR_NAME && !isValidCoordinatorName(COORDINATOR_NAME)) {
+  console.error('Error de configuración: COORDINATOR_NAME debe tener entre 1 y 48 caracteres y no incluir controles.');
   process.exit(1);
 }
 
@@ -168,6 +182,7 @@ async function sendHeartbeat() {
       },
       body: JSON.stringify({
         coordinatorId: COORDINATOR_ID,
+        coordinatorName: COORDINATOR_NAME,
         publicUrl: PUBLIC_URL,
         peerUrl: PEER_URL,
         connectedPlayers,
@@ -201,6 +216,7 @@ function sendLocalPlayersToPeer(ws) {
       username: player.username,
       provider: player.provider,
       picture: player.picture,
+      coordinatorName: player.coordinatorName,
       x: player.x,
       y: player.y,
       extras: player.extras
@@ -247,6 +263,7 @@ function isValidDiscoveredPeer(peer) {
     !Array.isArray(peer) &&
     typeof peer.coordinatorId === 'string' &&
     /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(peer.coordinatorId) &&
+    (peer.coordinatorName === undefined || isValidCoordinatorName(peer.coordinatorName)) &&
     isValidPeerUrl(peer.publicUrl) &&
     isValidPeerUrl(peer.peerUrl);
 }
@@ -277,7 +294,12 @@ async function refreshPeers() {
 
     peers = payload.peers
       .filter((peer) => peer.coordinatorId !== COORDINATOR_ID)
-      .map(({ coordinatorId, publicUrl, peerUrl }) => ({ coordinatorId, publicUrl, peerUrl }));
+      .map(({ coordinatorId, coordinatorName, publicUrl, peerUrl }) => ({
+        coordinatorId,
+        coordinatorName: isValidCoordinatorName(coordinatorName) ? coordinatorName.trim() : coordinatorId,
+        publicUrl,
+        peerUrl
+      }));
     connectDiscoveredPeers();
   } catch {
     if (!peerDiscoveryStopped) {
@@ -381,7 +403,14 @@ function roomSummary(room) {
 function roomPlayerList(room) {
   return [...room.members.values()].map((memberId) => {
     const player = players.get(memberId);
-    return player ? { userId: memberId, username: String(player.username || '').toLowerCase(), color: player.extras.color || null, picture: player.picture || null } : null;
+    return player ? {
+      userId: memberId,
+      username: String(player.username || '').toLowerCase(),
+      color: player.extras.color || null,
+      picture: player.picture || null,
+      coordinatorId: player.home,
+      coordinatorName: player.coordinatorName || player.home
+    } : null;
   }).filter(Boolean);
 }
 
@@ -429,7 +458,8 @@ function roomReplicationPayload(room) {
           x: player.x,
           y: player.y,
           extras: player.extras,
-          home: player.home
+          home: player.home,
+          coordinatorName: player.coordinatorName || player.home
         };
       }).filter(Boolean)
     }
@@ -524,6 +554,7 @@ function applyRemoteRoom(peerId, message) {
         !Number.isFinite(member.x) || !Number.isFinite(member.y) ||
         typeof member.home !== 'string' ||
         !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(member.home) ||
+        (member.coordinatorName !== undefined && !isValidCoordinatorName(member.coordinatorName)) ||
         !isValidPeerExtras(member.extras)) return;
     members.add(member.userId);
   }
@@ -563,6 +594,9 @@ function applyRemoteRoom(peerId, message) {
       username: member.username.trim().toLowerCase(),
       provider: member.provider === 'google' ? 'google' : 'local',
       picture: typeof member.picture === 'string' && member.picture.startsWith('https://') ? member.picture : null,
+      coordinatorName: isValidCoordinatorName(member.coordinatorName)
+        ? member.coordinatorName.trim()
+        : member.home,
       socket: null,
       connectedAt: existing?.connectedAt || new Date().toISOString(),
       expirationTimer: null,
@@ -677,6 +711,9 @@ function acceptRemotePlayer(peerId, message) {
     username: message.username.trim().toLowerCase(),
     provider: message.provider === 'google' ? 'google' : 'local',
     picture: typeof message.picture === 'string' && message.picture.startsWith('https://') ? message.picture : null,
+    coordinatorName: isValidCoordinatorName(message.coordinatorName)
+      ? message.coordinatorName.trim()
+      : peerId,
     socket: null,
     connectedAt: new Date().toISOString(),
     expirationTimer: null,
@@ -782,7 +819,13 @@ function assignAvailableRoomColor(room, userId) {
 function broadcastPlayers() {
   const playerList = [];
   for (const [userId, entry] of players) {
-    playerList.push({ userId, username: normalizeUsername(entry.username), picture: entry.picture || null });
+    playerList.push({
+      userId,
+      username: normalizeUsername(entry.username),
+      picture: entry.picture || null,
+      coordinatorId: entry.home,
+      coordinatorName: entry.coordinatorName || entry.home
+    });
   }
   const msg = JSON.stringify({ type: 'players_update', players: playerList });
 
@@ -801,6 +844,8 @@ function snapshot(roomId = null) {
       userId,
       username: String(p.username || '').toLowerCase(),
       provider: p.provider,
+      coordinatorId: p.home,
+      coordinatorName: p.coordinatorName || p.home,
       x: Math.round(p.x * 10) / 10,
       y: Math.round(p.y * 10) / 10,
       extras: p.extras
@@ -1014,6 +1059,8 @@ app.post('/ws-ticket', (req, res) => {
 app.get('/health', (req, res) => {
   sendOk(res, 200, 'Coordinador operativo.', {
     service: 'coordinator',
+    coordinatorId: COORDINATOR_ID,
+    coordinatorName: COORDINATOR_NAME,
     uptime: Math.floor(process.uptime()),
     onlineCount: players.size
   });
@@ -1023,7 +1070,12 @@ app.get('/health', (req, res) => {
 app.get('/players', (req, res) => {
   const playerList = [];
   for (const [userId, entry] of players) {
-    playerList.push({ userId, username: normalizeUsername(entry.username) });
+    playerList.push({
+      userId,
+      username: normalizeUsername(entry.username),
+      coordinatorId: entry.home,
+      coordinatorName: entry.coordinatorName || entry.home
+    });
   }
   sendOk(res, 200, `Hay ${players.size} jugador(es) en línea.`, {
     count: players.size,
@@ -1075,7 +1127,11 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
 
   const sendHello = () => {
     if (isOpenSocket(ws)) {
-      ws.send(JSON.stringify({ type: 'hello', coordinatorId: COORDINATOR_ID }));
+      ws.send(JSON.stringify({
+        type: 'hello',
+        coordinatorId: COORDINATOR_ID,
+        coordinatorName: COORDINATOR_NAME
+      }));
     }
   };
   if (initiatedLocally) ws.once('open', sendHello);
@@ -1093,6 +1149,7 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
     if (!peerId) {
       if (msg.type !== 'hello' || typeof msg.coordinatorId !== 'string' ||
           !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(msg.coordinatorId) ||
+          (msg.coordinatorName !== undefined && !isValidCoordinatorName(msg.coordinatorName)) ||
           msg.coordinatorId === COORDINATOR_ID ||
           (expectedPeerId && msg.coordinatorId !== expectedPeerId)) {
         ws.close(4000, 'invalid hello');
@@ -1326,11 +1383,13 @@ wss.on('connection', (ws, payload) => {
     extras: {},
     roomId: null,
     home: COORDINATOR_ID,
+    coordinatorName: COORDINATOR_NAME,
     local: true
   };
   players.set(userId, entry);
   broadcastPeer({
     type: 'player_joined',
+    coordinatorName: COORDINATOR_NAME,
     userId,
     username,
     provider,
@@ -1356,6 +1415,7 @@ wss.on('connection', (ws, payload) => {
   sendWs(ws, {
     type: 'welcome',
     coordinatorId: COORDINATOR_ID,
+    coordinatorName: COORDINATOR_NAME,
     you: { userId, username, provider },
     world: {
       width: WORLD_WIDTH,
@@ -1652,7 +1712,12 @@ wss.on('connection', (ws, payload) => {
         {
           const playerList = [];
           for (const [uid, e] of players) {
-            playerList.push({ userId: uid, username: e.username });
+            playerList.push({
+              userId: uid,
+              username: e.username,
+              coordinatorId: e.home,
+              coordinatorName: e.coordinatorName || e.home
+            });
           }
           sendWs(ws, { type: 'players_update', players: playerList });
         }
@@ -1793,13 +1858,42 @@ wss.on('connection', (ws, payload) => {
 });
 
 // ── Arranque del servidor ─────────────────────────────────────────────────────
-server.listen(PORT, () => {
-  console.log(`Coordinador ${COORDINATOR_ID} escuchando en http://localhost:${PORT} y peers en ws://localhost:${PEER_PORT}/mesh.`);
-  console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
-  peerHttpServer.listen(PEER_PORT);
-  startHeartbeat();
-  startPeerDiscovery();
-  startPeerSync();
+async function promptForCoordinatorName() {
+  if (COORDINATOR_NAME) return;
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('Define COORDINATOR_NAME o inicia el coordinador desde una terminal interactiva para elegir su nombre.');
+  }
+
+  const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    while (!COORDINATOR_NAME) {
+      const answer = (await prompt.question(`¿Qué nombre tendrá el coordinador ${COORDINATOR_ID}? `)).trim();
+      if (isValidCoordinatorName(answer)) {
+        COORDINATOR_NAME = answer;
+      } else {
+        console.error('Ingresa un nombre de 1 a 48 caracteres, sin saltos de línea ni caracteres de control.');
+      }
+    }
+  } finally {
+    prompt.close();
+  }
+}
+
+async function startCoordinator() {
+  await promptForCoordinatorName();
+  server.listen(PORT, () => {
+    console.log(`Coordinador "${COORDINATOR_NAME}" (${COORDINATOR_ID}) escuchando en http://localhost:${PORT} y peers en ws://localhost:${PEER_PORT}/mesh.`);
+    console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
+    peerHttpServer.listen(PEER_PORT);
+    startHeartbeat();
+    startPeerDiscovery();
+    startPeerSync();
+  });
+}
+
+startCoordinator().catch((err) => {
+  console.error(`[coordinator] No se pudo iniciar: ${err.message}`);
+  process.exitCode = 1;
 });
 server.once('close', () => {
   stopHeartbeat();
@@ -1832,6 +1926,9 @@ module.exports = {
   },
   config: {
     COORDINATOR_ID,
+    get coordinatorName() {
+      return COORDINATOR_NAME;
+    },
     PORT,
     PEER_PORT,
     PUBLIC_URL,

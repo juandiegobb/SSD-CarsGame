@@ -5,6 +5,7 @@ param(
   [int[]]$HttpPorts = @(),
   [int[]]$PeerPorts = @(),
   [string[]]$CoordinatorIds = @(),
+  [string[]]$CoordinatorNames = @(),
   [string[]]$PublicUrls = @(),
   [string[]]$PeerUrls = @()
 )
@@ -17,5 +18,6 @@ Write-Warning 'start-three.ps1 se conserva por compatibilidad; usa start-coordin
   -HttpPorts $HttpPorts `
   -PeerPorts $PeerPorts `
   -CoordinatorIds $CoordinatorIds `
+  -CoordinatorNames $CoordinatorNames `
   -PublicUrls $PublicUrls `
   -PeerUrls $PeerUrls

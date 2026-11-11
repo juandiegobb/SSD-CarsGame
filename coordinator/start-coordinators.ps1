@@ -5,6 +5,7 @@ param(
   [int[]]$HttpPorts = @(),
   [int[]]$PeerPorts = @(),
   [string[]]$CoordinatorIds = @(),
+  [string[]]$CoordinatorNames = @(),
   [string[]]$PublicUrls = @(),
   [string[]]$PeerUrls = @()
 )
@@ -24,9 +25,19 @@ if ($HttpPorts.Count -lt 1 -or $HttpPorts.Count -ne $PeerPorts.Count) {
 if ($CoordinatorIds.Count -gt 0 -and $CoordinatorIds.Count -ne $HttpPorts.Count) {
   throw 'Debes proporcionar un COORDINATOR_ID por cada instancia o no proporcionar ninguno.'
 }
+if ($CoordinatorNames.Count -gt 0 -and $CoordinatorNames.Count -ne $HttpPorts.Count) {
+  throw 'Debes proporcionar un nombre por instancia o no proporcionar ninguno.'
+}
 foreach ($coordinatorId in $CoordinatorIds) {
   if ($coordinatorId -notmatch '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$') {
     throw 'Cada COORDINATOR_ID debe tener de 1 a 64 caracteres alfanuméricos, guion o guion bajo.'
+  }
+}
+foreach ($coordinatorName in $CoordinatorNames) {
+  if ([string]::IsNullOrWhiteSpace($coordinatorName) -or
+      $coordinatorName.Trim().Length -gt 48 -or
+      $coordinatorName -match '[\x00-\x1f\x7f]') {
+    throw 'Cada nombre de coordinador debe tener entre 1 y 48 caracteres, sin controles.'
   }
 }
 if ($CoordinatorIds.Count -gt 0 -and ($CoordinatorIds | Select-Object -Unique).Count -ne $CoordinatorIds.Count) {
@@ -153,6 +164,7 @@ $nodePath = $nodeCommand.Source
 $instanceEnvironment = @(
   'PORT',
   'COORDINATOR_ID',
+  'COORDINATOR_NAME',
   'PEER_PORT',
   'PUBLIC_URL',
   'PEER_URL',
@@ -181,6 +193,20 @@ try {
     } else {
       "coord-$instanceNumber"
     }
+    $coordinatorName = if ($CoordinatorNames.Count -gt 0) {
+      $CoordinatorNames[$index].Trim()
+    } else {
+      ''
+    }
+    while ([string]::IsNullOrWhiteSpace($coordinatorName)) {
+      $coordinatorName = (Read-Host "¿Qué nombre tendrá el coordinador $coordinatorId?").Trim()
+      if ([string]::IsNullOrWhiteSpace($coordinatorName) -or
+          $coordinatorName.Length -gt 48 -or
+          $coordinatorName -match '[\x00-\x1f\x7f]') {
+        Write-Host 'Ingresa un nombre de 1 a 48 caracteres, sin controles.'
+        $coordinatorName = ''
+      }
+    }
     $publicUrl = if ($normalizedPublicUrls.Count -gt 0) {
       $normalizedPublicUrls[$index]
     } else {
@@ -195,6 +221,7 @@ try {
 
     $env:PORT = [string]$httpPort
     $env:COORDINATOR_ID = $coordinatorId
+    $env:COORDINATOR_NAME = $coordinatorName
     $env:PEER_PORT = [string]$peerPort
     $env:PUBLIC_URL = $publicUrl
     $env:PEER_URL = $peerUrl
@@ -205,7 +232,7 @@ try {
       Remove-Item Env:COORDINATOR_SHARED_SECRET -ErrorAction SilentlyContinue
     }
 
-    Write-Host "Iniciando ${coordinatorId}: PORT=$httpPort, PEER_PORT=$peerPort, AUTH_URL=$authUrl"
+    Write-Host "Iniciando '$coordinatorName' (${coordinatorId}): PORT=$httpPort, PEER_PORT=$peerPort, AUTH_URL=$authUrl"
     $process = Start-Process `
       -FilePath $nodePath `
       -ArgumentList @('index.js') `
@@ -237,6 +264,7 @@ try {
     }
     $startedInstances.Add([pscustomobject]@{
       CoordinatorId = $coordinatorId
+      CoordinatorName = $coordinatorName
       ProcessId = $process.Id
       Port = $httpPort
       PeerPort = $peerPort
