@@ -899,3 +899,170 @@ La carrera usa cuatro circuitos originales dibujados en el canvas compartido (`s
 - El servidor limita el movimiento al ancho de la pista y cuenta una vuelta al cruzar la meta en el sentido del circuito. Un piloto se detiene al completar 3 vueltas. El siguiente nivel y su cuenta regresiva inician cuando todos los miembros activos completan las 3 vueltas. Tras completar el nivel 4, la carrera queda finalizada.
 - `state` incluye el snapshot `race` para los clientes conectados y `race_update` notifica cambios de nivel, semáforo, vueltas y fin.
 - En el mesh, solo el coordinador propietario de la sala cuenta vueltas y avanza niveles. La operación `room_replicate` con `op: "race"` distribuye el nivel, fase, cuenta regresiva, vueltas y posiciones de salida para conservar el mismo progreso en todos los coordinadores.
+
+---
+
+## 13. Taller 7 — Proyecto Final Parte IV (auth replicado con líder)
+
+### 13.1 Alcance nuevo
+
+Hoy el auth es un solo proceso: si muere, nadie nuevo entra, nadie se reconecta y los coordinadores no tienen dónde mandar heartbeats. En este taller hay **varios auth-services replicados** con **single-writer replication**:
+
+- **Un líder a la vez.** Solo el líder acepta escrituras (registrar usuario, vincular Google, actualizar foto).
+- **Réplicas pasivas.** Mantienen su propia copia de `users.db` aplicando los cambios que manda el líder, y atienden lecturas (`/login`, `/status`).
+- **Si el líder muere,** las réplicas lo detectan (6 s sin heartbeat) y eligen uno nuevo.
+- **Clientes y coordinadores** conocen la lista completa `AUTH_URLS` y prueban uno tras otro; si una réplica les responde `not_leader`, repiten la petición contra `leaderUrl`.
+- Los jugadores que ya están en una partida **no se desconectan**: el coordinador valida el JWT con `JWT_SECRET` sin consultar al auth.
+
+```
+            ┌────────── mesh de auth (WS, puertos 4101-4103) ──────────┐
+   auth-a :4001 (leader) ◄══════► auth-b :4002 (replica) ◄══════► auth-c :4003 (replica)
+        ▲   write_propagate / heartbeat ──►      ▲                         ▲
+        │                                        │ (lecturas)              │
+   clientes y coordinadores: AUTH_URLS = [4001, 4002, 4003] con fallback
+```
+
+### 13.2 Variables de entorno de cada auth
+
+| Variable | Ejemplo (auth-a) | Para qué |
+|---|---|---|
+| `AUTH_ID` | `auth-a` | Identificador único (`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`) |
+| `PORT` | `4001` | HTTP público (login, registro, directorio, `/status`) |
+| `PUBLIC_URL` | `http://localhost:4001` (o el `https://` de ngrok) | URL que se anuncia como `leaderUrl` |
+| `PEER_PORT` | `4101` | WebSocket del mesh entre auths (distinto de `PORT`) |
+| `PEER_URL` | `ws://localhost:4101` | Dirección a la que se conectan los otros auths |
+| `AUTH_PEERS` | `auth-b=ws://localhost:4102,auth-c=ws://localhost:4103` | **[Decisión]** Lista fija de los otros auths. Los auths no tienen un directorio al que preguntar, así que se configuran en el `.env` |
+| `DB_PATH` | `users-auth-a.db` | **Cada auth tiene su propia base** |
+| `READ_LAG_TOLERANCE` | `10` | Cuántos cambios puede ir atrasada una réplica y seguir respondiendo lecturas |
+| `REPLICATION_ACK_TIMEOUT_MS` | `2000` | Cuánto espera el líder la confirmación de una réplica |
+| `JWT_SECRET`, `COORDINATOR_SHARED_SECRET`, `GOOGLE_CLIENT_ID` | — | **Idénticos en todos los auths** (cualquiera puede emitir tokens que el coordinador acepte) |
+
+Puertos de la demo: `auth-a` 4001/4101, `auth-b` 4002/4102, `auth-c` 4003/4103.
+
+### 13.3 Datos replicados
+
+Cada auth guarda, además de `users`:
+
+```sql
+CREATE TABLE IF NOT EXISTS replication_log (
+  seq        INTEGER PRIMARY KEY,   -- 1, 2, 3… en el orden del líder
+  term       INTEGER NOT NULL,      -- term del líder que hizo la escritura
+  op         TEXT NOT NULL,         -- register | register_google | update_picture
+  data       TEXT NOT NULL,         -- JSON con los datos de la escritura
+  applied_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS replication_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+-- claves: current_term, voted_for
+```
+
+- `lastAppliedSeq` = `MAX(seq)` de `replication_log` (0 si está vacía).
+- **Las réplicas insertan con el mismo `userId` del líder** (`INSERT INTO users (id, …)`). Así un JWT emitido por cualquier auth lleva el mismo `userId`.
+- La escritura en `users` y su fila en `replication_log` van en **la misma transacción**: o quedan las dos, o ninguna.
+
+| `op` | `data` |
+|---|---|
+| `register` | `{ userId, username, provider: "local", password_hash, created_at }` |
+| `register_google` | `{ userId, username, provider: "google", google_sub, email, picture_url, created_at }` |
+| `update_picture` | `{ userId, picture_url }` |
+
+### 13.4 Roles
+
+| | `leader` | `replica` |
+|---|---|---|
+| Escrituras (`/register`, primera vez de Google, cambio de foto) | Las aplica y las propaga | `503 { "error": "not_leader", "leaderUrl": "…" }` |
+| Lecturas (`/login`, Google de un usuario existente) | Normal | Responde si `leaderSeq - lastAppliedSeq <= READ_LAG_TOLERANCE`; si no, `503 not_leader` |
+| Emitir JWT | Sí | Solo si no está atrasada más de la tolerancia |
+| Heartbeat del mesh | Lo envía cada 2 s | Lo recibe; 6 s sin heartbeat → elección |
+| Directorio de coordinadores (`POST /heartbeat`, `GET /coordinator`, `GET /peers`) | Lo atiende | `503 not_leader` con `leaderUrl` |
+
+Durante una elección nadie sabe quién es el líder: escrituras, lecturas que no pueden atenderse localmente y directorio responden `503 { "error": "no_leader" }`. **Las escrituras pueden fallar unos segundos durante una elección; el cliente reintenta.**
+
+**[Decisión] Directorio solo en el líder:** el directorio vive en memoria (no se replica). Al cambiar de líder, el nuevo empieza vacío y los coordinadores lo llenan en ≤ 2 s con su siguiente heartbeat.
+
+### 13.5 Endpoints nuevos
+
+**`GET /status`** — cualquier rol, nunca redirige.
+
+```json
+{ "authId": "auth-a", "role": "leader", "term": 3,
+  "publicUrl": "http://localhost:4001", "peerUrl": "ws://localhost:4101",
+  "leaderUrl": "http://localhost:4001", "knownPeers": ["auth-b", "auth-c"],
+  "lastAppliedSeq": 142, "users": 27 }
+```
+
+`role` es `leader`, `replica` o `candidate` (durante una elección). `leaderUrl` es `null` si no se conoce líder. `knownPeers` lista los auths del mesh conectados.
+
+**`GET /auth-peers`** — los auths conocidos por este nodo. **[Decisión]** El PDF lo llama `GET /peers`, pero ese nombre ya lo usa el directorio de coordinadores del Taller 6. Para no romper a los coordinadores se publica en `/auth-peers`.
+
+```json
+{ "peers": [ { "authId": "auth-a", "publicUrl": "http://…", "peerUrl": "ws://…", "role": "leader" },
+             { "authId": "auth-c", "publicUrl": "http://…", "peerUrl": "ws://…", "role": "replica" } ] }
+```
+
+### 13.6 Mesh entre auths (WebSocket en `PEER_PORT`, ruta `/auth-mesh`)
+
+- **Una conexión por par:** inicia el de `authId` lexicográficamente menor; una conexión duplicada se cierra.
+- Lo que llega por el mesh se valida igual que lo que llega de un cliente.
+
+| `type` | Forma | Quién → quién |
+|---|---|---|
+| `hello` | `{ type, authId, role, term, publicUrl, peerUrl, lastSeq }` | Primer mensaje en ambos sentidos. **[Extensión]** `publicUrl`, `peerUrl` y `lastSeq` permiten armar `/auth-peers` y detectar atraso al conectar |
+| `heartbeat` | `{ type, authId, term, lastSeq }` | Líder → réplicas, cada 2 s |
+| `write_propagate` | `{ type, term, seq, op, data }` | Líder → réplicas, en cada escritura |
+| `write_ack` | `{ type, authId, seq }` | Réplica → líder. **[Extensión]** Necesario para la opción B |
+| `request_sync` | `{ type, fromSeq }` | Réplica atrasada → líder |
+| `sync_response` | `{ type, entries: [{ seq, op, data }] }` | Líder → réplica, todo lo posterior a `fromSeq` |
+| `election` | `{ type, candidate, term, lastSeq }` | Candidato → todos |
+| `vote` | `{ type, voter, term, voteGranted }` | Votante → candidato |
+| `new_leader` | `{ type, leader, term }` | Ganador → todos |
+
+**Aplicar cambios en una réplica:** solo si `seq === lastAppliedSeq + 1`. Si llega un `seq` mayor (hay un hueco), pide `request_sync` con `fromSeq = lastAppliedSeq` y descarta lo que no encaje. Un `seq` ya aplicado se ignora.
+
+### 13.7 Consistencia de escrituras — **[Decisión] Opción B con 1 confirmación**
+
+1. El líder aplica la escritura en su base y en `replication_log` (en una transacción).
+2. Envía `write_propagate` a todas las réplicas.
+3. **Espera el `write_ack` de al menos una réplica** (máximo `REPLICATION_ACK_TIMEOUT_MS`).
+4. Con una confirmación, responde 201/200 al cliente. Sin ninguna, responde `503 { "error": "replication_timeout" }`. El cambio queda en el líder y se entregará por sync, pero el cliente sabe que no está confirmado.
+
+**Por qué:** en la demo se mata al líder justo después de registrar a alice. Con la opción A, alice podría perderse; con B, al menos una réplica la tiene antes de que el cliente reciba el OK. Esperar una sola confirmación (no todas) evita que una réplica lenta o caída bloquee todo.
+
+### 13.8 Lecturas en réplicas atrasadas — **[Decisión] tolerancia 10**
+
+Si `leaderSeq - lastAppliedSeq <= READ_LAG_TOLERANCE` (10), la réplica responde `/login` sola. Si está más atrasada, responde `503 not_leader`, porque podría decir "credenciales inválidas" a un usuario nuevo que todavía no conoce. `leaderSeq` es el `lastSeq` del último heartbeat del líder.
+
+### 13.9 Elección de líder
+
+1. **Detección:** una réplica que lleva 6 s (3 ciclos) sin heartbeat del líder espera además un tiempo al azar (0–1,5 s), para que dos réplicas no se postulen a la vez.
+2. **Candidatura:** pasa a `candidate`, hace `term + 1`, vota por sí misma y envía `election`.
+3. **Voto:** cada auth da **un solo voto por `term`**, y solo si `candidate.lastSeq >= mi lastAppliedSeq`. Así nunca gana alguien con datos más viejos.
+4. **Ganador:** con mayoría (2 de 3, contándose a sí mismo) pasa a `leader`, envía `new_leader` y empieza a mandar heartbeats.
+5. **Sin mayoría** en 3 s → nueva elección con `term + 1`.
+6. Cualquier mensaje con un `term` mayor que el propio hace que el auth lo adopte y vuelva a `replica`.
+
+**Auth que vuelve:** arranca como `replica`. En el `hello` se entera del líder y del `term` actuales, y si su `lastSeq` es menor pide `request_sync`. **No recupera el liderazgo.**
+
+### 13.10 Cliente y coordinadores
+
+**Cliente** (`client/.env` → `config.js`): `AUTH_URLS=http://localhost:4001,http://localhost:4002,http://localhost:4003`.
+
+Para cada petición al auth:
+1. Prueba el primero de la lista (o el último que funcionó).
+2. **Error de red o 5xx** → prueba el siguiente.
+3. **`503 not_leader` con `leaderUrl`** → repite la petición directamente contra `leaderUrl`.
+4. **`503 no_leader`** → espera ~1 s y vuelve a intentar (hay una elección en curso).
+5. Muestra en la UI a qué auth está conectado ("Auth: auth-b").
+
+**Coordinadores:** `AUTH_URLS` con la misma lógica. Los heartbeats y las consultas al directorio van al líder: si reciben `not_leader`, usan `leaderUrl` desde ese momento; si el líder deja de responder, vuelven a recorrer la lista.
+
+Compatibilidad: si solo existe `AUTH_URL`, se trata como una lista de un elemento.
+
+### 13.11 Pruebas del Taller 7 (guion de sustentación)
+
+1. 3 auths + 3 coordinadores → `GET /status` en 4001, 4002 y 4003: un `leader`, dos `replica`, mismo `users`.
+2. Registrar `alice` → los tres `/status` muestran `users` N+1 y el mismo `lastAppliedSeq`.
+3. Ctrl+C al líder → en ~10 s una réplica dice `role: "leader"` con `term` mayor.
+4. Registrar `bob` → el nuevo líder lo acepta y lo propaga.
+5. Levantar el auth muerto → pide sync, iguala `users` y `lastAppliedSeq` y queda como `replica`.
+
+Durante toda la demo, un cliente jugando **no se desconecta**.
