@@ -40,34 +40,35 @@
 
     // Insignia junto al nombre: "G" para cuentas de Google, candado para cuentas locales.
     // provider lo pone el coordinador desde el JWT verificado (el cliente no lo puede falsear).
-    function drawBadge(ctx, provider, x, y) {
+    function drawBadge(ctx, provider, x, y, scale = 1) {
         ctx.save();
         ctx.beginPath();
-        ctx.arc(x, y, 8, 0, Math.PI * 2);
+        ctx.arc(x, y, 8 * scale, 0, Math.PI * 2);
         ctx.fillStyle = provider === "google" ? "#fff" : "#475467";
         ctx.fill();
-        ctx.font = "700 11px system-ui, sans-serif";
+        ctx.font = `700 ${11 * scale}px system-ui, sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         if (provider === "google") {
             ctx.fillStyle = "#4285f4";
-            ctx.fillText("G", x, y + 0.5);
+        ctx.fillText("G", x, y + 0.5 * scale);
         } else {
             // candado simple dibujado (no depende de que el sistema tenga emojis)
             ctx.strokeStyle = "#fff";
             ctx.fillStyle = "#fff";
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = 1.5 * scale;
             ctx.beginPath();
-            ctx.arc(x, y - 1.5, 2.5, Math.PI, 0);
+            ctx.arc(x, y - 1.5 * scale, 2.5 * scale, Math.PI, 0);
             ctx.stroke();
-            ctx.fillRect(x - 3.5, y - 1.5, 7, 5);
+            ctx.fillRect(x - 3.5 * scale, y - 1.5 * scale, 7 * scale, 5 * scale);
         }
         ctx.restore();
     }
 
     function createGame({ canvas, send, myUserId, controls }) {
         const ctx = canvas.getContext("2d");
-        let world = { width: 800, height: 600, playerRadius: 20, tickRate: 20 };
+        let serverWorld = { width: 800, height: 600, playerRadius: 20, tickRate: 20 };
+        let world = { ...serverWorld };
         let meId = myUserId || null;
         let prev = null;           // state anterior
         let curr = null;           // state más reciente
@@ -85,6 +86,18 @@
             laps: {}
         };
         let raceClockOffset = 0;
+
+        function updateDisplayWorld() {
+            // La espera usa una vista panorámica; las carreras conservan las coordenadas del servidor.
+            const dimensions = raceState.phase === "waiting"
+                ? { width: 1200, height: 480 }
+                : serverWorld;
+            const dimensionsChanged = world.width !== dimensions.width || world.height !== dimensions.height;
+            world = { ...serverWorld, ...dimensions };
+            if (dimensionsChanged) resize();
+        }
+
+        updateDisplayWorld();
 
         function resize() {
             const dpr = window.devicePixelRatio || 1;
@@ -125,7 +138,7 @@
         }
 
         function canDrive() {
-            return raceState.phase !== "countdown" && raceState.phase !== "finished";
+            return raceState.phase === "racing";
         }
 
         function onKeyDown(event) {
@@ -268,6 +281,78 @@
             }
         }
 
+        function drawWaitingRoom() {
+            ctx.fillStyle = "#151b26";
+            ctx.fillRect(0, 0, world.width, world.height);
+
+            const panel = {
+                x: world.width * 0.04,
+                y: world.height * 0.08,
+                width: world.width * 0.92,
+                height: world.height * 0.84
+            };
+            roundRect(panel.x, panel.y, panel.width, panel.height, 24);
+            ctx.fillStyle = "#111923";
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255, 207, 63, .55)";
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            const waitingPlayers = curr && Array.isArray(curr.players) ? curr.players.slice(0, 8) : [];
+            ctx.fillStyle = "#ffe16a";
+            ctx.font = "700 34px system-ui, sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("SALA DE ESPERA", world.width / 2, world.height * 0.22);
+            ctx.fillStyle = "#b9c3d3";
+            ctx.font = "500 24px system-ui, sans-serif";
+            ctx.fillText(
+                waitingPlayers.length
+                    ? `${waitingPlayers.length}/8 pilotos · esperando que inicie la partida`
+                    : "Esperando a los pilotos…",
+                world.width / 2,
+                world.height * 0.29
+            );
+
+            if (waitingPlayers.length === 0) return;
+
+            const rowCount = Math.ceil(waitingPlayers.length / 4);
+            const rowCenters = rowCount === 1
+                ? [world.height * 0.62]
+                : [world.height * 0.43, world.height * 0.75];
+            const slotHeight = rowCount === 1 ? world.height * 0.38 : world.height * 0.28;
+            for (let row = 0; row < rowCount; row += 1) {
+                const rowPlayers = waitingPlayers.slice(row * 4, row * 4 + 4);
+                const cellWidth = (panel.width - 56) / 4;
+                const rowStartX = panel.x + (panel.width - cellWidth * rowPlayers.length) / 2;
+                for (let column = 0; column < rowPlayers.length; column += 1) {
+                    const player = rowPlayers[column];
+                    const centerX = rowStartX + cellWidth * (column + 0.5);
+                    const centerY = rowCenters[row];
+                    const slot = {
+                        x: centerX - cellWidth / 2 + 6,
+                        y: centerY - slotHeight / 2,
+                        width: cellWidth - 12,
+                        height: slotHeight
+                    };
+                    roundRect(slot.x, slot.y, slot.width, slot.height, 14);
+                    ctx.fillStyle = "rgba(255, 255, 255, .035)";
+                    ctx.fill();
+                    ctx.strokeStyle = "rgba(255, 255, 255, .16)";
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    drawCar(
+                        { ...player, color: carColor(player) },
+                        centerX,
+                        centerY + 12,
+                        0,
+                        player.userId === meId,
+                        1.75
+                    );
+                }
+            }
+        }
+
         function drawRaceOverlay() {
             if (raceState.phase !== "countdown") return;
             const elapsed = Math.max(0, Date.now() + raceClockOffset - raceState.countdownStartedAt);
@@ -336,8 +421,8 @@
             ctx.closePath();
         }
 
-        function drawCar(p, x, y, angle, isMe) {
-            const r = world.playerRadius;
+        function drawCar(p, x, y, angle, isMe, sizeScale = 1) {
+            const r = world.playerRadius * sizeScale;
             const len = r * 2;        // largo del carro = diámetro del jugador
             const wid = r * 1.2;
             ctx.save();
@@ -346,69 +431,79 @@
 
             if (isMe) { // halo para reconocer tu carro
                 ctx.beginPath();
-                ctx.arc(0, 0, r + 6, 0, Math.PI * 2);
+                ctx.arc(0, 0, r + 6 * sizeScale, 0, Math.PI * 2);
                 ctx.fillStyle = "rgba(255,255,255,0.15)";
                 ctx.fill();
             }
             // llantas
             ctx.fillStyle = "#111";
             for (const [wx, wy] of [[-len * 0.3, -wid / 2], [len * 0.3, -wid / 2], [-len * 0.3, wid / 2], [len * 0.3, wid / 2]]) {
-                ctx.fillRect(wx - 5, wy - 3, 10, 6);
+                ctx.fillRect(wx - 5 * sizeScale, wy - 3 * sizeScale, 10 * sizeScale, 6 * sizeScale);
             }
             // carrocería
-            roundRect(-len / 2, -wid / 2, len, wid, 6);
+            roundRect(-len / 2, -wid / 2, len, wid, 6 * sizeScale);
             ctx.fillStyle = p.color;
             ctx.fill();
-            ctx.lineWidth = isMe ? 2.5 : 1.5;
+            ctx.lineWidth = (isMe ? 2.5 : 1.5) * sizeScale;
             ctx.strokeStyle = isMe ? "#fff" : "rgba(0,0,0,0.5)";
             ctx.stroke();
             // parabrisas (indica hacia dónde mira)
-            roundRect(len * 0.08, -wid / 2 + 4, len * 0.22, wid - 8, 3);
+            roundRect(len * 0.08, -wid / 2 + 4 * sizeScale, len * 0.22, wid - 8 * sizeScale, 3 * sizeScale);
             ctx.fillStyle = "rgba(20,30,45,0.8)";
             ctx.fill();
             ctx.restore();
 
             // nombre (sin rotar)
-            ctx.font = "600 13px system-ui, sans-serif";
+            ctx.font = `600 ${13 * sizeScale}px system-ui, sans-serif`;
             ctx.textAlign = "center";
             ctx.textBaseline = "bottom";
             const displayUsername = typeof p.username === "string" ? p.username.trim().toLowerCase() : p.username;
             const label = isMe ? `${displayUsername} (tú)` : displayUsername;
             const textWidth = ctx.measureText(label).width;
-            const labelX = x + 10; // corrido a la derecha para dejar espacio a la insignia
-            const labelY = y - r - 6;
-            ctx.lineWidth = 3;
+            const labelX = x + 10 * sizeScale; // corrido a la derecha para dejar espacio a la insignia
+            const labelY = y - r - 6 * sizeScale;
+            ctx.lineWidth = 3 * sizeScale;
             ctx.strokeStyle = "rgba(0,0,0,0.7)";
             ctx.strokeText(label, labelX, labelY);
             ctx.fillStyle = "#fff";
             ctx.fillText(label, labelX, labelY);
-            drawBadge(ctx, p.provider, labelX - textWidth / 2 - 11, labelY - 7);
+            drawBadge(ctx, p.provider, labelX - textWidth / 2 - 11 * sizeScale, labelY - 7 * sizeScale, sizeScale);
         }
 
         function frame() {
             if (!running) return;
-            drawTrack();
             // Se dibuja lo que haya en window.lastState (lo último que mandó el servidor,
             // o lo que alguien haya alterado a mano en DevTools hasta el próximo tick).
             if (window.lastState && Array.isArray(window.lastState.players)) curr = window.lastState;
-            if (curr) {
-                // alpha: qué tan lejos estamos entre prev y curr (0 → prev, 1 → curr)
-                const tickMs = 1000 / world.tickRate;
-                const alpha = Math.min(1, (performance.now() - currAt) / tickMs);
-                const before = new Map((prev ? prev.players : []).map((p) => [p.userId, p]));
-                const list = [...curr.players].sort((a, b) => (a.userId === meId) - (b.userId === meId)); // el tuyo encima
-                for (const p of list) {
-                    const old = before.get(p.userId) || p;
-                    const x = old.x + (p.x - old.x) * alpha;
-                    const y = old.y + (p.y - old.y) * alpha;
-                    const dx = p.x - old.x;
-                    const dy = p.y - old.y;
-                    if (Math.hypot(dx, dy) > 0.5) headings.set(p.userId, Math.atan2(dy, dx));
-                    drawCar({ ...p, color: carColor(p) }, x, y, headings.get(p.userId) || 0, p.userId === meId);
+            if (raceState.phase === "waiting") {
+                drawWaitingRoom();
+                if (lastDir.x !== 0 || lastDir.y !== 0) {
+                    pressed.clear();
+                    pointerDirections.clear();
+                    lastDir = { x: 0, y: 0 };
+                    send({ type: "intent", intent: { dir: lastDir } });
                 }
+            } else {
+                drawTrack();
+                if (curr) {
+                    // alpha: qué tan lejos estamos entre prev y curr (0 → prev, 1 → curr)
+                    const tickMs = 1000 / world.tickRate;
+                    const alpha = Math.min(1, (performance.now() - currAt) / tickMs);
+                    const before = new Map((prev ? prev.players : []).map((p) => [p.userId, p]));
+                    const list = [...curr.players].sort((a, b) => (a.userId === meId) - (b.userId === meId)); // el tuyo encima
+                    for (const p of list) {
+                        const old = before.get(p.userId) || p;
+                        const x = old.x + (p.x - old.x) * alpha;
+                        const y = old.y + (p.y - old.y) * alpha;
+                        const dx = p.x - old.x;
+                        const dy = p.y - old.y;
+                        if (Math.hypot(dx, dy) > 0.5) headings.set(p.userId, Math.atan2(dy, dx));
+                        drawCar({ ...p, color: carColor(p) }, x, y, headings.get(p.userId) || 0, p.userId === meId);
+                    }
+                }
+                drawRaceOverlay();
+                drawRaceFinished();
             }
-            drawRaceOverlay();
-            drawRaceFinished();
             requestAnimationFrame(frame);
         }
         requestAnimationFrame(frame);
@@ -430,7 +525,8 @@
                 serverTime: Number.isFinite(next.serverTime) ? next.serverTime : Date.now(),
                 laps: next.laps && typeof next.laps === "object" ? next.laps : {}
             };
-            if (changed && (raceState.phase === "countdown" || previousPhase === "countdown")) {
+            updateDisplayWorld();
+            if (changed && (raceState.phase !== "racing" || previousPhase === "countdown")) {
                 pressed.clear();
                 pointerDirections.clear();
                 lastDir = { x: 0, y: 0 };
@@ -440,8 +536,9 @@
 
         return {
             onWelcome(msg) {
-                if (msg.world) world = { ...world, ...msg.world };
+                if (msg.world) serverWorld = { ...serverWorld, ...msg.world };
                 if (msg.you) meId = msg.you.userId;
+                updateDisplayWorld();
                 resize();
             },
             onState(msg) {

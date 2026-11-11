@@ -924,6 +924,10 @@ la Vuelta del oasis, el Ocho cruzado y el Desafío de rocas. Cada piloto complet
 3 vueltas por pista; quien termina espera a los demás antes de que empiece el
 siguiente nivel y aparezca el semáforo otra vez.
 
+Mientras la sala espera el inicio, el área de juego muestra un recuadro de
+espera con los carros de sus participantes, sin dibujar la pista. El circuito y
+los controles aparecen cuando el creador inicia la partida.
+
 Las pistas se dibujan en el navegador desde los datos compartidos de
 [`shared/tracks.js`](./shared/tracks.js), y el coordinador limita la posición
 al asfalto y valida el cruce de meta. En salas distribuidas, el coordinador

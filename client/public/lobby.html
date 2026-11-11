@@ -85,7 +85,7 @@
             <button id="use-here-button" class="primary" type="button">Usar la sesión aquí</button>
         </section>
         <section id="game-section" aria-labelledby="game-heading" class="track-panel" hidden>
-            <h2 id="game-heading" class="track-heading">Circuito en vivo</h2>
+            <h2 id="game-heading" class="track-heading">Sala de espera</h2>
             <div class="game-toolbar">
                 <p class="muted controls-hint">Muévete con <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> o <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd>. Tu carro tiene el borde blanco. Insignia: <strong>G</strong> = entró con Google, 🔒 = cuenta local.</p>
                 <p id="race-progress" class="race-progress" aria-live="polite">Nivel 1/4 · 0/3 vueltas</p>
@@ -95,7 +95,7 @@
                 </div>
             </div>
             <div class="game-stage">
-                <canvas id="game-canvas" width="800" height="600" aria-label="Pista del juego con los carros de todos los jugadores"></canvas>
+                <canvas id="game-canvas" width="800" height="600" aria-label="Zona de espera y pista con los carros de la sala"></canvas>
             </div>
             <div class="touch-controls" aria-label="Controles táctiles del carro">
                 <button type="button" data-direction="up" aria-label="Mover arriba">▲</button>
@@ -184,6 +184,14 @@
             function renderRaceProgress(race) {
                 if (!race || !Number.isInteger(race.level)) return;
                 currentRace = race;
+                const isWaiting = race.phase === "waiting";
+                gameSection.classList.toggle("race-waiting", isWaiting);
+                document.getElementById("game-heading").textContent =
+                    isWaiting ? "Sala de espera" : "Circuito en vivo";
+                if (isWaiting) {
+                    raceProgress.textContent = "Esperando que inicie la partida";
+                    return;
+                }
                 const track = window.RaceTracks.tracks.find((item) => item.id === race.level);
                 const laps = Number(race.laps && race.laps[String(currentUserId)]) || 0;
                 let progress;
@@ -193,8 +201,6 @@
                     progress = laps >= 3 ? "Esperando a los demás" : `Vuelta ${laps + 1}/3`;
                 } else if (race.phase === "finished") {
                     progress = "¡Carrera completada!";
-                } else {
-                    progress = "Esperando inicio";
                 }
                 raceProgress.textContent = `Nivel ${race.level}/4 · ${track ? track.name : "Pista"} · ${progress}`;
             }

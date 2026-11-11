@@ -163,6 +163,7 @@ button.primary { background: linear-gradient(135deg, var(--accent-strong), var(-
 .status::before { content: "●"; color: #39d98a; margin-right: 8px; text-shadow: 0 0 10px #39d98a; }
 .track-panel { position: relative; }
 .track-panel::before { content: ""; position: absolute; left: 16px; right: 16px; top: 0; height: 3px; background: repeating-linear-gradient(90deg, transparent 0 18px, rgba(255,255,255,.8) 18px 36px); }
+.track-panel.race-waiting::before { display: none; }
 .game-stage { border-radius: 12px; background: #1a202b; box-shadow: inset 0 0 0 1px rgba(255,255,255,.08), 0 18px 38px rgba(0,0,0,.35); }
 .game-toolbar { padding-bottom: 4px; }
 .race-progress { margin: 0; padding: 5px 10px; border: 1px solid rgba(255,207,63,.3); border-radius: 999px; color: var(--accent); font-weight: 700; }
@@ -279,6 +280,9 @@ button.primary { background: linear-gradient(135deg, var(--accent-strong), var(-
     margin-top: 2px;
 }
 .room-active .controls-hint {
+    display: none;
+}
+.room-active #game-section.race-waiting .touch-controls {
     display: none;
 }
 

@@ -885,6 +885,7 @@ Prueba manual (sustentación):
 
 La carrera usa cuatro circuitos originales dibujados en el canvas compartido (`shared/tracks.js`): óvalo, circuito del oasis, figura de ocho y pista con obstáculos. Al iniciar, el coordinador anfitrión coloca a los participantes sobre la línea de salida y comienza el nivel 1.
 
+- Mientras `phase` es `waiting`, el cliente muestra un recuadro de espera con los carros de los participantes, sin pista ni controles de movimiento. Al iniciar la partida, el circuito aparece junto con la cuenta regresiva.
 - `game_started` incluye `race: { level, phase, countdownStartedAt, serverTime, laps }`. `phase` es `waiting`, `countdown`, `racing` o `finished`; `laps` mapea cada `userId` a sus vueltas completadas (0–3). `race_update` tiene la forma `{ type: "race_update", roomId, race }`. Cada `state` incluye el mismo snapshot `race`.
 - Durante la cuenta regresiva se muestran las luces del semáforo a todos: rojo 2 s, amarillo 2 s y verde 2 s. El movimiento se habilita al terminar los 6 s; el servidor ignora intents durante la cuenta regresiva.
 - El servidor limita el movimiento al ancho de la pista y cuenta una vuelta al cruzar la meta en el sentido del circuito. Un piloto se detiene al completar 3 vueltas. El siguiente nivel y su cuenta regresiva inician cuando todos los miembros activos completan las 3 vueltas. Tras completar el nivel 4, la carrera queda finalizada.
