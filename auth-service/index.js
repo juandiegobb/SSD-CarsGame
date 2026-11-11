@@ -394,14 +394,17 @@ app.use(express.json({ limit: '4kb' }));
 // Taller 7: solo el líder acepta escrituras (single-writer replication, SPEC.md §13.4).
 // Una réplica responde 503 not_leader con la URL del líder para que el cliente repita ahí.
 // Si no se sabe quién es el líder (elección en curso), 503 no_leader: hay que reintentar.
-function rejectNotLeader(res) {
+// kind = 'write' (registrar, crear cuenta) o 'read' (login en una réplica demasiado atrasada)
+function rejectNotLeader(res, kind = 'write') {
   const { role, leaderUrl } = clusterState.describe();
   if (role !== 'candidate' && leaderUrl) {
     return sendError(
       res,
       503,
       'NOT_LEADER',
-      'Este auth es una réplica: las escrituras las atiende el líder.',
+      kind === 'read'
+        ? 'Esta réplica está atrasada respecto al líder: la petición la atiende el líder.'
+        : 'Este auth es una réplica: las escrituras las atiende el líder.',
       'Repite la misma petición contra leaderUrl.',
       undefined,
       { error: 'not_leader', leaderUrl }
@@ -751,6 +754,10 @@ app.post('/login', async (req, res, next) => {
       );
     }
 
+    // Taller 7: login es una lectura. Una réplica responde solo si no está muy atrasada
+    // (READ_LAG_TOLERANCE); si no, redirige al líder. Así una réplica atrasada nunca emite tokens.
+    if (!clusterState.canServeReads()) return rejectNotLeader(res, 'read');
+
     const cleanUsername = normalizeUsername(username);
     const user = stmts.findByUsername.get(cleanUsername);
 
@@ -872,6 +879,10 @@ app.post('/auth/google', async (req, res, next) => {
     const googleSub = payload.sub;
     const email = payload.email;
     const pictureUrl = safePictureUrl(payload.picture);
+
+    // Taller 7: buscar al usuario es una lectura; una réplica muy atrasada podría no conocerlo
+    // y pedirle un username a alguien que ya tiene cuenta → mejor redirigir al líder.
+    if (!clusterState.canServeReads()) return rejectNotLeader(res, 'read');
 
     // 2. ¿Ya existe este usuario de Google?
     const existing = stmts.findByGoogle.get(googleSub);

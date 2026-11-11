@@ -82,3 +82,18 @@ test('el mesh puede actualizar lo que se sabe de cada peer', () => {
   assert.equal(b.role, 'replica');
   assert.equal(b.publicUrl, 'https://b.ngrok.app');
 });
+
+test('lecturas: el líder siempre; una réplica solo si no va más de la tolerancia detrás', () => {
+  const leader = setup('auth-a', 4001).state;
+  leader.startWithProvisionalLeader();
+  assert.equal(leader.canServeReads(), true);
+
+  const { state: replica, replicationLog } = setup('auth-b', 4002);
+  replica.startWithProvisionalLeader();
+  const mine = replicationLog.lastAppliedSeq();
+  replica.noteLeaderContact('auth-a', mine + 10);
+  assert.equal(replica.canServeReads(10), true, '10 detrás: todavía responde');
+  replica.noteLeaderContact('auth-a', mine + 11);
+  assert.equal(replica.canServeReads(10), false, '11 detrás: redirige al líder');
+  assert.equal(replica.canServeReads(20), true, 'la tolerancia es configurable');
+});

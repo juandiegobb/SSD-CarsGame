@@ -112,6 +112,15 @@ function createClusterState({ config, replicationLog }) {
     return Math.max(0, leaderSeq - replicationLog.lastAppliedSeq());
   }
 
+  // ¿Puede este nodo responder una lectura (login) y emitir un token?
+  //   líder → siempre
+  //   réplica/candidato → solo si va como mucho `tolerance` escrituras detrás del líder.
+  // Si va más atrás podría decir "credenciales inválidas" a un usuario nuevo que aún no conoce.
+  function canServeReads(tolerance = config.readLagTolerance) {
+    if (role === 'leader') return true;
+    return lagBehindLeader() <= tolerance;
+  }
+
   // Lo que el mesh va aprendiendo de cada peer (hello, heartbeat, conexión/desconexión)
   function updatePeer(authId, info) {
     if (!authId || authId === config.authId) return;
@@ -165,6 +174,7 @@ function createClusterState({ config, replicationLog }) {
     noteLeaderContact,
     msSinceLeaderContact,
     lagBehindLeader,
+    canServeReads,
     updatePeer,
     listPeers,
     startWithProvisionalLeader,
