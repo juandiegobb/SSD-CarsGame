@@ -814,6 +814,14 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
    Después de un heartbeat, Auth publica la instancia y el mesh la incorpora
    automáticamente; no hay una lista fija de tres.
 
+   El lobby consulta periódicamente `GET /coordinators` en Auth y reúne los
+   resultados de `GET /players` de cada instancia vigente, deduplicando por
+   `userId`. Configura el mismo origen HTTPS del Client en `CLIENT_ORIGINS` de
+   todos los coordinadores para permitir esa consulta desde el navegador. Si un
+   coordinador no responde, el lobby avisa que la lista podría estar incompleta;
+   este agregado visual no reemplaza el mesh, que sigue siendo necesario para
+   compartir salas y partidas entre procesos.
+
    **Diagnóstico del mesh:** consulta `GET /coordinators` en Auth y confirma
    que todas las instancias aparecen `live: true` con IDs distintos. Luego,
    consulta `GET /health` por el host HTTPS público de cada coordinador:

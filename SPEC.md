@@ -285,7 +285,7 @@ COORDINATOR_WS_URL=ws://localhost:5000
 >
 > `COORDINATOR_SHARED_SECRET` debe configurarse con el mismo valor secreto en auth y coordinadores. No se reutiliza el JWT de usuarios para autenticar heartbeats; los `.env.example` contienen solo un placeholder que debe reemplazarse en los `.env` locales.
 >
-> `CLIENT_ORIGINS` limita los orígenes permitidos para solicitar tickets al coordinador. En ngrok debe contener el origen HTTPS del cliente. El `.env.example` solo documenta el origen local.
+> `CLIENT_ORIGINS` limita los orígenes permitidos para solicitar tickets al coordinador y consultar su roster con `GET /players`. En ngrok debe contener el origen HTTPS del cliente. El `.env.example` solo documenta el origen local.
 >
 > `JWT_EXPIRES_IN` en `auth-service/.env` se relee dinámicamente en cada petición `POST /login` (permite cambiar la duración en caliente sin reiniciar el proceso). Las demás variables (`PORT`, `JWT_SECRET`, `BCRYPT_ROUNDS`, `CORS_ORIGINS`) se cargan al iniciar el proceso y requieren reinicio del servicio para aplicar cambios.
 
@@ -355,6 +355,7 @@ Cada fase termina con **criterios de aceptación verificables** y **al menos un 
    - Muestra el `username` actual (el guardado en login o el del mensaje `connected`).
    - Solicita `POST /ws-ticket` al coordinador elegido con el JWT en el header Authorization y abre WebSocket en `/connect` usando `carsgame.v1` y el ticket temporal.
    - `onmessage`: `players_update` → re-renderiza la lista "Jugadores en línea"; `connected` → confirma estado; `error` → muestra `message` + `hint`.
+   - Para mostrar jugadores aunque el mesh aún no se haya sincronizado, consulta `GET /coordinators` en Auth y combina los `GET /players` de cada coordinador `live: true`, deduplicando por `userId`. Actualiza el roster periódicamente; si una instancia no responde, conserva su última lista conocida y avisa que el resultado puede estar incompleto.
    - Botón **"Cerrar sesión"**: marca cierre intencional, borra el token, `ws.close(1000, 'logout')`, redirige a login.
    - `onclose` **inesperado** (flag de cierre intencional en `false`): muestra mensaje según el código (tabla 3.4) y vuelve a login (salvo `4002`).
    - **Session watcher en cliente (`startSessionWatcher`):** sondeo cada ~300 ms comparando `localStorage.token` con el token activo + evento `storage` + latido secundario cada ~5 s enviando `{"type":"verify"}`. Si el token en `localStorage` cambia, solicita un ticket con el nuevo JWT por HTTPS y envía solo ese ticket en `verify`. Si el token fue eliminado (`null`), ejecuta cierre de sesión local inmediato con `ws.close(1000, "logout")` y mensaje. Se detiene al cerrar la sesión o recibir código `4002`.

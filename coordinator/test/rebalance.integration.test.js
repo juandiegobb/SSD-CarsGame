@@ -231,6 +231,27 @@ test('migra jugadores y mantiene sus salas y progreso al agregar un coordinador'
   processes.push(coordinatorA);
   await waitForHealth(portA, coordinatorA);
 
+  const playersPreflight = await fetch(`http://127.0.0.1:${portA}/players`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'http://localhost:3000',
+      'Access-Control-Request-Method': 'GET',
+      'Access-Control-Request-Headers': 'ngrok-skip-browser-warning'
+    }
+  });
+  assert.equal(playersPreflight.status, 204);
+  assert.equal(playersPreflight.headers.get('access-control-allow-origin'), 'http://localhost:3000');
+
+  const rejectedPreflight = await fetch(`http://127.0.0.1:${portA}/players`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://unauthorized.example',
+      'Access-Control-Request-Method': 'GET'
+    }
+  });
+  assert.equal(rejectedPreflight.status, 403);
+  assert.equal((await rejectedPreflight.json()).code, 'ORIGIN_NOT_ALLOWED');
+
   for (const player of players) {
     await player.connect(urlA, 'coord-a');
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -239,6 +260,13 @@ test('migra jugadores y mantiene sus salas y progreso al agregar un coordinador'
     () => players.every((player) => latestMessage(player, 'connected')),
     'las conexiones iniciales'
   );
+
+  const playersResponse = await fetch(`http://127.0.0.1:${portA}/players`, {
+    headers: { Origin: 'http://localhost:3000' }
+  });
+  const playersPayload = await playersResponse.json();
+  assert.equal(playersResponse.headers.get('access-control-allow-origin'), 'http://localhost:3000');
+  assert.equal(playersPayload.count, 3);
 
   players[0].send({ type: 'room_create', name: 'Sala de prueba' });
   await waitUntil(() => latestMessage(players[0], 'room_created'), 'crear la sala');

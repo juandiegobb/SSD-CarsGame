@@ -106,6 +106,7 @@
         </section>
         <section id="room-online-section" aria-labelledby="players-heading">
             <h2 id="players-heading">Jugadores en línea <span id="player-count">(0)</span></h2>
+            <p id="players-sync-status" class="muted" aria-live="polite" hidden></p>
             <ul id="players-list" class="players"></ul>
         </section>
     </main>
@@ -126,6 +127,11 @@
             let pollTimer = null;
             let heartbeatTimer = null;
             let activeExpirationTimer = null;
+            let playersSyncTimer = null;
+            let playersSyncGeneration = 0;
+            let playersSyncInFlight = false;
+            let socketPlayersSnapshot = [];
+            let coordinatorPlayersSnapshots = new Map();
             let lastErrorMessage = "";
             let currentRoomId = null;
             let currentRoomHostId = null;
@@ -158,6 +164,7 @@
             const replacedPanel = document.getElementById("replaced-panel");
             const playersList = document.getElementById("players-list");
             const playerCount = document.getElementById("player-count");
+            const playersSyncStatus = document.getElementById("players-sync-status");
             const roomsLobby = document.getElementById("rooms-lobby");
             const roomsList = document.getElementById("rooms-list");
             const currentRoomPanel = document.getElementById("current-room");
@@ -426,6 +433,63 @@
                 }
             }
 
+            function renderMergedPlayers() {
+                renderPlayers(mergePlayerLists(
+                    ...coordinatorPlayersSnapshots.values(),
+                    socketPlayersSnapshot
+                ));
+            }
+
+            function setPlayersSyncStatus(message) {
+                playersSyncStatus.textContent = message;
+                playersSyncStatus.hidden = !message;
+            }
+
+            async function refreshGlobalPlayers() {
+                if (playersSyncInFlight || intentionalClose) return;
+                playersSyncInFlight = true;
+                const generation = playersSyncGeneration;
+                try {
+                    const result = await requestGlobalPlayers();
+                    if (generation !== playersSyncGeneration || intentionalClose) return;
+                    if (!result.ok) {
+                        setPlayersSyncStatus(
+                            "No se pudo consultar el directorio de coordinadores. La lista puede estar incompleta."
+                        );
+                        return;
+                    }
+
+                    const activeIds = new Set(result.coordinators.map((item) => item.coordinatorId));
+                    const nextSnapshots = new Map(
+                        [...coordinatorPlayersSnapshots].filter(([id]) => activeIds.has(id))
+                    );
+                    const failedCoordinators = [];
+                    for (const coordinator of result.coordinators) {
+                        if (coordinator.ok) {
+                            nextSnapshots.set(coordinator.coordinatorId, coordinator.players);
+                        } else {
+                            failedCoordinators.push(coordinator.coordinatorName);
+                        }
+                    }
+                    coordinatorPlayersSnapshots = nextSnapshots;
+                    renderMergedPlayers();
+
+                    if (result.coordinators.length === 0) {
+                        setPlayersSyncStatus(
+                            "Auth no reporta coordinadores activos. Se muestran los jugadores conocidos por esta conexión."
+                        );
+                    } else if (failedCoordinators.length > 0) {
+                        setPlayersSyncStatus(
+                            `No se pudo consultar: ${failedCoordinators.join(", ")}. La lista puede estar incompleta.`
+                        );
+                    } else {
+                        setPlayersSyncStatus("");
+                    }
+                } finally {
+                    if (generation === playersSyncGeneration) playersSyncInFlight = false;
+                }
+            }
+
             function decodeToken(tok) {
                 try {
                     const parts = tok.split('.');
@@ -516,6 +580,12 @@
                     clearInterval(activeExpirationTimer);
                     activeExpirationTimer = null;
                 }
+                if (playersSyncTimer) {
+                    clearInterval(playersSyncTimer);
+                    playersSyncTimer = null;
+                }
+                playersSyncGeneration += 1;
+                playersSyncInFlight = false;
                 if (verifySecurityTimer) {
                     clearTimeout(verifySecurityTimer);
                     verifySecurityTimer = null;
@@ -600,6 +670,8 @@
 
                 // Escucha de evento storage (cambios desde otras pestañas, p. ej. logout)
                 window.addEventListener("storage", handleStorageEvent);
+                refreshGlobalPlayers();
+                playersSyncTimer = setInterval(refreshGlobalPlayers, 5000);
             }
 
             document.getElementById("logout-button").addEventListener("click", () => {
@@ -730,7 +802,8 @@
                             break;
                         case "players_update":
                             if (Array.isArray(msg.players)) {
-                                renderPlayers(msg.players);
+                                socketPlayersSnapshot = msg.players;
+                                renderMergedPlayers();
                             }
                             break;
                         case "room_list":

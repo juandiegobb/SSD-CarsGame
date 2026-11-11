@@ -87,6 +87,123 @@ async function requestCoordinator() {
     return { ok: false, status: response.status, payload };
 }
 
+function coordinatorPlayersUrl(value) {
+    try {
+        const url = new URL(value);
+        if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+            return null;
+        }
+        url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+        url.pathname = "/players";
+        return url.toString();
+    } catch {
+        return null;
+    }
+}
+
+async function fetchRosterResponse(url) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    try {
+        const response = await fetch(url, {
+            headers: { "ngrok-skip-browser-warning": "true" },
+            cache: "no-store",
+            signal: controller.signal
+        });
+        return { response, payload: await response.json().catch(() => null) };
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+async function requestGlobalPlayers() {
+    let response;
+    let payload;
+    try {
+        const { AUTH_URL } = getAppConfig();
+        ({ response, payload } = await fetchRosterResponse(`${AUTH_URL}/coordinators`));
+    } catch {
+        return { ok: false, reason: "directory-unavailable", coordinators: [] };
+    }
+
+    if (!response.ok || payload?.ok !== true || !Array.isArray(payload.coordinators)) {
+        return { ok: false, reason: "directory-invalid", coordinators: [] };
+    }
+
+    const activeCoordinators = payload.coordinators.filter((coordinator) =>
+        coordinator?.live === true &&
+        typeof coordinator.coordinatorId === "string" &&
+        coordinator.coordinatorId.length > 0
+    );
+    const coordinators = await Promise.all(activeCoordinators.map(async (coordinator) => {
+        const result = {
+            coordinatorId: coordinator.coordinatorId,
+            coordinatorName: typeof coordinator.coordinatorName === "string"
+                ? coordinator.coordinatorName
+                : coordinator.coordinatorId,
+            ok: false,
+            players: []
+        };
+        const endpoint = coordinatorPlayersUrl(coordinator.publicUrl);
+        if (!endpoint) return result;
+
+        try {
+            const { response: playerResponse, payload: playerPayload } = await fetchRosterResponse(endpoint);
+            if (
+                !playerResponse.ok ||
+                playerPayload?.ok !== true ||
+                !Array.isArray(playerPayload.players) ||
+                !playerPayload.players.every((player) =>
+                    player &&
+                    (typeof player.userId === "string" || typeof player.userId === "number") &&
+                    typeof player.username === "string"
+                )
+            ) {
+                return result;
+            }
+
+            result.ok = true;
+            result.players = playerPayload.players.map((player) => ({
+                ...player,
+                coordinatorId: typeof player.coordinatorId === "string"
+                    ? player.coordinatorId
+                    : result.coordinatorId,
+                coordinatorName: typeof player.coordinatorName === "string"
+                    ? player.coordinatorName
+                    : result.coordinatorName
+            }));
+        } catch {
+            return result;
+        }
+        return result;
+    }));
+
+    return { ok: true, coordinators };
+}
+
+function mergePlayerLists(...lists) {
+    const playersById = new Map();
+    for (const players of lists) {
+        if (!Array.isArray(players)) continue;
+        for (const player of players) {
+            if (
+                !player ||
+                (typeof player.userId !== "string" && typeof player.userId !== "number") ||
+                typeof player.username !== "string"
+            ) {
+                continue;
+            }
+            const userId = String(player.userId);
+            playersById.set(userId, {
+                ...playersById.get(userId),
+                ...player,
+                userId
+            });
+        }
+    }
+    return [...playersById.values()];
+}
+
 async function requestWsTicket(coordinatorUrl, token) {
     try {
         const normalizedUrl = normalizeCoordinatorUrl(coordinatorUrl);

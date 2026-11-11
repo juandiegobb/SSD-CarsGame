@@ -1188,6 +1188,19 @@ function allowTicketOrigin(req, res) {
   return true;
 }
 
+function allowPlayersOrigin(req, res) {
+  const origin = req.get('origin');
+  if (!origin) return true;
+  if (!CLIENT_ORIGINS.has(origin)) return false;
+
+  res.set('Access-Control-Allow-Origin', origin);
+  res.set('Vary', 'Origin');
+  res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'ngrok-skip-browser-warning');
+  res.set('Access-Control-Max-Age', '600');
+  return true;
+}
+
 function pruneWsTickets(now = Date.now()) {
   for (const [ticket, entry] of wsTickets) {
     if (entry.expiresAt <= now) wsTickets.delete(ticket);
@@ -1246,6 +1259,13 @@ app.post('/ws-ticket', (req, res) => {
   });
 });
 
+app.options('/players', (req, res) => {
+  if (!allowPlayersOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+  return res.status(204).end();
+});
+
 // GET /health
 app.get('/health', (req, res) => {
   sendOk(res, 200, 'Coordinador operativo.', {
@@ -1264,6 +1284,9 @@ app.get('/health', (req, res) => {
 
 // GET /players — solo lectura y diagnóstico; nunca expone sockets ni tokens
 app.get('/players', (req, res) => {
+  if (!allowPlayersOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
   const playerList = [];
   for (const [userId, entry] of players) {
     playerList.push({
