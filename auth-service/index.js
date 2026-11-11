@@ -18,6 +18,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const { hasCoordinatorEndpointConflict } = require('./coordinator-directory');
+const { loadClusterConfig, ClusterConfigError } = require('./cluster-config');
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
@@ -39,7 +40,17 @@ if (!googleClient) {
 }
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const PORT = Number(process.env.PORT) || 4000;
+
+// Taller 7: identidad de este auth dentro del grupo replicado (AUTH_ID, puertos, peers…)
+let CLUSTER;
+try {
+  CLUSTER = loadClusterConfig();
+} catch (err) {
+  if (!(err instanceof ClusterConfigError)) throw err;
+  console.error(`Error de configuración: ${err.message}`);
+  process.exit(1);
+}
+const PORT = CLUSTER.port;
 const DB_PATH = process.env.DB_PATH || 'users.db';
 const ENV_PATH = path.join(__dirname, '.env');
 const coordinators = new Map();
@@ -902,7 +913,8 @@ app.use((err, req, res, next) => {
 // 6. Arranque del servidor HTTP
 const server = app.listen(PORT, () => {
   startCoordinatorCleanup();
-  console.log(`Auth Service escuchando en http://localhost:${PORT}`);
+  console.log(`Auth Service ${CLUSTER.authId} escuchando en http://localhost:${PORT} (pública: ${CLUSTER.publicUrl}).`);
+  console.log(`  Mesh de auth: ${CLUSTER.peerUrl} · peers: ${CLUSTER.peers.map((peer) => peer.authId).join(', ') || 'ninguno (auth único)'} · base: ${DB_PATH}`);
 });
 server.once('close', stopCoordinatorCleanup);
 
