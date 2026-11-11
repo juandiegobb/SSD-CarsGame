@@ -190,6 +190,7 @@ button.primary { background: linear-gradient(135deg, var(--accent-strong), var(-
 .room-card button { flex-shrink: 0; }
 .rooms-empty { grid-column: 1 / -1; padding: 18px; text-align: center; border: 1px dashed rgba(255,255,255,.14); border-radius: 12px; }
 .room-header-actions { align-items: center; }
+.room-members-heading { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
 
 @media (prefers-reduced-motion: no-preference) {
     .hero-badge { animation: heroFloat 3.2s ease-in-out infinite; }
