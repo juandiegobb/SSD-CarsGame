@@ -375,12 +375,12 @@ function sendRebalanceRequest(userId, target) {
 }
 
 function runPeerRebalance() {
+  const connectedPeers = peers.filter((peer) => isOpenSocket(peerConnections.get(peer.coordinatorId)));
   const activeCoordinators = [
     { coordinatorId: COORDINATOR_ID, coordinatorName: COORDINATOR_NAME, publicUrl: PUBLIC_URL },
-    ...peers
+    ...connectedPeers
   ].sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0);
   if (activeCoordinators.length < 2 || activeCoordinators[0].coordinatorId !== COORDINATOR_ID) return;
-  if (peers.some((peer) => !isOpenSocket(peerConnections.get(peer.coordinatorId)))) return;
 
   const coordinatorById = new Map(activeCoordinators.map((coordinator) =>
     [coordinator.coordinatorId, coordinator]));
@@ -393,6 +393,8 @@ function runPeerRebalance() {
   for (const assignment of assignments) {
     const target = coordinatorById.get(assignment.targetId);
     if (!target || !isValidPeerUrl(target.publicUrl)) continue;
+
+    console.log(`[rebalance] Planificando migración: jugador ${assignment.userId} de ${assignment.sourceId} a ${target.coordinatorId} (${target.publicUrl})`);
 
     rebalanceInFlight.set(assignment.userId, target.coordinatorId);
     setTimeout(() => {
@@ -476,6 +478,7 @@ function acceptPlayerTransfer(peerId, message) {
   player.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, message.y));
   player.extras = message.extras;
   rebalanceInFlight.delete(message.userId);
+  console.log(`[rebalance] Jugador ${message.userId} migró exitosamente de ${COORDINATOR_ID} a ${peerId}`);
   broadcastPlayers();
   broadcastRoomList();
   const room = player.roomId ? rooms.get(player.roomId) : null;

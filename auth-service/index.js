@@ -411,31 +411,52 @@ app.post('/heartbeat', (req, res) => {
     load: playerCount,
     connectedPlayers: playerCount,
     uptime: uptime ?? 0,
-    lastHeartbeat: new Date().toISOString()
+    lastHeartbeat: new Date().toISOString(),
+    pendingAssignments: 0
   });
 
   return sendOk(res, 200, 'Heartbeat recibido.');
 });
 
 // GET /coordinator - Selecciona el coordinador vigente con menor carga.
+// Distribuye equitativamente entre los coordinadores vigentes con menor carga.
+let coordinatorTieBreaker = 0;
+
 app.get('/coordinator', (req, res) => {
   const now = Date.now();
-  let selected = null;
+  const liveCoordinators = [...coordinators.values()]
+    .filter((coordinator) => isCoordinatorLive(coordinator, now))
+    .sort((a, b) => (a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0));
 
-  for (const coordinator of coordinators.values()) {
-    if (!isCoordinatorLive(coordinator, now)) continue;
+  if (liveCoordinators.length === 0) {
+    return res.status(503).json({ error: 'no_coordinators_available' });
+  }
 
-    if (!selected ||
-        coordinator.load < selected.load ||
-        (coordinator.load === selected.load &&
-          coordinator.coordinatorId < selected.coordinatorId)) {
-      selected = coordinator;
+  // Descartar asignaciones pendientes que superen 5 segundos sin completarse
+  for (const c of liveCoordinators) {
+    if (c.pendingAssignments && (now - (c.lastAssignmentAt || 0) > 5000)) {
+      c.pendingAssignments = 0;
     }
   }
 
-  if (!selected) {
-    return res.status(503).json({ error: 'no_coordinators_available' });
+  // Calcular la carga mínima efectiva (carga reportada + asignaciones recientes)
+  let minEffectiveLoad = Infinity;
+  for (const c of liveCoordinators) {
+    const effective = (c.load || 0) + (c.pendingAssignments || 0);
+    if (effective < minEffectiveLoad) {
+      minEffectiveLoad = effective;
+    }
   }
+
+  const tiedCandidates = liveCoordinators.filter(
+    (c) => ((c.load || 0) + (c.pendingAssignments || 0)) === minEffectiveLoad
+  );
+
+  const selected = tiedCandidates[coordinatorTieBreaker % tiedCandidates.length];
+  coordinatorTieBreaker = (coordinatorTieBreaker + 1) % 1000000;
+
+  selected.pendingAssignments = (selected.pendingAssignments || 0) + 1;
+  selected.lastAssignmentAt = now;
 
   return res.json({
     coordinatorId: selected.coordinatorId,
