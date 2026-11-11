@@ -21,12 +21,14 @@ test('lee un grupo de 3 auths y calcula la mayoría', () => {
     PORT: '4002',
     PEER_PORT: '4102',
     PUBLIC_URL: 'https://auth-b.ejemplo.dev/',
-    AUTH_PEERS: 'auth-c=ws://localhost:4103, auth-a=ws://localhost:4101',
+    AUTH_PEERS: 'auth-c=ws://localhost:4103, auth-a=ws://localhost:4101|http://localhost:4001/',
     READ_LAG_TOLERANCE: '5'
   });
   assert.equal(config.authId, 'auth-b');
   assert.equal(config.publicUrl, 'https://auth-b.ejemplo.dev');
   assert.deepEqual(config.peers.map((peer) => peer.authId), ['auth-a', 'auth-c']);
+  assert.equal(config.peers[0].publicUrl, 'http://localhost:4001');
+  assert.equal(config.peers[1].publicUrl, null);
   assert.equal(config.clusterSize, 3);
   assert.equal(config.majority, 2);
   assert.equal(config.readLagTolerance, 5);
@@ -40,6 +42,8 @@ test('rechaza configuraciones inválidas con un mensaje claro', () => {
     { PUBLIC_URL: 'http://localhost:4001/ruta' },
     { AUTH_PEERS: 'auth-b' },
     { AUTH_PEERS: 'auth-b=http://localhost:4102' },
+    { AUTH_PEERS: 'auth-b=ws://localhost:4102|ws://localhost:4002' },
+    { AUTH_PEERS: 'auth-b=ws://localhost:4102|http://a|http://b' },
     { AUTH_ID: 'auth-a', AUTH_PEERS: 'auth-a=ws://localhost:4101' },
     { AUTH_PEERS: 'auth-b=ws://localhost:4102,auth-b=ws://localhost:4103' },
     { READ_LAG_TOLERANCE: '-1' }

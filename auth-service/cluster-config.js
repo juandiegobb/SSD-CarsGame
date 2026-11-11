@@ -39,7 +39,9 @@ function parseBaseUrl(name, value, protocols) {
   return url.origin;
 }
 
-// AUTH_PEERS=auth-b=ws://localhost:4102,auth-c=ws://localhost:4103
+// AUTH_PEERS=auth-b=ws://localhost:4102|http://localhost:4002,auth-c=ws://localhost:4103|http://localhost:4003
+// La parte después de "|" (URL pública HTTP del peer) es opcional: sirve para responder
+// leaderUrl antes de que el mesh confirme las URLs con el hello.
 function parseAuthPeers(value, selfId) {
   if (!value || !value.trim()) return [];
   const peers = [];
@@ -49,10 +51,17 @@ function parseAuthPeers(value, selfId) {
     if (!item) continue;
     const separator = item.indexOf('=');
     if (separator <= 0) {
-      throw new ClusterConfigError(`AUTH_PEERS: "${item}" debe tener la forma authId=ws://host:puerto.`);
+      throw new ClusterConfigError(`AUTH_PEERS: "${item}" debe tener la forma authId=ws://host:puerto (|http://host:puerto opcional).`);
     }
     const authId = item.slice(0, separator).trim();
-    const peerUrl = parseBaseUrl(`AUTH_PEERS (${authId})`, item.slice(separator + 1).trim(), ['ws:', 'wss:']);
+    const [rawPeerUrl, rawPublicUrl, ...extra] = item.slice(separator + 1).split('|').map((part) => part.trim());
+    if (extra.length) {
+      throw new ClusterConfigError(`AUTH_PEERS (${authId}): usa un solo "|" entre la URL del mesh y la URL pública.`);
+    }
+    const peerUrl = parseBaseUrl(`AUTH_PEERS (${authId})`, rawPeerUrl, ['ws:', 'wss:']);
+    const publicUrl = rawPublicUrl
+      ? parseBaseUrl(`AUTH_PEERS (${authId}, URL pública)`, rawPublicUrl, ['http:', 'https:'])
+      : null;
     if (!ID_PATTERN.test(authId)) {
       throw new ClusterConfigError(`AUTH_PEERS: el ID "${authId}" solo puede tener letras, números, guion y guion bajo.`);
     }
@@ -63,7 +72,7 @@ function parseAuthPeers(value, selfId) {
       throw new ClusterConfigError(`AUTH_PEERS repite el ID ${authId}.`);
     }
     seen.add(authId);
-    peers.push({ authId, peerUrl });
+    peers.push({ authId, peerUrl, publicUrl });
   }
   return peers.sort((a, b) => (a.authId < b.authId ? -1 : a.authId > b.authId ? 1 : 0));
 }

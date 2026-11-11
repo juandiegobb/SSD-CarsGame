@@ -931,7 +931,7 @@ Hoy el auth es un solo proceso: si muere, nadie nuevo entra, nadie se reconecta 
 | `PUBLIC_URL` | `http://localhost:4001` (o el `https://` de ngrok) | URL que se anuncia como `leaderUrl` |
 | `PEER_PORT` | `4101` | WebSocket del mesh entre auths (distinto de `PORT`) |
 | `PEER_URL` | `ws://localhost:4101` | Dirección a la que se conectan los otros auths |
-| `AUTH_PEERS` | `auth-b=ws://localhost:4102,auth-c=ws://localhost:4103` | **[Decisión]** Lista fija de los otros auths. Los auths no tienen un directorio al que preguntar, así que se configuran en el `.env` |
+| `AUTH_PEERS` | `auth-b=ws://localhost:4102\|http://localhost:4002,auth-c=ws://localhost:4103\|http://localhost:4003` | **[Decisión]** Lista fija de los otros auths. Los auths no tienen un directorio al que preguntar, así que se configuran en el `.env`. Después de `\|` va, opcional, la URL pública HTTP de ese auth: permite responder `leaderUrl` aunque el mesh todavía no haya confirmado las URLs con el `hello` |
 | `DB_PATH` | `users-auth-a.db` | **Cada auth tiene su propia base** |
 | `READ_LAG_TOLERANCE` | `10` | Cuántos cambios puede ir atrasada una réplica y seguir respondiendo lecturas |
 | `REPLICATION_ACK_TIMEOUT_MS` | `2000` | Cuánto espera el líder la confirmación de una réplica |
