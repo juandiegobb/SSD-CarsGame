@@ -53,6 +53,11 @@ async function waitForHealth(port, process) {
   }, `health en ${port}`);
 }
 
+async function readHealth(port) {
+  const response = await fetch(`http://127.0.0.1:${port}/health`);
+  return response.ok ? response.json() : null;
+}
+
 async function requestTicket(port, token) {
   const response = await fetch(`http://127.0.0.1:${port}/ws-ticket`, {
     method: 'POST',
@@ -285,6 +290,14 @@ test('migra jugadores y mantiene sus salas y progreso al agregar un coordinador'
   });
   processes.push(coordinatorB);
   await waitForHealth(portB, coordinatorB);
+  await waitUntil(async () => {
+    const [healthA, healthB] = await Promise.all([
+      readHealth(portA),
+      readHealth(portB)
+    ]);
+    return healthA?.mesh?.connectedPeerIds.includes('coord-b') &&
+      healthB?.mesh?.connectedPeerIds.includes('coord-a');
+  }, 'confirmar el enlace mesh en ambos coordinadores');
 
   try {
     await waitUntil(

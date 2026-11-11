@@ -157,7 +157,7 @@ SSD-C.../
 
 | Método | Ruta | Respuesta |
 |---|---|---|
-| GET | `/health` | `200 { ok, message, service:"coordinator", uptime, onlineCount }` |
+| GET | `/health` | `200 { ok, message, service:"coordinator", uptime, onlineCount, mesh:{discoveredPeerIds, connectedPeerIds, pendingPeerIds} }` |
 | GET | `/players` | `200 { ok, message, count, players:[{userId, username}] }` — **solo lectura/diagnóstico**, permite verificar el `Map` desde Thunder Client sin abrir WS. Nunca expone sockets ni tokens. |
 | POST | `/ws-ticket` | Header `Authorization: Bearer <JWT>`; devuelve un ticket aleatorio, de un solo uso, válido hasta 15 segundos. Requiere origen permitido cuando la petición viene de navegador. |
 | * | otras | `404 NOT_FOUND` con `hint` (rutas disponibles; el WS vive en `/connect`). |
@@ -772,6 +772,12 @@ Para una sola instancia, configura `coordinator/.env` y ejecuta `npm start --pre
 El script verifica los seis puertos antes de arrancar, da a cada proceso su propio conjunto de variables y restaura el entorno del proceso PowerShell al finalizar. También acepta `-HttpPorts` y `-PeerPorts` para usar otros puertos libres en pruebas. Cada instancia comparte `AUTH_URL` y `COORDINATOR_SHARED_SECRET` del entorno del script o de `coordinator/.env`; el secreto nunca se muestra. Los peer URLs por defecto usan `localhost`, por lo que las tres instancias deben correr en el mismo equipo.
 
 **Conexiones mesh:** cada par usa una única conexión; el coordinador cuyo ID sea lexicográficamente menor la inicia. Un peer nuevo recibe los jugadores y salas existentes y continúa recibiendo los cambios posteriores. Al cerrarse la conexión, se quitan los jugadores que dependían de ese peer.
+
+`GET /health` expone `mesh.discoveredPeerIds` (IDs devueltos por Auth),
+`mesh.connectedPeerIds` (conexiones WebSocket mesh confirmadas) y
+`mesh.pendingPeerIds` (conexiones en handshake). Estos campos sirven para
+distinguir fallos de descubrimiento de fallos de conectividad sin revelar URLs
+ni secretos.
 
 **Descubrimiento:** cada coordinador consulta `GET /peers?coordinatorId=<COORDINATOR_ID>` al iniciar y cada 2 segundos. Auth también permite `GET /peers` sin query (como en el PDF); en ese caso el cliente descarta defensivamente su propio ID. Se conservan las entradas válidas y se reintenta ante errores; temporizadores y solicitudes activas se detienen al cerrar el servidor.
 

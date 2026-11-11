@@ -1253,7 +1253,12 @@ app.get('/health', (req, res) => {
     coordinatorId: COORDINATOR_ID,
     coordinatorName: COORDINATOR_NAME,
     uptime: Math.floor(process.uptime()),
-    onlineCount: players.size
+    onlineCount: players.size,
+    mesh: {
+      discoveredPeerIds: peers.map((peer) => peer.coordinatorId).sort(),
+      connectedPeerIds: [...peerConnections.keys()].sort(),
+      pendingPeerIds: [...pendingPeerConnections.keys()].sort()
+    }
   });
 });
 
@@ -1356,6 +1361,7 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       clearTimeout(helloTimer);
       peerConnections.set(peerId, ws);
       pendingPeerConnections.delete(peerId);
+      console.log(`[coordinator] Mesh conectado con ${peerId}.`);
       sendLocalPlayersToPeer(ws);
       sendLocalRoomsToPeer(ws);
       return;
@@ -1382,13 +1388,14 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', (code) => {
     clearTimeout(helloTimer);
     if (expectedPeerId && pendingPeerConnections.get(expectedPeerId) === ws) {
       pendingPeerConnections.delete(expectedPeerId);
     }
     if (peerId && peerConnections.get(peerId) === ws) {
       peerConnections.delete(peerId);
+      console.log(`[coordinator] Mesh desconectado de ${peerId} (${code}).`);
       removePlayersFromPeer(peerId);
     }
   });

@@ -310,7 +310,7 @@ curl -s http://localhost:4000/health
 # {"ok":true,"message":"Servicio de autenticación operativo.","service":"auth-service","uptime":12}
 
 curl -s http://localhost:5000/health
-# {"ok":true,"message":"Coordinador operativo.","service":"coordinator","uptime":15,"onlineCount":0}
+# {"ok":true,"message":"Coordinador operativo.","service":"coordinator","coordinatorId":"coord-5000","coordinatorName":"Pista Norte","uptime":15,"onlineCount":0,"mesh":{"discoveredPeerIds":[],"connectedPeerIds":[],"pendingPeerIds":[]}}
 ```
 
 #### 2. Registro exitoso (201 Created)
@@ -813,6 +813,15 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
    y hacia las URLs peer.
    Después de un heartbeat, Auth publica la instancia y el mesh la incorpora
    automáticamente; no hay una lista fija de tres.
+
+   **Diagnóstico del mesh:** consulta `GET /coordinators` en Auth y confirma
+   que todas las instancias aparecen `live: true` con IDs distintos. Luego,
+   consulta `GET /health` por el host HTTPS público de cada coordinador:
+   `mesh.connectedPeerIds` debe listar los otros IDs. Si
+   `mesh.discoveredPeerIds` está vacío, revisa que compartan el Auth y que ambos
+   heartbeats estén llegando. Si el peer está descubierto pero no conectado,
+   revisa `mesh.pendingPeerIds`, los errores en la terminal y que su `PEER_URL`
+   público llegue al `PEER_PORT` correcto.
 
    Para anunciar tres coordinadores locales detrás de ngrok, asigna las tres
    URLs `wss://` de clientes:
