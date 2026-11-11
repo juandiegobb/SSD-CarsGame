@@ -1371,7 +1371,7 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       ws.send(JSON.stringify({
         type: 'hello',
         coordinatorId: COORDINATOR_ID,
-        coordinatorName: COORDINATOR_NAME
+        coordinatorName: COORDINATOR_NAME || COORDINATOR_ID
       }));
     }
   };
@@ -1390,7 +1390,7 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
     if (!peerId) {
       if (msg.type !== 'hello' || typeof msg.coordinatorId !== 'string' ||
           !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(msg.coordinatorId) ||
-          (msg.coordinatorName !== undefined && !isValidCoordinatorName(msg.coordinatorName)) ||
+          (msg.coordinatorName && !isValidCoordinatorName(msg.coordinatorName)) ||
           msg.coordinatorId === COORDINATOR_ID ||
           (expectedPeerId && msg.coordinatorId !== expectedPeerId)) {
         ws.close(4000, 'invalid hello');
