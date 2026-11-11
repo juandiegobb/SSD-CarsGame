@@ -871,10 +871,13 @@
                                 msg.coordinatorId !== currentCoordinatorId &&
                                 migrationCoordinatorId !== msg.coordinatorId
                             ) {
+                                console.log("[rebalance] Solicitud de rebalanceo recibida:", msg);
+                                connectionStatus.textContent = `Rebalanceando conexión hacia ${msg.coordinatorName || msg.coordinatorId}…`;
                                 migrationCoordinatorId = msg.coordinatorId;
                                 migrationSourceCoordinatorId = msg.sourceCoordinatorId;
                                 connectToCoordinator(msg.publicUrl, msg.coordinatorId, msg.coordinatorName)
-                                    .catch(() => {
+                                    .catch((err) => {
+                                        console.error("[rebalance] Error al conectar al nuevo coordinador:", err);
                                         migrationCoordinatorId = null;
                                         migrationSourceCoordinatorId = null;
                                         scheduleCoordinatorRetry("No se pudo completar el cambio de coordinador.");

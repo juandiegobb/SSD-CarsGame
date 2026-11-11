@@ -52,7 +52,7 @@ function normalizeCoordinatorUrl(value) {
         if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
             return null;
         }
-        return url.origin;
+        return `${url.protocol}//${url.host}`;
     } catch {
         return null;
     }

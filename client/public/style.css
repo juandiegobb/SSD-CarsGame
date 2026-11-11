@@ -53,8 +53,21 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 }
 
 /* Juego adaptable y controles táctiles */
-.game-stage { width: 100%; overflow: hidden; }
-.game-stage canvas { touch-action: none; }
+.game-stage {
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+}
+.game-stage canvas {
+    display: block;
+    width: 100%;
+    max-width: 960px;
+    height: auto;
+    aspect-ratio: 4 / 3;
+    touch-action: none;
+}
 .touch-controls {
     display: none;
     width: 184px;
@@ -205,172 +218,205 @@ button.primary { background: linear-gradient(135deg, var(--accent-strong), var(-
     .game-hero::after { display: none; }
 }
 
-/* La sala activa ocupa el viewport completo; solo el lobby previo conserva scroll. */
+/* Sala activa: layout espacioso, pista destacada y diseño moderno */
 .racing-page.room-active {
-    height: 100vh;
-    height: 100dvh;
-    min-height: 0;
-    overflow: hidden;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow-x: hidden;
+    overflow-y: auto;
 }
 .racing-page.room-active main {
     width: 100%;
-    max-width: none;
-    height: 100%;
-    min-height: 0;
-    padding: clamp(8px, 1.5vh, 16px) clamp(10px, 2vw, 24px);
-    gap: clamp(6px, 1vh, 12px);
-    grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: clamp(14px, 2vh, 24px) clamp(14px, 2.5vw, 28px) 48px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
 }
-.room-active .lobby-header { grid-row: 1; }
-.room-active #connection-status { grid-row: 2; }
-.room-active #server-info { grid-row: 3; }
-.room-active #notice { grid-row: 4; }
+
 .room-active .lobby-header {
-    padding: 10px 16px;
+    padding: 14px 22px;
+    border-radius: 16px;
+    background: var(--surface-dark);
+    border: 1px solid rgba(255, 207, 63, 0.25);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
 }
+.room-active .lobby-header h1 {
+    font-size: clamp(20px, 3.5vw, 28px);
+}
+.room-active #connection-status {
+    margin: -4px 0 0;
+    font-size: 13px;
+    font-weight: 500;
+}
+.room-active #server-info {
+    margin: -8px 0 0;
+    font-size: 13px;
+    color: var(--muted);
+    display: flex;
+    gap: 18px;
+}
+
+/* Panel de la sala actual: estilizado como barra de estado y jugadores */
 .room-active #current-room {
-    grid-row: 5;
-    min-height: 0;
-    padding: 10px 14px;
+    padding: 16px 22px;
+    border-radius: 16px;
+    background: var(--surface-dark);
+    border: 1px solid rgba(255, 207, 63, 0.22);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.26);
+}
+.room-active #current-room .room-header-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.room-active #current-room h2 {
+    font-size: 22px;
+    margin: 2px 0 4px;
+    color: #fff;
+    font-weight: 800;
+    letter-spacing: -0.02em;
 }
 .room-active #current-room .players {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    max-height: 66px;
-    overflow: hidden;
-    margin-top: 6px;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
 }
 .room-active #current-room .players li {
-    padding: 4px 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 14px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 999px;
+    font-size: 13px;
+    transition: transform 0.15s ease, border-color 0.15s ease;
 }
+.room-active #current-room .players li:hover {
+    transform: translateY(-1px);
+    border-color: rgba(255, 207, 63, 0.4);
+}
+
+/* Sección de la pista: El elemento protagonista del juego */
 .room-active #game-section {
-    grid-row: 6;
-    display: grid;
-    min-width: 0;
-    min-height: 0;
-    padding: 10px;
-    gap: 6px;
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 20px 24px;
+    border-radius: 20px;
+    background: var(--surface-dark);
+    border: 1px solid rgba(255, 207, 63, 0.32);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
 }
 .room-active .track-heading {
     margin: 0;
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: #fff;
 }
 .room-active .game-toolbar {
-    min-width: 0;
-    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 14px;
+    padding-bottom: 2px;
 }
 .room-active .race-progress {
-    font-size: clamp(12px, 1.8vh, 15px);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    padding: 7px 16px;
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: #111827;
+    background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+    border-radius: 999px;
+    box-shadow: 0 4px 16px rgba(255, 122, 0, 0.35);
+    border: none;
 }
+.room-active .color-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #f7f9fc;
+}
+.room-active .controls-hint {
+    display: block;
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.4;
+}
+
+/* Escenario y Canvas grande, inmersivo y de alta calidad */
 .room-active .game-stage {
-    display: grid;
-    min-width: 0;
-    min-height: 0;
-    place-items: center;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: clamp(14px, 2.5vw, 28px);
+    border-radius: 18px;
+    background: radial-gradient(ellipse at center, rgba(30, 42, 60, 0.9) 0%, rgba(13, 19, 29, 0.98) 100%);
+    border: 1px solid rgba(255, 207, 63, 0.22);
+    box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.65), 0 16px 42px rgba(0, 0, 0, 0.45);
 }
 .room-active .game-stage canvas {
     display: block;
-    width: auto;
+    width: 100%;
+    max-width: 980px;
     height: auto;
-    max-width: 100%;
-    max-height: 100%;
+    aspect-ratio: 4 / 3;
+    border-radius: 14px;
+    border: 2px solid rgba(255, 207, 63, 0.55);
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.75), 0 0 35px rgba(255, 122, 0, 0.25);
+    touch-action: none;
+    transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
 }
-.room-active .touch-controls {
-    margin-top: 2px;
-}
-.room-active .controls-hint {
-    display: none;
+.room-active .game-stage canvas:hover {
+    border-color: rgba(255, 207, 63, 0.9);
+    box-shadow: 0 18px 52px rgba(0, 0, 0, 0.8), 0 0 45px rgba(255, 122, 0, 0.4);
 }
 .room-active #game-section.race-waiting .touch-controls {
     display: none;
 }
 
-@media (max-height: 700px) {
-    .racing-page.room-active main {
-        padding: 5px 8px;
-        gap: 4px;
-    }
-    .room-active .lobby-header {
-        padding: 4px 10px;
-    }
-    .room-active .lobby-header .hero-kicker,
-    .room-active #current-user,
-    .room-active #server-info,
-    .room-active #room-member-count {
-        display: none;
-    }
-    .room-active .lobby-header h1 {
-        font-size: clamp(18px, 2.8vh, 22px);
-    }
-    .room-active .lobby-header button {
-        min-height: 36px;
-        padding: 4px 8px;
-    }
-    .room-active #connection-status {
-        font-size: 12px;
-        line-height: 1.2;
-    }
-    .room-active #current-room {
-        padding: 5px 8px;
-    }
-    .room-active #current-room .hero-kicker {
-        display: none;
-    }
-    .room-active #current-room h2 {
-        font-size: 16px;
-        margin: 0;
-    }
-    .room-active #current-room button {
-        min-height: 32px;
-        padding: 3px 8px;
-    }
-    .room-active #current-room .players {
-        max-height: 40px;
-        margin-top: 4px;
-    }
-    .room-active #current-room .players li {
-        padding: 2px 6px;
-    }
-    .room-active #game-section {
-        padding: 5px;
-        gap: 3px;
-    }
-    .room-active .track-heading {
-        font-size: 16px;
-    }
-    .room-active .color-picker {
-        font-size: 12px;
-    }
-    .room-active .car-color-option {
-        width: 24px;
-        height: 24px;
-        min-height: 24px;
-    }
-    .room-active .touch-controls {
-        width: auto;
-        margin-top: 0;
-        grid-template-columns: repeat(4, 40px);
-        grid-template-rows: 40px;
-        gap: 6px;
-    }
-    .room-active .touch-controls button {
-        width: 40px;
-        height: 40px;
-        min-height: 40px;
-        font-size: 20px;
-    }
-    .room-active .touch-controls [data-direction="up"],
-    .room-active .touch-controls [data-direction="left"],
-    .room-active .touch-controls [data-direction="down"],
-    .room-active .touch-controls [data-direction="right"] {
-        grid-column: auto;
-        grid-row: 1;
+.room-active .touch-controls {
+    margin-top: 10px;
+}
+
+@media (min-width: 1400px) {
+    .room-active .game-stage canvas {
+        max-width: 1040px;
     }
 }
-@media (max-height: 380px) {
-    .room-active #room-members-list,
-    .room-active #game-heading {
-        display: none;
+
+@media (max-width: 768px) {
+    .room-active #game-section {
+        padding: 14px 16px;
+    }
+    .room-active .game-stage {
+        padding: 8px;
+        border-radius: 14px;
+    }
+    .room-active .game-stage canvas {
+        border-radius: 10px;
+        border-width: 1.5px;
+    }
+    .room-active .color-picker {
+        width: 100%;
+        justify-content: space-between;
     }
 }
