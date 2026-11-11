@@ -140,6 +140,8 @@
             const WS_TICKET_PROTOCOL_PREFIX = "auth.";
             let retryCount = 0;
             let retryTimer = null;
+            let migrationCoordinatorId = null;
+            let migrationSourceCoordinatorId = null;
             // Coordinador que se acaba de caer: mientras el auth no lo descarte
             // (6 s sin heartbeat) puede seguir devolviéndolo, así que lo evitamos un rato.
             const DEAD_COORDINATOR_TTL_MS = 10000;
@@ -684,6 +686,7 @@
                 });
 
                 ws.addEventListener("message", (event) => {
+                    if (ws !== socket) return;
                     let msg;
                     try {
                         msg = JSON.parse(event.data);
@@ -698,6 +701,12 @@
                             msg.username = normalizeUsername(msg.username);
                             showCurrentUser(`Conectado como ${msg.username}.`);
                             connectionStatus.textContent = connectedLabel();
+                            if (migrationCoordinatorId === currentCoordinatorId && migrationSourceCoordinatorId) {
+                                ws.send(JSON.stringify({
+                                    type: "migration_ack",
+                                    sourceCoordinatorId: migrationSourceCoordinatorId
+                                }));
+                            }
                             break;
                         case "welcome":
                             game.onWelcome(msg);
@@ -770,6 +779,28 @@
                                 lastVerifiedTokenCandidate = null;
                             }
                             break;
+                        case "migration_complete":
+                            migrationCoordinatorId = null;
+                            migrationSourceCoordinatorId = null;
+                            break;
+                        case "rebalance":
+                            if (
+                                typeof msg.sourceCoordinatorId === "string" &&
+                                typeof msg.coordinatorId === "string" &&
+                                typeof msg.publicUrl === "string" &&
+                                msg.coordinatorId !== currentCoordinatorId &&
+                                migrationCoordinatorId !== msg.coordinatorId
+                            ) {
+                                migrationCoordinatorId = msg.coordinatorId;
+                                migrationSourceCoordinatorId = msg.sourceCoordinatorId;
+                                connectToCoordinator(msg.publicUrl, msg.coordinatorId, msg.coordinatorName)
+                                    .catch(() => {
+                                        migrationCoordinatorId = null;
+                                        migrationSourceCoordinatorId = null;
+                                        scheduleCoordinatorRetry("No se pudo completar el cambio de coordinador.");
+                                    });
+                            }
+                            break;
                         case "error": {
                             const feedback = friendlyFeedback(msg, "No pudimos completar esa acción en el juego.");
                             lastErrorMessage = feedback.message;
@@ -785,6 +816,10 @@
                     if (ws !== socket) return; // cierre de una conexión vieja: ya hay otra
                     stopSessionWatcher();
                     verificationInFlight = false;
+                    if (migrationCoordinatorId === currentCoordinatorId) {
+                        migrationCoordinatorId = null;
+                        migrationSourceCoordinatorId = null;
+                    }
                     game.stop(); // deja de leer el teclado
                     if (intentionalClose) {
                         return;

@@ -15,6 +15,7 @@ const express = require('express');
 const { WebSocket, WebSocketServer } = require('ws');
 const jwt = require('jsonwebtoken');
 const RaceTracks = require('../shared/tracks');
+const { planRebalance } = require('./rebalance');
 
 // ── Verificación de configuración crítica ────────────────────────────────────
 if (!process.env.JWT_SECRET) {
@@ -116,6 +117,8 @@ const PEER_DISCOVERY_INTERVAL_MS = 2000;
 const PEER_DISCOVERY_TIMEOUT_MS = 5000;
 const PEER_HELLO_TIMEOUT_MS = 5000;
 const PEER_SYNC_INTERVAL_MS = 1000;
+const PEER_REBALANCE_INTERVAL_MS = 3000;
+const PLAYER_REBALANCE_TIMEOUT_MS = 15_000;
 
 // ── Taller 5: parámetros del mundo y del game loop (desde .env) ─────────────
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH) || 800;
@@ -149,6 +152,8 @@ const peerHttpServer = http.createServer();
 const peerWss = new WebSocketServer({ noServer: true });
 let gameLoopTimer = null;
 let peerSyncTimer = null;
+let peerRebalanceTimer = null;
+const rebalanceInFlight = new Map();
 function normalizeUsername(username) {
   return typeof username === 'string' ? username.trim().toLowerCase() : username;
 }
@@ -356,10 +361,192 @@ function stopPeerSync() {
   peerSyncTimer = null;
 }
 
+function sendRebalanceRequest(userId, target) {
+  const player = players.get(userId);
+  if (!player?.local || player.home !== COORDINATOR_ID || !isOpenSocket(player.socket)) return;
+
+  sendWs(player.socket, {
+    type: 'rebalance',
+    sourceCoordinatorId: COORDINATOR_ID,
+    coordinatorId: target.coordinatorId,
+    coordinatorName: target.coordinatorName,
+    publicUrl: target.publicUrl
+  });
+}
+
+function runPeerRebalance() {
+  const activeCoordinators = [
+    { coordinatorId: COORDINATOR_ID, coordinatorName: COORDINATOR_NAME, publicUrl: PUBLIC_URL },
+    ...peers
+  ].sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0);
+  if (activeCoordinators.length < 2 || activeCoordinators[0].coordinatorId !== COORDINATOR_ID) return;
+  if (peers.some((peer) => !isOpenSocket(peerConnections.get(peer.coordinatorId)))) return;
+
+  const coordinatorById = new Map(activeCoordinators.map((coordinator) =>
+    [coordinator.coordinatorId, coordinator]));
+  const assignments = planRebalance(
+    players,
+    activeCoordinators.map(({ coordinatorId }) => coordinatorId),
+    rebalanceInFlight
+  );
+
+  for (const assignment of assignments) {
+    const target = coordinatorById.get(assignment.targetId);
+    if (!target || !isValidPeerUrl(target.publicUrl)) continue;
+
+    rebalanceInFlight.set(assignment.userId, target.coordinatorId);
+    setTimeout(() => {
+      if (rebalanceInFlight.get(assignment.userId) === target.coordinatorId) {
+        rebalanceInFlight.delete(assignment.userId);
+      }
+    }, PLAYER_REBALANCE_TIMEOUT_MS).unref();
+
+    const request = {
+      type: 'player_rebalance',
+      sourceId: assignment.sourceId,
+      targetId: target.coordinatorId,
+      targetName: target.coordinatorName,
+      targetUrl: target.publicUrl,
+      userId: assignment.userId
+    };
+
+    if (assignment.sourceId === COORDINATOR_ID) {
+      sendRebalanceRequest(assignment.userId, {
+        coordinatorId: target.coordinatorId,
+        coordinatorName: target.coordinatorName,
+        publicUrl: target.publicUrl
+      });
+    } else {
+      broadcastPeer(request);
+    }
+  }
+}
+
+function startPeerRebalance() {
+  if (peerRebalanceTimer) return;
+  peerRebalanceTimer = setInterval(runPeerRebalance, PEER_REBALANCE_INTERVAL_MS);
+  peerRebalanceTimer.unref();
+}
+
+function stopPeerRebalance() {
+  if (!peerRebalanceTimer) return;
+  clearInterval(peerRebalanceTimer);
+  peerRebalanceTimer = null;
+  rebalanceInFlight.clear();
+}
+
+function acceptRebalanceRequest(peerId, message) {
+  const activeIds = [COORDINATOR_ID, ...peers.map((peer) => peer.coordinatorId)].sort();
+  const target = peers.find((peer) =>
+    peer.coordinatorId === message.targetId && peer.publicUrl === message.targetUrl);
+  if (peerId !== activeIds[0] ||
+      message.sourceId !== COORDINATOR_ID ||
+      typeof message.userId !== 'string' ||
+      !target ||
+      !isValidPeerUrl(message.targetUrl)) return;
+
+  sendRebalanceRequest(message.userId, {
+    coordinatorId: target.coordinatorId,
+    coordinatorName: target.coordinatorName,
+    publicUrl: target.publicUrl
+  });
+}
+
+function acceptPlayerTransfer(peerId, message) {
+  if (message.previousCoordinatorId !== COORDINATOR_ID ||
+      message.targetId !== peerId ||
+      typeof message.userId !== 'string' ||
+      !Number.isFinite(message.x) ||
+      !Number.isFinite(message.y) ||
+      !isValidPeerExtras(message.extras)) return;
+
+  const player = players.get(message.userId);
+  if (!player?.local || player.home !== COORDINATOR_ID) return;
+
+  const previousSocket = player.socket;
+  clearTimeout(player.expirationTimer);
+  player.expirationTimer = null;
+  player.socket = null;
+  player.local = false;
+  player.home = peerId;
+  player.coordinatorName = isValidCoordinatorName(message.coordinatorName)
+    ? message.coordinatorName.trim()
+    : peerId;
+  player.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, message.x));
+  player.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, message.y));
+  player.extras = message.extras;
+  rebalanceInFlight.delete(message.userId);
+  broadcastPlayers();
+  broadcastRoomList();
+  const room = player.roomId ? rooms.get(player.roomId) : null;
+  if (room) {
+    replicateRoom(room, 'join');
+    broadcastRoom(room.roomId, roomUpdateMessage(room));
+  }
+  if (isOpenSocket(previousSocket)) {
+    previousSocket.close(4002, 'session replaced');
+  }
+  void sendHeartbeat();
+}
+
+function confirmPlayerMigration(ws, userId, player, sourceCoordinatorId) {
+  if (!player.migrationSource || player.migrationSource !== sourceCoordinatorId) {
+    sendWs(ws, {
+      type: 'error',
+      ok: false,
+      code: 'MIGRATION_NOT_PENDING',
+      message: 'No hay un traslado pendiente para esta conexión.',
+      hint: 'Conserva la conexión actual y solicita nuevamente el balanceo.'
+    });
+    return;
+  }
+
+  const previousCoordinatorId = player.migrationSource;
+  player.migrationSource = null;
+  if (isOpenSocket(peerConnections.get(previousCoordinatorId))) {
+    broadcastPeer({
+      type: 'player_transfer_complete',
+      previousCoordinatorId,
+      targetId: COORDINATOR_ID,
+      coordinatorName: COORDINATOR_NAME,
+      userId,
+      x: player.x,
+      y: player.y,
+      extras: player.extras
+    });
+  }
+  sendWs(ws, {
+    type: 'migration_complete',
+    ok: true,
+    message: 'El cambio de coordinador se completó.'
+  });
+}
+
+function sendMigratedRoomState(ws, userId, player) {
+  if (!player.roomId) return;
+  const room = rooms.get(player.roomId);
+  if (!room || !room.members.has(userId)) return;
+
+  sendWs(ws, {
+    type: 'room_joined',
+    roomId: room.roomId,
+    name: room.name,
+    hostUserId: room.hostUserId,
+    hostUsername: room.hostUsername,
+    players: roomPlayerList(room),
+    status: room.status,
+    race: raceSnapshot(room)
+  });
+  if (room.status === 'playing') {
+    sendWs(ws, { type: 'race_update', roomId: room.roomId, race: raceSnapshot(room) });
+  }
+}
+
 function shutdownCoordinator() {
   stopHeartbeat();
   stopPeerDiscovery();
   stopPeerSync();
+  stopPeerRebalance();
   if (gameLoopTimer) {
     clearInterval(gameLoopTimer);
     gameLoopTimer = null;
@@ -505,7 +692,7 @@ function startRaceLevel(room, level, now) {
 }
 
 function publishRaceUpdate(room, operation = 'race') {
-  if (room.owner === COORDINATOR_ID) replicateRoom(room, operation);
+  replicateRoom(room, operation);
   broadcastRoom(room.roomId, {
     type: operation === 'start' ? 'game_started' : 'race_update',
     roomId: room.roomId,
@@ -723,7 +910,7 @@ function acceptRemotePlayer(peerId, message) {
     expirationTimer: null,
     x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, message.x)),
     y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, message.y)),
-    intent: { x: 0, y: 0 },
+    intent: existing?.intent || { x: 0, y: 0 },
     extras: message.extras,
     roomId: existing?.roomId || null,
     home: peerId,
@@ -1187,6 +1374,11 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       acceptRemotePositions(peerId, msg);
     } else if (msg.type === 'room_replicate') {
       applyRemoteRoom(peerId, msg);
+    } else if (msg.type === 'player_rebalance') {
+      acceptRebalanceRequest(peerId, msg);
+    } else if (msg.type === 'player_transfer_complete') {
+      rebalanceInFlight.delete(msg.userId);
+      acceptPlayerTransfer(peerId, msg);
     }
   });
 
@@ -1361,8 +1553,14 @@ wss.on('connection', (ws, payload) => {
   // Política de doble pestaña (SPEC.md §3.5): la conexión nueva reemplaza a la anterior.
   // Justificación: un socket "zombi" de una reconexión o refresh bloquearía al usuario
   // si se rechazara la nueva conexión. La intención más reciente del usuario prevalece.
-  if (players.has(userId)) {
-    const existing = players.get(userId);
+  const previousEntry = players.get(userId);
+  const migratedEntry = previousEntry && !previousEntry.local &&
+    previousEntry.home !== COORDINATOR_ID
+    ? previousEntry
+    : null;
+
+  if (previousEntry?.local) {
+    const existing = previousEntry;
     // Cancela el timer de expiración de la sesión anterior
     clearTimeout(existing.expirationTimer);
     // Cierra el socket viejo con el código 4002 (el cliente sabrá que fue reemplazado)
@@ -1376,16 +1574,16 @@ wss.on('connection', (ws, payload) => {
   const entry = {
     username,
     socket: ws,
-    connectedAt: new Date().toISOString(),
+    connectedAt: migratedEntry?.connectedAt || new Date().toISOString(),
     expirationTimer: null,
     provider,
     picture,
-    // Taller 5: posición inicial aleatoria dentro del mundo, quieto y sin extras
-    x: PLAYER_RADIUS + Math.random() * (WORLD_WIDTH - 2 * PLAYER_RADIUS),
-    y: PLAYER_RADIUS + Math.random() * (WORLD_HEIGHT - 2 * PLAYER_RADIUS),
-    intent: { x: 0, y: 0 },
-    extras: {},
-    roomId: null,
+    x: migratedEntry?.x ?? PLAYER_RADIUS + Math.random() * (WORLD_WIDTH - 2 * PLAYER_RADIUS),
+    y: migratedEntry?.y ?? PLAYER_RADIUS + Math.random() * (WORLD_HEIGHT - 2 * PLAYER_RADIUS),
+    intent: migratedEntry?.intent || { x: 0, y: 0 },
+    extras: migratedEntry?.extras || {},
+    roomId: migratedEntry?.roomId || null,
+    migrationSource: migratedEntry?.home || null,
     home: COORDINATOR_ID,
     coordinatorName: COORDINATOR_NAME,
     local: true
@@ -1402,7 +1600,6 @@ wss.on('connection', (ws, payload) => {
     y: entry.y,
     extras: entry.extras
   });
-
   console.log(`Jugador conectado: ${username}`);
 
   // Mensaje de bienvenida solo al socket nuevo
@@ -1431,6 +1628,15 @@ wss.on('connection', (ws, payload) => {
 
   // Broadcast de la lista actualizada a TODOS (incluido el nuevo)
   broadcastPlayers();
+  sendMigratedRoomState(ws, userId, entry);
+  if (migratedEntry && entry.roomId) {
+    const room = rooms.get(entry.roomId);
+    if (room) {
+      replicateRoom(room, 'join');
+      broadcastRoom(room.roomId, roomUpdateMessage(room));
+    }
+  }
+  void sendHeartbeat();
 
   // Timer de expiración en caliente
   // Al vencer el JWT mientras el socket sigue abierto, se notifica y se cierra.
@@ -1507,6 +1713,10 @@ wss.on('connection', (ws, payload) => {
 
       case 'room_list':
         sendWs(ws, { type: 'room_list', rooms: [...rooms.values()].map(roomSummary) });
+        break;
+
+      case 'migration_ack':
+        confirmPlayerMigration(ws, userId, entry, msg.sourceCoordinatorId);
         break;
 
       case 'room_create': {
@@ -1814,7 +2024,7 @@ wss.on('connection', (ws, payload) => {
           ok: false,
           code: 'UNKNOWN_MESSAGE_TYPE',
           message: 'Tipo de mensaje no reconocido.',
-          hint: 'Tipos soportados: ping, who, verify, intent, extras_update, room_create, room_join, room_leave, room_list, game_start, room_color_update.'
+          hint: 'Tipos soportados: ping, who, verify, migration_ack, intent, extras_update, room_create, room_join, room_leave, room_list, game_start, room_color_update.'
         });
     }
   });
@@ -1852,6 +2062,7 @@ wss.on('connection', (ws, payload) => {
       }
       console.log(`Jugador desconectado: ${username}`);
       broadcastPlayers();
+      void sendHeartbeat();
     }
   });
 
@@ -1892,6 +2103,7 @@ async function startCoordinator() {
     startHeartbeat();
     startPeerDiscovery();
     startPeerSync();
+    startPeerRebalance();
   });
 }
 
@@ -1903,6 +2115,7 @@ server.once('close', () => {
   stopHeartbeat();
   stopPeerDiscovery();
   stopPeerSync();
+  stopPeerRebalance();
   if (peerHttpServer.listening) peerHttpServer.close();
   if (gameLoopTimer) {
     clearInterval(gameLoopTimer);

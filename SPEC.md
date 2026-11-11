@@ -184,6 +184,8 @@ El ticket sigue siendo una credencial temporal y puede ser visible para proxies 
 | `players_update` | A **todos** los conectados (incluido el nuevo) cada vez que alguien entra o sale | `{ "type":"players_update", "players":[{"userId":"1","username":"alice","coordinatorId":"coord-a","coordinatorName":"Pista Norte"}, ...] }` |
 | `pong` | Respuesta a `ping` | `{ "type":"pong", "ok":true, "message":"Conexión viva.", "serverTime":"2026-..." }` |
 | `verified` | Respuesta a `verify` para la sesión activa o un ticket válido del mismo usuario | `{ "type":"verified", "ok":true, "message":"Token verificado.", "expiresAt":"<ISO de exp>" }` |
+| `rebalance` | El coordinador indica el destino para balancear la carga | `{ "type":"rebalance", "sourceCoordinatorId":"coord-a", "coordinatorId":"coord-b", "coordinatorName":"Pista Centro", "publicUrl":"wss://..." }` |
+| `migration_complete` | Respuesta a `migration_ack` después de que el origen confirma el traslado | `{ "type":"migration_complete", "ok":true, "message":"El cambio de coordinador se completó." }` |
 | `error` | Mensaje del cliente inválido o fallo de autenticación | `{ "type":"error", "ok":false, "code":"UNKNOWN_MESSAGE_TYPE", "message":"...", "hint":"..." }` |
 
 **Mensajes cliente → servidor** (para probar con `wscat`):
@@ -193,6 +195,7 @@ El ticket sigue siendo una credencial temporal y puede ser visible para proxies 
 | `{"type":"ping"}` | Responde `pong`. |
 | `{"type":"who"}` | Responde `players_update` solo al que preguntó (útil para depurar). |
 | `{"type":"verify"}` o `{"type":"verify","ticket":"<TICKET>"}` | Verifica la sesión activa o consume un ticket de renovación de la misma identidad. Nunca envía el JWT en el mensaje. |
+| `{"type":"migration_ack","sourceCoordinatorId":"coord-a"}` | Confirma al destino que el cliente ya abrió la conexión nueva; el origen se desconecta solo después de esta confirmación. |
 | cualquier otra cosa | Responde `error` (ver tabla). El socket **no** se cierra por un mensaje inválido. |
 
 **Códigos de error WS (`code` dentro de `type:"error"`):**
@@ -204,6 +207,7 @@ El ticket sigue siendo una credencial temporal y puede ser visible para proxies 
 | `TOKEN_TRANSPORT_UNSUPPORTED` | Se envía un JWT en un mensaje WS antiguo | "Recarga y usa el ticket de un solo uso." |
 | `TOKEN_EXPIRED` | La sesión activa venció | "Inicia sesión de nuevo para obtener un token válido." |
 | `TOKEN_MISMATCH` | Ticket válido de otro `userId` en el socket | "Cierra sesión e inicia con el mismo usuario." |
+| `MIGRATION_NOT_PENDING` | El destino recibió confirmación sin un traslado replicado pendiente | "Conserva la conexión actual y solicita nuevamente el balanceo." |
 | `INVALID_JSON` | El cliente envió texto que no es JSON | "Envía JSON, por ejemplo {\"type\":\"ping\"}." |
 | `UNKNOWN_MESSAGE_TYPE` | `type` no soportado | "Tipos soportados: ping, who." |
 | `INTERNAL_ERROR` | Fallo inesperado | "Reconecta; si persiste, revisa los logs del coordinador." |
@@ -730,6 +734,7 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 - **Descubrimiento periódico:** cada Coordinator consulta `GET /peers` al iniciar y cada 2 segundos, y conecta con todos los demás coordinadores.
 - **Mesh:** cada instancia escucha clientes en `PORT` y peers WebSocket en `PEER_PORT`; se replican jugadores, movimiento, extras y salas.
 - **Cliente:** login → `GET /coordinator` → WebSocket al coordinador asignado. Muestra a cuál está conectado y, si se cae, pide otro.
+- **Rebalanceo activo:** con el mesh completo, el coordinador de menor ID revisa las cargas cada 3 segundos y solicita mover jugadores cuando la diferencia supera uno. El destino reutiliza el estado replicado para conservar posición, extras, sala y progreso de carrera.
 
 ```
                          Arquitectura del Taller 6 (mesh WebSocket)
@@ -797,7 +802,9 @@ Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth
 | 200 | `{ "coordinatorId": "coord-b", "coordinatorName": "Pista Norte", "publicUrl": "ws://localhost:5002" }` | El coordinador vigente con menor `load`; empate por `coordinatorId` lexicográficamente menor |
 | 503 | `{ "error": "no_coordinators_available" }` | No hay ningún coordinador vigente |
 
-**[Decisión]** Es *client-side load balancing*: el auth no proxea tráfico, solo le dice al cliente a dónde conectarse.
+**[Decisión]** Es *client-side load balancing*: el auth no proxea tráfico, solo le dice al cliente a dónde conectarse. El coordinador de menor ID actúa como líder determinista del rebalanceo; usa el roster y el hogar de cada jugador replicados por el mesh, y solo inicia cambios cuando todos los peers vigentes están conectados. El cliente abre primero la conexión autenticada al destino; el coordinador anterior deja de contar al jugador cuando recibe la confirmación del nuevo.
+
+El mensaje cliente `rebalance` indica el `sourceCoordinatorId`, `coordinatorId`, `coordinatorName` y `publicUrl` de destino. El cliente conserva el socket anterior hasta que recibe `connected` del destino y responde con `migration_ack`; solo entonces se confirma la migración y se cierra el socket viejo. El nuevo coordinador conserva del jugador remoto su posición, extras y `roomId`, y vuelve a enviar al socket la sala y el snapshot de carrera. Los mensajes mesh `player_rebalance` y `player_transfer_complete` coordinan la migración y confirman el cambio de hogar; el cierre del socket anterior no elimina al jugador ni lo saca de su sala. El cliente restablece la intención de movimiento a neutral al reconectarse.
 
 **`GET /peers?coordinatorId=<ID>`** — lo llaman los coordinadores para descubrir a los demás. Responde con `{ "peers": [...] }`; cada elemento contiene `coordinatorId`, `coordinatorName`, `publicUrl` y `peerUrl`. Si se incluye un `coordinatorId` válido, se excluye ese ID; si no se incluye, el coordinador solicitante filtra su propio ID al procesar la respuesta, como en el PDF. La consulta solo incluye coordinadores vigentes y no modifica el directorio. Si no hay peers vigentes, responde `{ "peers": [] }`. Un `coordinatorId` presente pero inválido devuelve `400 INVALID_COORDINATOR_ID`.
 
@@ -824,10 +831,14 @@ El directorio conserva todos los coordinadores vigentes, incluido el solicitante
 | `extras_replicate` | `{ type, origin, userId, extras }` | Un cliente local cambia sus extras |
 | `player_sync` | `{ type, origin, players: [{ userId, x, y }] }` | **[Decisión]** Cada ~1 s, la posición real de los jugadores locales de `origin`, para corregir desviaciones |
 | `room_replicate` | `{ type, origin, op, roomId, ... }` | **[Propuesta]** Replicar salas: `op` = `create`, `join`, `leave`, `start`, `color`, `host` |
+| `player_rebalance` | `{ type, origin, sourceId, targetId, targetName, targetUrl, userId }` | El líder solicita al coordinador de origen que instruya al cliente para cambiar al destino |
+| `player_transfer_complete` | `{ type, origin, previousCoordinatorId, targetId, coordinatorName, userId, x, y, extras }` | El destino confirma que ya aceptó al jugador; el origen lo convierte en remoto sin quitarlo de su sala |
 
 **Nombre y consistencia entre coordinadores:** al iniciar, el proceso solicita un nombre visible (o se configura con `COORDINATOR_NAME`). Cada jugador conserva `coordinatorId`/`home` y `coordinatorName`; esos campos viajan en `player_joined`, snapshots, `players_update` y miembros replicados de sala. Así todos los coordinadores muestran el mismo nombre de origen para cada jugador, aunque cada navegador esté conectado a un coordinador distinto. El lobby usa `textContent` para representarlo.
 
 **Jugadores remotos:** cada jugador del `Map` lleva `home` (el coordinador al que está conectado), su nombre visible y `local: true/false`. Los remotos **no tienen socket**: nunca se les manda nada directamente.
+
+**Rebalanceo:** los coordinadores usan el roster vigente de `GET /peers`; solo el de menor ID calcula el plan para evitar que cada proceso ordene migraciones simultáneas. Mientras la malla no esté conectada por completo, no se migran jugadores. Se planifica hasta que las cargas difieran como máximo en uno, contando los movimientos pendientes para no asignar dos veces al mismo jugador. Si el destino no confirma en 15 segundos, se libera la asignación para reintentar. Las actualizaciones de carrera iniciadas desde el nuevo coordinador se replican al dueño de la sala para conservar su progreso.
 
 **Peer caído:** si se cierra la conexión con un peer, se borran todos los jugadores cuyo `home` sea ese peer (un coordinador muerto con Ctrl+C nunca manda `player_left`).
 
@@ -842,7 +853,8 @@ El directorio conserva todos los coordinadores vigentes, incluido el solicitante
 1. Después del login, `GET /coordinator` al auth (`requestCoordinator()` en `common.js`).
 2. Abre el WebSocket al `publicUrl` recibido, con el token como siempre.
 3. Muestra en el lobby **"Coordinador: coord-b · Tick: 20 Hz"**.
-4. **Si se cae el coordinador, no reconecta al mismo:** vuelve a pedir `GET /coordinator` y se conecta al que diga.
+4. Si recibe `rebalance`, abre una conexión autenticada al destino y conserva la conexión anterior hasta que la nueva queda establecida.
+5. **Si se cae el coordinador, no reconecta al mismo:** vuelve a pedir `GET /coordinator` y se conecta al que diga.
 
 **[Decisiones del cliente]**
 - **Coordinador caído aún anunciado:** durante los 6 s en que el auth todavía no lo descarta, puede seguir devolviéndolo. El cliente lo recuerda 10 s y, si el auth se lo vuelve a dar, espera y pregunta otra vez en vez de conectarse.

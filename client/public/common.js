@@ -226,6 +226,10 @@ function friendlyFeedback(payload, fallbackMessage = "No se pudo completar la ac
             message: "El juego recibió una acción que no reconoce.",
             hint: "Recarga el juego si el problema continúa."
         },
+        MIGRATION_NOT_PENDING: {
+            message: "No hay un cambio de coordinador pendiente.",
+            hint: "Conserva la conexión actual y espera un nuevo balanceo."
+        },
         INVALID_ROOM_NAME: { message: "Ese nombre de sala no es válido.", hint: "Usa entre 3 y 32 letras, números, espacios o guiones." },
         ROOM_NOT_FOUND: { message: "La sala ya no está disponible.", hint: "Regresa al listado y elige otra sala." },
         ROOM_FULL: { message: "Esta sala ya está completa.", hint: "Elige una sala con espacio para nuevos pilotos." },

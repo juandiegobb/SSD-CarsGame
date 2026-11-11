@@ -470,6 +470,7 @@
                 pressed.clear();
                 pointerDirections.clear();
                 lastDir = { x: 0, y: 0 };
+                send({ type: "intent", intent: { dir: lastDir } });
                 if (running) return;
                 running = true;
                 window.addEventListener("keydown", onKeyDown);

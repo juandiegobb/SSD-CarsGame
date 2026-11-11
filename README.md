@@ -722,6 +722,14 @@ al entrar y se conecta por WebSocket al que tenga menos jugadores locales.
 Cada coordinador acepta clientes en `PORT` y otros coordinadores en
 `PEER_PORT`.
 
+Además, el coordinador de menor ID revisa la distribución cada 3 s cuando la
+malla está completa. Si las cargas difieren por más de un jugador, solicita
+migrar conexiones al coordinador menos cargado. La reconexión conserva posición,
+color, sala y progreso de carrera: el destino toma el snapshot replicado y el
+origen no elimina al jugador hasta recibir confirmación. El movimiento se pausa
+durante la reconexión. La cantidad de coordinadores es dinámica; no está
+limitada a tres.
+
 ```mermaid
 flowchart LR
     BrowserA["Alice / navegador"] -->|login y GET /coordinator| Auth["Auth :4000<br>JWT + directorio"]
@@ -851,6 +859,7 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
 | `intent_replicate` / `extras_replicate` | Replica movimiento y color/otros extras; el receptor valida y no retransmite |
 | `player_sync` | Corrige cada segundo la posición real de los jugadores locales |
 | `room_replicate` | Propaga creación, entrada, salida, inicio, `race`, color y cambio de host; los snapshots llevan miembros, posiciones y progreso de carrera |
+| `player_rebalance` / `player_transfer_complete` | Solicita y confirma el cambio de coordinador sin perder el estado del jugador |
 
 El token de usuario nunca se comparte con los peers. La identidad proviene del
 JWT validado para el cliente; el mesh transmite solo los datos mínimos de
