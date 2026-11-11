@@ -82,10 +82,13 @@ const PUBLIC_URL = parseServiceUrl(
   `ws://localhost:${PORT}`,
   ['ws:', 'wss:']
 );
+const defaultPeerUrl = PUBLIC_URL.startsWith('wss:')
+  ? PUBLIC_URL
+  : (process.env.PEER_URL ? process.env.PEER_URL : `ws://localhost:${PEER_PORT}`);
 const PEER_URL = parseServiceUrl(
   'PEER_URL',
   process.env.PEER_URL,
-  `ws://localhost:${PEER_PORT}`,
+  defaultPeerUrl,
   ['ws:', 'wss:']
 );
 const AUTH_URL = parseServiceUrl(
@@ -726,7 +729,7 @@ function replicateRoomRemoval(roomId) {
 
 function sendLocalRoomsToPeer(ws) {
   for (const room of rooms.values()) {
-    if (room.owner !== COORDINATOR_ID || !isOpenSocket(ws)) continue;
+    if (!isOpenSocket(ws)) continue;
     ws.send(JSON.stringify({
       type: 'room_replicate',
       origin: COORDINATOR_ID,
@@ -1531,7 +1534,15 @@ server.on('upgrade', (req, socket, head) => {
     return;
   }
 
-  // Solo se acepta la ruta /connect
+  // Ruta /mesh en el servidor principal para malla P2P (permite un único puerto / túnel ngrok)
+  if (parsedUrl.pathname === '/mesh') {
+    peerWss.handleUpgrade(req, socket, head, (ws) => {
+      peerWss.emit('connection', ws, req);
+    });
+    return;
+  }
+
+  // Solo se acepta la ruta /connect para clientes del juego
   if (parsedUrl.pathname !== '/connect') {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
     socket.destroy();
@@ -2148,10 +2159,17 @@ async function promptForCoordinatorName() {
 
 async function startCoordinator() {
   await promptForCoordinatorName();
+  peerHttpServer.on('error', (err) => {
+    console.warn(`[coordinator] Advertencia en peerHttpServer secundario (${err.message}). La malla peer continúa activa en el puerto principal ${PORT}.`);
+  });
   server.listen(PORT, () => {
-    console.log(`Coordinador "${COORDINATOR_NAME}" (${COORDINATOR_ID}) escuchando en http://localhost:${PORT} y peers en ws://localhost:${PEER_PORT}/mesh.`);
+    console.log(`Coordinador "${COORDINATOR_NAME}" (${COORDINATOR_ID}) escuchando en http://localhost:${PORT} y peers en ws://localhost:${PORT}/mesh (secundario: ${PEER_PORT}).`);
     console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
-    peerHttpServer.listen(PEER_PORT);
+    try {
+      peerHttpServer.listen(PEER_PORT);
+    } catch (err) {
+      console.warn(`[coordinator] No se pudo abrir PEER_PORT secundario: ${err.message}`);
+    }
     startHeartbeat();
     startPeerDiscovery();
     startPeerSync();

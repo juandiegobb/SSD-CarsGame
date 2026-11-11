@@ -9,7 +9,8 @@ function planRebalance(players, coordinatorIds, inFlight = new Map()) {
     const assignedCoordinator = inFlight.get(userId) || player.home;
     if (!counts.has(assignedCoordinator)) continue;
     counts.set(assignedCoordinator, counts.get(assignedCoordinator) + 1);
-    if (!inFlight.has(userId) && candidates.has(player.home)) {
+    // Solo rebalancear jugadores que están en el lobby (no interrumpir a los que ya están en una sala/carrera)
+    if (!inFlight.has(userId) && !player.roomId && candidates.has(player.home)) {
       candidates.get(player.home).push(userId);
     }
   }

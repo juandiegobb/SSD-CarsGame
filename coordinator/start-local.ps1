@@ -30,7 +30,7 @@ $env:PEER_PORT               = "$PeerPort"
 $env:COORDINATOR_ID          = $CoordId
 $env:COORDINATOR_NAME        = $Nombre
 $env:PUBLIC_URL              = "ws://localhost:$Puerto"
-$env:PEER_URL                = "ws://localhost:$PeerPort"
+$env:PEER_URL                = "ws://localhost:$Puerto"
 $env:AUTH_URL                = "http://localhost:4000"
 $env:JWT_SECRET              = $JwtSecret
 $env:COORDINATOR_SHARED_SECRET = $AuthSecret
@@ -43,3 +43,4 @@ $env:TICK_RATE               = "20"
 
 Set-Location "$PSScriptRoot"
 node index.js
+
