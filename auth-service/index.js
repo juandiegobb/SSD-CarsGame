@@ -19,6 +19,7 @@ const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const { hasCoordinatorEndpointConflict } = require('./coordinator-directory');
 const { loadClusterConfig, ClusterConfigError } = require('./cluster-config');
+const { createReplicationLog } = require('./replication-log');
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
@@ -236,6 +237,14 @@ const stmts = {
   findByUsername: db.prepare('SELECT * FROM users WHERE username COLLATE NOCASE = ?'),
   findByGoogle: db.prepare('SELECT * FROM users WHERE google_sub = ?')
 };
+
+// Taller 7: registro numerado de escrituras (replication_log) y metadatos (term, voto).
+// Las bases anteriores al Taller 7 anotan una vez a sus usuarios para poder replicarlos.
+const replicationLog = createReplicationLog(db);
+const backfilledUsers = replicationLog.backfillExistingUsers();
+if (backfilledUsers > 0) {
+  console.log(`[auth-service] ${backfilledUsers} usuario(s) existente(s) anotado(s) en replication_log.`);
+}
 
 // 3. Helpers únicos de respuesta según SPEC.md §3.1
 function sendOk(res, status, message, extra = {}) {
@@ -597,11 +606,17 @@ app.post('/register', async (req, res, next) => {
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     try {
-      const info = stmts.insertLocal.run(cleanUsername, passwordHash);
-      console.log(`Usuario registrado: ${cleanUsername}`);
+      // Taller 7: la fila en users y su entrada en replication_log van en una sola transacción
+      let newUserId;
+      const entry = replicationLog.recordLocalWrite('register', () => {
+        const info = stmts.insertLocal.run(cleanUsername, passwordHash);
+        newUserId = Number(info.lastInsertRowid);
+        return replicationLog.dataForUser('register', newUserId);
+      });
+      console.log(`Usuario registrado: ${cleanUsername} (seq ${entry.seq})`);
 
       return sendOk(res, 201, 'Usuario registrado exitosamente.', {
-        userId: String(info.lastInsertRowid),
+        userId: String(newUserId),
         username: cleanUsername
       });
     } catch (dbErr) {
@@ -786,7 +801,10 @@ app.post('/auth/google', async (req, res, next) => {
     if (existing) {
       // La foto puede cambiar en Google: se actualiza en cada ingreso
       if (pictureUrl !== existing.picture_url) {
-        stmts.updatePicture.run(pictureUrl, existing.id);
+        replicationLog.recordLocalWrite('update_picture', () => {
+          stmts.updatePicture.run(pictureUrl, existing.id);
+          return replicationLog.dataForUser('update_picture', existing.id);
+        });
         existing.picture_url = pictureUrl;
       }
       const token = emitToken(existing);
@@ -836,8 +854,13 @@ app.post('/auth/google', async (req, res, next) => {
       );
     }
     try {
-      const info = stmts.insertGoogle.run(cleanUsername, googleSub, email, pictureUrl);
-      const newUser = { id: String(info.lastInsertRowid), username: cleanUsername, provider: 'google', picture_url: pictureUrl };
+      let newUserId;
+      replicationLog.recordLocalWrite('register_google', () => {
+        const info = stmts.insertGoogle.run(cleanUsername, googleSub, email, pictureUrl);
+        newUserId = Number(info.lastInsertRowid);
+        return replicationLog.dataForUser('register_google', newUserId);
+      });
+      const newUser = { id: String(newUserId), username: cleanUsername, provider: 'google', picture_url: pictureUrl };
       const token = emitToken(newUser);
       console.log(`Usuario de Google registrado: ${cleanUsername}`);
       return sendOk(res, 200, 'Cuenta creada con Google e inicio de sesión exitoso.', {
@@ -915,6 +938,7 @@ const server = app.listen(PORT, () => {
   startCoordinatorCleanup();
   console.log(`Auth Service ${CLUSTER.authId} escuchando en http://localhost:${PORT} (pública: ${CLUSTER.publicUrl}).`);
   console.log(`  Mesh de auth: ${CLUSTER.peerUrl} · peers: ${CLUSTER.peers.map((peer) => peer.authId).join(', ') || 'ninguno (auth único)'} · base: ${DB_PATH}`);
+  console.log(`  Usuarios: ${replicationLog.usersCount()} · lastAppliedSeq: ${replicationLog.lastAppliedSeq()} · term: ${replicationLog.currentTerm()}`);
 });
 server.once('close', stopCoordinatorCleanup);
 
