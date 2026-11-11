@@ -178,6 +178,7 @@ async function sendHeartbeat() {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
         'x-coordinator-secret': COORDINATOR_SHARED_SECRET
       },
       body: JSON.stringify({
@@ -280,7 +281,10 @@ async function refreshPeers() {
   try {
     const endpoint = new URL(`${AUTH_URL}/peers`);
     endpoint.searchParams.set('coordinatorId', COORDINATOR_ID);
-    const response = await fetch(endpoint, { signal: controller.signal });
+    const response = await fetch(endpoint, {
+      headers: { 'ngrok-skip-browser-warning': 'true' },
+      signal: controller.signal
+    });
     if (!response.ok) {
       console.error(`[coordinator] Auth rechazó la consulta de peers (HTTP ${response.status}).`);
       return;
