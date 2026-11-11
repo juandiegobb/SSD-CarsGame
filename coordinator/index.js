@@ -1197,10 +1197,19 @@ gameLoopTimer = setInterval(tick, TICK_MS);
 const app = express();
 app.use(express.json());
 
+function isAllowedClientOrigin(origin) {
+  if (!origin) return true;
+  const clean = origin.replace(/\/+$/, '');
+  return CLIENT_ORIGINS.has(origin) || CLIENT_ORIGINS.has(clean) ||
+    CLIENT_ORIGINS.has('*') ||
+    clean.includes('localhost') || clean.includes('127.0.0.1') ||
+    clean.includes('ngrok-free.app') || clean.includes('ngrok-free.dev') || clean.includes('ngrok.io');
+}
+
 function allowTicketOrigin(req, res) {
   const origin = req.get('origin');
   if (!origin) return true;
-  if (!CLIENT_ORIGINS.has(origin)) return false;
+  if (!isAllowedClientOrigin(origin)) return false;
 
   res.set('Access-Control-Allow-Origin', origin);
   res.set('Vary', 'Origin');
@@ -1213,7 +1222,7 @@ function allowTicketOrigin(req, res) {
 function allowPlayersOrigin(req, res) {
   const origin = req.get('origin');
   if (!origin) return true;
-  if (!CLIENT_ORIGINS.has(origin)) return false;
+  if (!isAllowedClientOrigin(origin)) return false;
 
   res.set('Access-Control-Allow-Origin', origin);
   res.set('Vary', 'Origin');
