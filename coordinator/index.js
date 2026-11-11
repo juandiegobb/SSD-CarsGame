@@ -155,6 +155,7 @@ async function sendHeartbeat() {
   timeout.unref();
 
   try {
+    const connectedPlayers = countOpenLocalPlayers();
     const response = await fetch(`${AUTH_URL}/heartbeat`, {
       method: 'POST',
       headers: {
@@ -165,7 +166,9 @@ async function sendHeartbeat() {
         coordinatorId: COORDINATOR_ID,
         publicUrl: PUBLIC_URL,
         peerUrl: PEER_URL,
-        load: countOpenLocalPlayers()
+        connectedPlayers,
+        uptime: Math.floor(process.uptime()),
+        load: connectedPlayers
       }),
       signal: controller.signal
     });
@@ -518,6 +521,9 @@ function applyRemoteRoom(peerId, message) {
   rooms.set(room.roomId, room);
   broadcastRoomList();
   broadcastRoom(room.roomId, roomUpdateMessage(room));
+  if (message.op === 'start') {
+    broadcastRoom(room.roomId, { type: 'game_started', roomId: room.roomId, players: roomPlayerList(room) });
+  }
   broadcastPlayers();
 }
 

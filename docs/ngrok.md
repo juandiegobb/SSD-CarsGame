@@ -106,8 +106,10 @@ ngrok start --all --config .\ngrok.local.yml
 ```
 
 La configuración v3 usa `endpoints` y `upstream.url`; el endpoint HTTP del
-coordinador también soporta el upgrade WebSocket de `/connect`. No configures
-ni abras `PEER_PORT`.
+coordinador también soporta el upgrade WebSocket de `/connect`. Los tres
+coordinadores en este flujo corren en el mismo equipo y se comunican por sus
+listeners `PEER_PORT` locales (`6001`–`6003`); esos puertos no se exponen a los
+navegadores ni requieren túneles adicionales.
 
 ## 3. Variables de entorno
 
@@ -168,11 +170,12 @@ Si omites `-PublicUrls`, el script mantiene su comportamiento local anterior:
 anuncia `ws://localhost:5001`, `:5002` y `:5003`, URLs que no sirven para
 clientes remotos.
 
-`PEER_PORT` solo reserva un número local y `PEER_URL` es un dato anunciado que
-el directorio devuelve; no existe un listener en ese puerto. No configures
-túneles ni URLs públicas para `PEER_PORT`/`PEER_URL` ni los trates como un
-endpoint operativo. Comunicación P2P, handshake y replicación pertenecen al
-Turno 3 y no están implementados.
+`PEER_PORT` es el listener del mesh y `PEER_URL` es la dirección que el
+directorio devuelve a los otros coordinadores. En esta guía los tres procesos
+comparten equipo, por lo que `ws://localhost:6001`–`:6003` son alcanzables sin
+túnel. Si los coordinadores se ejecutan en equipos distintos, cada `PEER_URL`
+debe ser accesible desde los demás y el tráfico peer requiere una ruta de red
+propia; no uses las URLs locales de esta guía en ese despliegue.
 
 Reinicia los servicios después de modificar sus `.env`. El script de tres
 coordinadores lee `AUTH_URL` y `COORDINATOR_SHARED_SECRET` desde su entorno o
@@ -251,7 +254,8 @@ han iniciado túneles ni probado conexiones externas como parte de esta tarea.
 - **Intersticial de ngrok:** las peticiones `fetch` del Client ya envían
   `ngrok-skip-browser-warning: true`.
 
-Aunque Auth devuelve las URLs públicas de los coordinadores y cada instancia
-descubre las otras mediante `GET /peers`, no hay conexiones entre
-coordinadores. No existe listener peer, handshake, replicación de jugadores o
-salas ni sincronización: son funcionalidades del Turno 3.
+Auth devuelve las URLs públicas para los clientes y cada instancia descubre
+las otras mediante `GET /peers`. El mesh usa conexiones WebSocket separadas en
+`PEER_PORT`; la entrada del coordinador es por `PORT` y no se comparte con los
+navegadores. Los peers replican jugadores, movimiento, extras y salas mientras
+sus conexiones sigan vivas.

@@ -375,14 +375,14 @@ Cada fase termina con **criterios de aceptación verificables** y **al menos un 
    - `coordinator/.env`: `AUTH_URL=https://<auth-publico>` y agrega `https://<client-publico>` a `CLIENT_ORIGINS`.
    - Inicia las instancias con `.\coordinator\start-three.ps1 -PublicUrls @('wss://<coordinador-1>','wss://<coordinador-2>','wss://<coordinador-3>')`; el script asigna estos valores como `PUBLIC_URL`.
 4. Reiniciar los servicios para que lean el `.env`.
-5. El authtoken se configura en la cuenta local de ngrok (`ngrok config add-authtoken`) y nunca se guarda en el repositorio. No configurar ni tunelizar `PEER_PORT`; todavía no hay listener peer.
+5. El authtoken se configura en la cuenta local de ngrok (`ngrok config add-authtoken`) y nunca se guarda en el repositorio. Para las tres instancias del mismo equipo, los peers se conectan por `localhost` en `PEER_PORT`; esos puertos no se exponen a los navegadores ni necesitan túneles adicionales.
 6. Considerar el aviso intersticial: el Client envía `ngrok-skip-browser-warning`; revisar CORS con los orígenes HTTPS exactos.
 7. Probar el flujo completo desde otro dispositivo/red usando la URL pública del Client.
 
 **Aceptación:** registro, login y lobby funcionan desde la URL pública del cliente; la consola del navegador no muestra errores de CORS ni de contenido mixto.
 **Commit sugerido:** `docs: comandos y configuración de ngrok`.
 
-El objetivo 11 documenta y configura los cinco túneles. No implementa listener, conexiones ni replicación entre coordinadores; esas funciones corresponden al Turno 3.
+Los cinco túneles publican Auth, Client y los tres endpoints de clientes de Coordinator. El mesh entre instancias del mismo equipo usa los puertos peer locales.
 
 ### Fase 5 — README
 Debe incluir (checklist del PDF):
@@ -725,16 +725,14 @@ Prueba manual: dos navegadores, uno con cuenta local y otro con Google; ambos se
 
 ### 11.1 Alcance nuevo
 
-- **Arranque en paralelo:** este objetivo prepara la configuración para ejecutar tres procesos coordinadores independientes. La selección de coordinador usa el directorio implementado en Auth.
-- **Heartbeats periódicos:** cada Coordinator envía a Auth su estado y carga local por `POST /heartbeat` cada 2 segundos (objetivo 7).
-- **Descubrimiento periódico:** cada Coordinator consulta `GET /peers?coordinatorId=<ID>` al iniciar y cada 2 segundos (objetivo 8); esto solo obtiene URLs y no establece conexiones entre coordinadores.
-- **Mesh:** la topología de abajo es el diseño objetivo. El servidor peer, las conexiones entre coordinadores y la replicación aún no están implementados.
+- **Arranque en paralelo:** se ejecutan tres procesos coordinadores independientes; Auth selecciona el menos cargado.
+- **Heartbeats periódicos:** cada Coordinator envía a Auth `connectedPlayers` y `uptime` por `POST /heartbeat` cada 2 segundos. `load` se mantiene como alias compatible.
+- **Descubrimiento periódico:** cada Coordinator consulta `GET /peers` al iniciar y cada 2 segundos, y conecta con todos los demás coordinadores.
+- **Mesh:** cada instancia escucha clientes en `PORT` y peers WebSocket en `PEER_PORT`; se replican jugadores, movimiento, extras y salas.
 - **Cliente:** login → `GET /coordinator` → WebSocket al coordinador asignado. Muestra a cuál está conectado y, si se cae, pide otro.
 
-Los objetivos 6–8 preparan el arranque, el heartbeat al Auth y el descubrimiento periódico de peers. `PEER_PORT` no escucha conexiones; conocer URLs de otros coordinadores no crea comunicación P2P ni estado compartido.
-
 ```
-                         Arquitectura objetivo (mesh aún no implementado)
+                         Arquitectura del Taller 6 (mesh WebSocket)
                  ┌───────────── Auth :4000 (usuarios + directorio) ─────────────┐
    heartbeat c/2s│  POST /heartbeat   GET /coordinator   GET /peers             │
                  └───────▲──────────────────▲───────────────────▲───────────────┘
@@ -750,40 +748,40 @@ Los objetivos 6–8 preparan el arranque, el heartbeat al Auth y el descubrimien
 |---|---|---|
 | `COORDINATOR_ID` | `coord-1` | Identificador único de esta instancia |
 | `PORT` | `5001` | Puerto HTTP/WebSocket real para health, jugadores y `/connect` |
-| `PEER_PORT` | `6001` | Puerto reservado para el futuro servidor peer; no se abre en este objetivo |
+| `PEER_PORT` | `6001` | Puerto del listener WebSocket de coordinadores |
 | `PUBLIC_URL` | `ws://localhost:5001` (o `wss://...`) | URL de WebSocket anunciada para clientes |
-| `PEER_URL` | `ws://localhost:6001` (o `wss://...`) | URL reservada para anunciar el futuro canal peer |
+| `PEER_URL` | `ws://localhost:6001` (o `wss://...`) | URL que los otros coordinadores usan para el mesh |
 | `AUTH_URL` | `http://localhost:4000` | URL base del Auth |
 | `COORDINATOR_SHARED_SECRET` | placeholder local reemplazado por un secreto común | Secreto compartido con Auth; no se imprime en logs |
 | `JWT_SECRET` | igual que en Auth | Firma de los JWT de usuario |
 
 `PORT` y `PEER_PORT` son independientes y deben ser distintos. Los valores predeterminados conservan una instancia compatible: `PORT=5000`, `COORDINATOR_ID=coord-5000`, `PEER_PORT=6000`, URLs locales y `AUTH_URL=http://localhost:4000`. `JWT_SECRET` y `COORDINATOR_SHARED_SECRET` son obligatorias; el segundo debe coincidir con la configuración de Auth para que el heartbeat autenticado funcione.
 
-Para una sola instancia, configura `coordinator/.env` y ejecuta `npm start --prefix coordinator` desde la raíz. Para levantar tres instancias locales con IDs `coord-1` a `coord-3`, puertos HTTP `5001`–`5003` y puertos peer reservados `6001`–`6003`, ejecuta:
+Para una sola instancia, configura `coordinator/.env` y ejecuta `npm start --prefix coordinator` desde la raíz. Para levantar tres instancias locales con IDs `coord-1` a `coord-3`, puertos HTTP `5001`–`5003` y peer `6001`–`6003`, ejecuta:
 
 ```powershell
 .\coordinator\start-three.ps1
 ```
 
-El script verifica los tres puertos HTTP antes de arrancar, da a cada proceso su propio conjunto de variables y restaura el entorno del proceso PowerShell al finalizar. También acepta `-HttpPorts` y `-PeerPorts` para usar otros puertos libres en pruebas. Cada instancia comparte `AUTH_URL` y `COORDINATOR_SHARED_SECRET` del entorno del script o de `coordinator/.env`; el secreto nunca se muestra.
+El script verifica los seis puertos antes de arrancar, da a cada proceso su propio conjunto de variables y restaura el entorno del proceso PowerShell al finalizar. También acepta `-HttpPorts` y `-PeerPorts` para usar otros puertos libres en pruebas. Cada instancia comparte `AUTH_URL` y `COORDINATOR_SHARED_SECRET` del entorno del script o de `coordinator/.env`; el secreto nunca se muestra. Los peer URLs por defecto usan `localhost`, por lo que las tres instancias deben correr en el mismo equipo.
 
-**Límite de alcance del objetivo 6:** prepara configuración y arranque únicamente. El heartbeat y la consulta periódica de peers se describen en los objetivos 7 y 8. No abre un listener en `PEER_PORT` ni implementa conexiones P2P, mesh o replicación.
+**Conexiones mesh:** cada par usa una única conexión; el coordinador cuyo ID sea lexicográficamente menor la inicia. Un peer nuevo recibe los jugadores y salas existentes y continúa recibiendo los cambios posteriores. Al cerrarse la conexión, se quitan los jugadores que dependían de ese peer.
 
-**Descubrimiento del objetivo 8:** cada coordinador consulta `GET /peers?coordinatorId=<COORDINATOR_ID>` al iniciar y cada 2 segundos. Guarda solo las entradas válidas (`coordinatorId`, `publicUrl`, `peerUrl`) y descarta defensivamente su propio ID. Si Auth falla o la respuesta no es válida, conserva la última lista válida y vuelve a intentar en el siguiente ciclo; un error no inventa ni incorpora peers. El temporizador y cualquier solicitud activa se detienen al cerrar el servidor.
+**Descubrimiento:** cada coordinador consulta `GET /peers?coordinatorId=<COORDINATOR_ID>` al iniciar y cada 2 segundos. Auth también permite `GET /peers` sin query (como en el PDF); en ese caso el cliente descarta defensivamente su propio ID. Se conservan las entradas válidas y se reintenta ante errores; temporizadores y solicitudes activas se detienen al cerrar el servidor.
 
-**Compatibilidad del objetivo 9:** las operaciones del coordinador toleran entradas de jugadores sin socket local; los mensajes se envían únicamente a sockets locales abiertos y `load` cuenta únicamente esos sockets. Esto no crea jugadores remotos ni implementa comunicación o replicación entre coordinadores.
+**Jugadores locales y remotos:** las operaciones toleran entradas sin socket local; los estados se envían solo a los sockets locales y `connectedPlayers` cuenta solo esos sockets. Los jugadores remotos se mueven en el game loop, pero nunca reciben un envío directo.
 
 ### 11.3 Auth — endpoints del directorio
 
 El auth guarda **en memoria** un `Map` independiente de los usuarios, identificado por `coordinatorId`. Cada entrada contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load` y `lastHeartbeat`. El heartbeat registra o reemplaza la entrada con el mismo ID. Un coordinador es vigente hasta que transcurren 6 segundos desde `lastHeartbeat` (incluido el instante exacto de 6 segundos); al superar ese límite se considera expirado. Auth comprueba la vigencia con una función reutilizable y limpia periódicamente las entradas expiradas del `Map`; el temporizador es complementario a la comprobación por antigüedad.
 
-**`POST /heartbeat`** — lo llama cada coordinador cada 2 s.
+**`POST /heartbeat`** — lo llama cada coordinador cada 2 s. El contrato del PDF usa `connectedPlayers` y `uptime`; `load` se mantiene como alias compatible con clientes previos.
 
 ```json
-{ "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:6001", "load": 7 }
+{ "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:6001", "connectedPlayers": 7, "uptime": 12345 }
 ```
 
-Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth y coordinadores. Si falta la configuración o el header no coincide, se rechaza con un error genérico `401 UNAUTHORIZED`. Auth compara los valores con `crypto.timingSafeEqual` después de comprobar que tengan la misma longitud. `coordinatorId` debe ser una cadena de 1–64 caracteres alfanuméricos, guion o guion bajo, iniciando con un carácter alfanumérico; las URL deben usar `ws://` o `wss://` sin credenciales, query ni fragmento; `load` debe ser un entero no negativo.
+Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth y coordinadores. Si falta la configuración o el header no coincide, se rechaza con un error genérico `401 UNAUTHORIZED`. Auth compara los valores con `crypto.timingSafeEqual` después de comprobar que tengan la misma longitud. `coordinatorId` debe ser una cadena de 1–64 caracteres alfanuméricos, guion o guion bajo, iniciando con un carácter alfanumérico; las URL deben usar `ws://` o `wss://` sin credenciales, query ni fragmento; `connectedPlayers` (o `load` por compatibilidad) y `uptime`, cuando se envía, deben ser enteros no negativos. Si se envían `connectedPlayers` y `load` juntos, sus valores deben coincidir.
 
 | HTTP | Forma | Cuándo |
 |---|---|---|
@@ -800,7 +798,7 @@ Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth
 
 **[Decisión]** Es *client-side load balancing*: el auth no proxea tráfico, solo le dice al cliente a dónde conectarse.
 
-**`GET /peers?coordinatorId=<ID>`** — lo llaman los coordinadores para descubrir a los demás. Responde con `{ "peers": [...] }`; cada elemento contiene exclusivamente `coordinatorId`, `publicUrl` y `peerUrl`. Solo incluye coordinadores vigentes, excluye el ID solicitante, y no modifica el directorio. Si no hay peers vigentes, responde `{ "peers": [] }`. Un `coordinatorId` ausente o inválido devuelve `400 INVALID_COORDINATOR_ID`.
+**`GET /peers?coordinatorId=<ID>`** — lo llaman los coordinadores para descubrir a los demás. Responde con `{ "peers": [...] }`; cada elemento contiene `coordinatorId`, `publicUrl` y `peerUrl`. Si se incluye un `coordinatorId` válido, se excluye ese ID; si no se incluye, el coordinador solicitante filtra su propio ID al procesar la respuesta, como en el PDF. La consulta solo incluye coordinadores vigentes y no modifica el directorio. Si no hay peers vigentes, responde `{ "peers": [] }`. Un `coordinatorId` presente pero inválido devuelve `400 INVALID_COORDINATOR_ID`.
 
 ```json
 { "peers": [ { "coordinatorId": "coord-a", "publicUrl": "ws://localhost:5001", "peerUrl": "ws://localhost:6001" }, { "coordinatorId": "coord-c", "publicUrl": "ws://localhost:5003", "peerUrl": "ws://localhost:6003" } ] }

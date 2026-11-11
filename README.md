@@ -1,4 +1,4 @@
-# Talleres 4 y 5: Sistemas Distribuidos — Proyecto Final (Partes I y II)
+# Talleres 4, 5 y 6: Sistemas Distribuidos — Proyecto Final (Partes I–III)
 
 > **Universidad de Boyacá — Facultad de Ciencias e Ingeniería**  
 > **Asignatura:** Sistemas Distribuidos  
@@ -8,8 +8,9 @@ Este repositorio contiene el videojuego web multijugador **SSD-CarsGame**:
 
 * **Parte I (Taller 4) — Identidad:** registro, login con JWT, persistencia en SQLite, presencia de jugadores en vivo por WebSocket y despliegue con ngrok.
 * **Parte II (Taller 5) — Juego en vivo + Google:** cada jugador maneja un carro en un canvas, con el **servidor como autoridad** (game loop a 20 Hz), **login con Google** que convive con el login local en una sola tabla `users`, y un **feature extra replicado** (color del carro e insignia de provider). Ver la [sección 11](#11-taller-5--parte-ii-juego-en-vivo-y-login-con-google).
+* **Parte III (Taller 6) — Coordinadores distribuidos:** tres coordinadores mantienen presencia, movimiento, salas, colores y fotos sincronizados por un mesh WebSocket. El Auth selecciona el menos cargado y el cliente vuelve a consultarlo cuando pierde la conexión. Ver la [sección 12](#12-taller-6--coordinadores-distribuidos-y-mesh).
 
-> ℹ️ **Nota de Alcance:** La replicación entre varios coordinadores y la tolerancia a fallos quedan para las siguientes entregas.
+> ℹ️ **Nota de alcance:** el estado distribuido vive en memoria. Si cae un coordinador, sus jugadores remotos se eliminan; no se persiste ni se recupera el estado de ese proceso.
 
 ---
 
@@ -25,13 +26,16 @@ Este repositorio contiene el videojuego web multijugador **SSD-CarsGame**:
 9. [Despliegue Público con ngrok](#9-despliegue-público-con-ngrok)
 10. [Errores Típicos y Cómo Evitarlos](#10-errores-típicos-y-cómo-evitarlos)
 11. [Taller 5 — Parte II: Juego en Vivo y Login con Google](#11-taller-5--parte-ii-juego-en-vivo-y-login-con-google)
-12. [Equipo y Reparto de Fases](#12-equipo-y-reparto-de-fases)
+12. [Taller 6 — Coordinadores Distribuidos y Mesh](#12-taller-6--coordinadores-distribuidos-y-mesh)
+13. [Equipo y Reparto de Fases](#13-equipo-y-reparto-de-fases)
 
 ---
 
 ## 1. Arquitectura del Sistema
 
-El sistema implementa un desacoplamiento estricto en tres servicios independientes:
+El sistema separa Auth, Client y los procesos Coordinator. En el Taller 6 se
+levantan tres coordinadores independientes, cada uno con un puerto para
+clientes y otro para el mesh (ver la [sección 12](#12-taller-6--coordinadores-distribuidos-y-mesh)).
 
 ```mermaid
 flowchart TD
@@ -191,15 +195,15 @@ Copia los archivos de ejemplo en cada servicio:
    # Taller 5 (opcionales): WORLD_WIDTH=800 WORLD_HEIGHT=600 PLAYER_RADIUS=20 PLAYER_SPEED=200 TICK_RATE=20
    ```
    `COORDINATOR_SHARED_SECRET` es obligatorio y debe coincidir con el valor local de `auth-service/.env`; no reutilices `JWT_SECRET` para ese propósito.
-   `PORT` es el puerto HTTP/WebSocket activo; `PEER_PORT` es independiente y queda reservado para una fase futura. Para iniciar una instancia:
+   `PORT` es el puerto HTTP/WebSocket de clientes; `PEER_PORT` es el listener WebSocket de coordinadores. Para iniciar una instancia:
    ```powershell
    npm start --prefix coordinator
    ```
-   Para iniciar tres coordinadores independientes en puertos HTTP `5001`–`5003` (con `PEER_PORT` reservado en `6001`–`6003`):
+   Para iniciar tres coordinadores independientes en puertos HTTP `5001`–`5003` y peer `6001`–`6003`:
    ```powershell
    .\coordinator\start-three.ps1
    ```
-   El script comprueba que los puertos HTTP estén libres, comparte `AUTH_URL` y el secreto configurados en el entorno o en `coordinator/.env`, y restaura las variables temporales al terminar. Cada instancia registra heartbeats en Auth y consulta `GET /peers?coordinatorId=<ID>` al iniciar y cada 2 segundos; esto solo descubre URLs: no abre los puertos peer ni implementa comunicación entre coordinadores.
+   El script comprueba que los seis puertos estén libres, comparte `AUTH_URL` y `COORDINATOR_SHARED_SECRET` configurados en el entorno o en `coordinator/.env`, y restaura las variables temporales al terminar. Cada instancia registra heartbeats, consulta `GET /peers` y mantiene sus conexiones mesh.
 
 4. **Configurar `client/.env`:**
    ```dotenv
@@ -473,7 +477,7 @@ Esta sección sustenta los requerimientos clave exigidos en el taller:
 
 ## 9. Despliegue Público con ngrok
 
-El objetivo 11 prepara **cinco endpoints independientes**: Auth (`4000`),
+El objetivo 11 configura **cinco endpoints públicos independientes**: Auth (`4000`),
 Client (`3000`) y tres coordinadores (`5001`–`5003`). La guía completa,
 incluidas configuración v3, dominios, variables, arranque y diagnóstico está
 en [`docs/ngrok.md`](docs/ngrok.md). La plantilla [`ngrok.example.yml`](ngrok.example.yml)
@@ -495,8 +499,9 @@ En los `.env` locales configura la URL HTTPS pública de Auth en `client/.env` y
 `coordinator/.env`, el origen público de Client en `auth-service/.env` y
 `coordinator/.env`, y pasa las tres URLs `wss://` de coordinador a
 `start-three.ps1 -PublicUrls`. No publiques el authtoken, secretos ni valores
-reales de `.env`. `PEER_PORT` permanece reservado, sin listener ni túnel; no
-hay comunicación P2P ni replicación entre coordinadores.
+reales de `.env`. Para la demo con los tres coordinadores en el mismo equipo,
+las conexiones peer usan `ws://localhost:6001`–`:6003` y no requieren túneles
+adicionales; `PEER_PORT` no se expone a los navegadores.
 
 ---
 
@@ -697,7 +702,158 @@ Parámetros del mundo en `coordinator/.env` (todos opcionales): `WORLD_WIDTH=800
 
 ---
 
-## 12. Equipo y Reparto de Fases
+## 12. Taller 6 — Coordinadores Distribuidos y Mesh
+
+### 12.1. Arquitectura
+
+Auth actúa como directorio y balanceador del lado del cliente. Los tres
+coordinadores hacen heartbeat cada 2 s; el cliente consulta `GET /coordinator`
+al entrar y se conecta por WebSocket al que tenga menos jugadores locales.
+Cada coordinador acepta clientes en `PORT` y otros coordinadores en
+`PEER_PORT`.
+
+```mermaid
+flowchart LR
+    BrowserA["Alice / navegador"] -->|login y GET /coordinator| Auth["Auth :4000<br>JWT + directorio"]
+    BrowserB["Bob / navegador"] -->|login y GET /coordinator| Auth
+    BrowserA -->|WSS /connect| A["coord-1<br>HTTP/WS :5001<br>peer :6001"]
+    BrowserB -->|WSS /connect| B["coord-2<br>HTTP/WS :5002<br>peer :6002"]
+    A <-->|mesh WS| B
+    A <-->|mesh WS| C["coord-3<br>HTTP/WS :5003<br>peer :6003"]
+    B <-->|mesh WS| C
+    A -->|state solo a clientes locales| BrowserA
+    B -->|state solo a clientes locales| BrowserB
+```
+
+En cada par solo el coordinador cuyo ID es lexicográficamente menor inicia el
+socket. Un `hello` identifica el peer. Los mensajes de replicación llevan
+`origin`; cada coordinador descarta su propio origen y no reenvía mensajes
+recibidos. Los jugadores remotos comparten el `Map` de simulación, pero no
+tienen socket de cliente local.
+
+El game loop mueve jugadores locales y remotos a 20 Hz. Los `state` contienen
+los miembros de la sala y se envían únicamente a sockets locales; las
+posiciones locales se resincronizan con los peers cada segundo. Al caer un
+peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes.
+
+### 12.2. Configurar y ejecutar tres coordinadores
+
+1. Instala dependencias por servicio y configura los `.env` siguiendo la
+   [sección 4.3](#43-configuración-de-variables-de-entorno-env). `JWT_SECRET`
+   debe coincidir entre Auth y coordinadores. `COORDINATOR_SHARED_SECRET`
+   también debe ser el mismo en `auth-service/.env` y `coordinator/.env`.
+2. En terminales separadas, inicia Auth y Client:
+
+   ```powershell
+   npm start --prefix auth-service
+   npm start --prefix client
+   ```
+
+3. En otra terminal, inicia las tres instancias:
+
+   ```powershell
+   .\coordinator\start-three.ps1
+   ```
+
+   Por defecto se usan `coord-1`–`coord-3`, HTTP `5001`–`5003` y peer
+   `6001`–`6003`. Las tres instancias deben correr en el mismo equipo para que
+   las URLs peer locales `ws://localhost:6001`–`:6003` sean alcanzables.
+   El script verifica los seis puertos antes de iniciar procesos. Para anunciar
+   los coordinadores detrás de ngrok, asigna las tres URLs `wss://`:
+
+   ```powershell
+   $publicCoordinatorUrls = @(
+     "wss://<COORDINADOR-1>",
+     "wss://<COORDINADOR-2>",
+     "wss://<COORDINADOR-3>"
+   )
+   .\coordinator\start-three.ps1 -PublicUrls $publicCoordinatorUrls
+   ```
+
+   El túnel público se usa para los navegadores; dentro del mismo equipo, los
+   peers continúan comunicándose por `localhost`. No publiques `PEER_PORT` al
+   navegador. Para detener instancias, usa `Ctrl+C` en sus terminales o
+   `Stop-Process -Id <PID>` con los PID impresos por el script.
+
+4. Comprueba el directorio y el mesh:
+
+   ```powershell
+   Invoke-RestMethod http://localhost:4000/coordinators
+   Invoke-RestMethod http://localhost:4000/peers
+   Invoke-RestMethod "http://localhost:4000/peers?coordinatorId=coord-1"
+   ```
+
+   Deben aparecer tres instancias vigentes y cada consulta de `/peers` debe
+   listar los coordinadores alcanzables. El heartbeat lleva
+   `connectedPlayers` y `uptime`; `load` se mantiene como alias compatible.
+
+### 12.3. Protocolo replicado
+
+| Mensaje entre peers | Efecto |
+|---|---|
+| `hello` | Identifica el coordinador al abrir la conexión |
+| `player_joined` / `player_left` | Crea y elimina presencia remota; incluye posición, provider, foto y extras iniciales |
+| `intent_replicate` / `extras_replicate` | Replica movimiento y color/otros extras; el receptor valida y no retransmite |
+| `player_sync` | Corrige cada segundo la posición real de los jugadores locales |
+| `room_replicate` | Propaga creación, entrada, salida, inicio, color y cambio de host; los snapshots llevan miembros y datos visuales |
+
+El token de usuario nunca se comparte con los peers. La identidad proviene del
+JWT validado para el cliente; el mesh transmite solo los datos mínimos de
+simulación/perfil. Las fotos se aceptan como URL HTTPS y las entradas de extras
+se limitan a 1024 bytes. Las salas son en memoria y su estado se sincroniza
+entre coordinadores para que jugadores conectados a procesos distintos puedan
+unirse y jugar juntos.
+
+### 12.4. Decisiones de diseño
+
+1. **Una conexión por par:** el ID menor inicia y el mayor espera. Evita dos
+   sockets para el mismo par sin depender de cuál heartbeat llegó primero.
+2. **Origen y no retransmisión:** cada cambio nuevo se anuncia por su origen a
+   todos los peers directos; al recibirlo se aplica una sola vez. Esto evita
+   bucles de replicación en la topología completa.
+3. **Servidor autoritativo por jugador:** solo el coordinador local acepta
+   intents del cliente. Los demás aplican el intent replicado a su copia y
+   calculan el mismo movimiento en su game loop.
+4. **Estado local por WebSocket:** los peers no reciben `state`; cada
+   coordinador compone el estado de sala con copias locales/remotas y lo envía
+   solo a sus clientes conectados.
+5. **Sincronización periódica:** los mensajes `player_sync` cada ~1 s corrigen
+   pequeñas diferencias de tiempo entre game loops. `player_joined` además
+   lleva la posición inicial para que un peer recién conectado no espere al
+   siguiente ciclo.
+6. **Caída de un coordinador:** el cierre del peer elimina todos los
+   jugadores cuya casa era ese coordinador. Auth deja de seleccionarlo tras
+   6 s sin heartbeat y el cliente vuelve a consultar el directorio; no se
+   pretende recuperar estado que solo existía en el proceso caído.
+7. **Salas y datos visuales:** `room_replicate` conserva el ID de sala entre
+   coordinadores; el color viaja en `extras` y la foto se incluye en el roster.
+   Se propaga un snapshot validado por cada operación para que altas, salidas,
+   inicio y cambio de host se mantengan visibles en todos los peers.
+
+### 12.5. Guion de ensayo de sustentación
+
+1. Arranca Auth, Client y los tres coordinadores; enseña
+   `GET /coordinators` y `GET /peers` con los tres peers vigentes.
+2. Abre varios navegadores con usuarios distintos. El indicador del lobby
+   muestra **Coordinador** y **Tick: 20 Hz**. Deja pasar un heartbeat entre
+   conexiones para que Auth vea las cargas actualizadas.
+3. Conecta a Alice y Bob a coordinadores distintos. Alice crea una sala; Bob
+   debe verla en la lista de salas de su coordinador y entrar. Cambia color y
+   verifica que el roster remoto muestre el color y la foto.
+4. Inicia la sala y mueve ambos carros desde pestañas distintas. Cada pestaña
+   debe mostrar a ambos jugadores en movimiento.
+5. Detén con `Ctrl+C` el proceso de Alice. En el coordinador de Bob, Alice
+   desaparece al cerrarse el socket peer. Espera más de 6 s, vuelve a consultar
+   `GET /coordinator` y comprueba que Auth ya no selecciona el coordinador
+   caído; los clientes del proceso muerto reintentan con los disponibles.
+
+**Prueba de aceptación:** Alice en `coord-1` y Bob en `coord-2` se ven en la
+misma sala, el movimiento y el color/foto se reflejan en vivo, y matar
+`coord-1` hace que Bob deje de ver a Alice.
+
+---
+
+## 13. Equipo y Reparto de Fases
 
 | Fase | Componente / Responsabilidad | Integrante Responsable |
 |:---:|---|---|

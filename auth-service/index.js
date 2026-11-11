@@ -376,19 +376,22 @@ app.post('/heartbeat', (req, res) => {
     );
   }
 
-  const { coordinatorId, publicUrl, peerUrl, load } = req.body || {};
+  const { coordinatorId, publicUrl, peerUrl, load, connectedPlayers, uptime } = req.body || {};
   const validCoordinatorId = typeof coordinatorId === 'string' &&
     /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId);
-  const validLoad = Number.isSafeInteger(load) && load >= 0;
+  const playerCount = connectedPlayers === undefined ? load : connectedPlayers;
+  const validLoad = Number.isSafeInteger(playerCount) && playerCount >= 0 &&
+    (load === undefined || connectedPlayers === undefined || load === connectedPlayers);
+  const validUptime = uptime === undefined || (Number.isSafeInteger(uptime) && uptime >= 0);
 
   if (!validCoordinatorId || !isValidCoordinatorUrl(publicUrl) ||
-      !isValidCoordinatorUrl(peerUrl) || !validLoad) {
+      !isValidCoordinatorUrl(peerUrl) || !validLoad || !validUptime) {
     return sendError(
       res,
       400,
       'INVALID_BODY',
       'Los datos del coordinador son inválidos o están incompletos.',
-      'Envía coordinatorId, publicUrl y peerUrl válidos, junto con load como entero no negativo.'
+      'Envía coordinatorId, publicUrl y peerUrl válidos, connectedPlayers como entero no negativo (o load por compatibilidad) y uptime opcional en segundos.'
     );
   }
 
@@ -396,7 +399,9 @@ app.post('/heartbeat', (req, res) => {
     coordinatorId,
     publicUrl,
     peerUrl,
-    load,
+    load: playerCount,
+    connectedPlayers: playerCount,
+    uptime: uptime ?? 0,
     lastHeartbeat: new Date().toISOString()
   });
 
@@ -432,8 +437,9 @@ app.get('/coordinator', (req, res) => {
 // GET /peers - Lista coordinadores vigentes excepto el solicitante, sin mutar el directorio.
 app.get('/peers', (req, res) => {
   const coordinatorId = req.query.coordinatorId;
-  if (typeof coordinatorId !== 'string' ||
-      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId)) {
+  if (coordinatorId !== undefined &&
+      (typeof coordinatorId !== 'string' ||
+       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId))) {
     return sendError(
       res,
       400,
@@ -446,7 +452,7 @@ app.get('/peers', (req, res) => {
   const now = Date.now();
   const peers = [...coordinators.values()]
     .filter((coordinator) =>
-      coordinator.coordinatorId !== coordinatorId &&
+      (!coordinatorId || coordinator.coordinatorId !== coordinatorId) &&
       isCoordinatorLive(coordinator, now)
     )
     .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
@@ -464,11 +470,13 @@ app.get('/coordinators', (req, res) => {
   const now = Date.now();
   const directory = [...coordinators.values()]
     .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
-    .map(({ coordinatorId, publicUrl, peerUrl, load, lastHeartbeat }) => ({
+    .map(({ coordinatorId, publicUrl, peerUrl, load, connectedPlayers, uptime, lastHeartbeat }) => ({
       coordinatorId,
       publicUrl,
       peerUrl,
       load,
+      connectedPlayers,
+      uptime,
       lastHeartbeat,
       live: isCoordinatorLive({ lastHeartbeat }, now)
     }));

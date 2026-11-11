@@ -45,24 +45,23 @@ if (($HttpPorts | Select-Object -Unique).Count -ne 3 -or
 }
 
 $envPath = Join-Path $PSScriptRoot '.env'
-$dotenvDirectory = Join-Path $PSScriptRoot 'node_modules\dotenv'
 $nodeCommand = Get-Command node -ErrorAction Stop
 $dotenvValues = @{}
 
 if (Test-Path -LiteralPath $envPath) {
-  if (-not (Test-Path -LiteralPath $dotenvDirectory)) {
-    throw 'No se encontró dotenv. Ejecuta npm install en la carpeta coordinator.'
-  }
-
-  $dotenvJson = & $nodeCommand.Source -e `
-    'const fs=require("node:fs"); const dotenv=require(process.argv[1]); process.stdout.write(JSON.stringify(dotenv.parse(fs.readFileSync(process.argv[2]))));' `
-    $dotenvDirectory $envPath
-  if ($LASTEXITCODE -ne 0) {
-    throw 'No se pudo leer la configuración del archivo coordinator/.env.'
-  }
-  $parsedDotenv = $dotenvJson | ConvertFrom-Json
-  foreach ($property in $parsedDotenv.PSObject.Properties) {
-    $dotenvValues[$property.Name] = [string]$property.Value
+  foreach ($line in Get-Content -LiteralPath $envPath) {
+    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$') {
+      $name = $Matches[1]
+      $value = $Matches[2].Trim()
+      if ($value.Length -ge 2 -and
+          (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+           ($value.StartsWith("'") -and $value.EndsWith("'")))) {
+        $value = $value.Substring(1, $value.Length - 2)
+      } else {
+        $value = ($value -split '\s+#', 2)[0].Trim()
+      }
+      $dotenvValues[$name] = $value
+    }
   }
 }
 
@@ -82,6 +81,9 @@ $sharedSecret = if (-not [string]::IsNullOrWhiteSpace($env:COORDINATOR_SHARED_SE
 } else {
   $null
 }
+if ([string]::IsNullOrWhiteSpace($sharedSecret)) {
+  throw 'Configura COORDINATOR_SHARED_SECRET en coordinator/.env o en el entorno antes de iniciar las instancias.'
+}
 
 try {
   $authUri = [Uri]$authUrl
@@ -94,12 +96,12 @@ try {
   throw 'AUTH_URL no es una URL HTTP(S) válida.'
 }
 
-foreach ($port in $HttpPorts) {
+foreach ($port in $allPorts) {
   $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
   try {
     $listener.Start()
   } catch {
-    throw "El puerto HTTP $port ya está ocupado o no se puede reservar. No se inició ningún coordinador."
+    throw "El puerto $port ya está ocupado o no se puede reservar. No se inició ningún coordinador."
   } finally {
     $listener.Stop()
   }
