@@ -969,7 +969,8 @@ CREATE TABLE IF NOT EXISTS replication_meta (key TEXT PRIMARY KEY, value TEXT NO
 
 | | `leader` | `replica` |
 |---|---|---|
-| Escrituras (`/register`, primera vez de Google, cambio de foto) | Las aplica y las propaga | `503 { "error": "not_leader", "leaderUrl": "…" }` |
+| Escrituras (`/register`, primera vez de Google) | Las aplica y las propaga | `503 { "error": "not_leader", "leaderUrl": "…" }` |
+| Cambio de foto en un login de Google | La actualiza y la propaga | **[Decisión]** No la cambia y responde el login igual: la foto se actualiza la próxima vez que el usuario entre por el líder. Así un login no falla solo porque cambió la foto |
 | Lecturas (`/login`, Google de un usuario existente) | Normal | Responde si `leaderSeq - lastAppliedSeq <= READ_LAG_TOLERANCE`; si no, `503 not_leader` |
 | Emitir JWT | Sí | Solo si no está atrasada más de la tolerancia |
 | Heartbeat del mesh | Lo envía cada 2 s | Lo recibe; 6 s sin heartbeat → elección |

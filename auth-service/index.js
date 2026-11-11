@@ -391,6 +391,33 @@ app.use(express.json({ limit: '4kb' }));
 
 // 5. Endpoints de la API
 
+// Taller 7: solo el líder acepta escrituras (single-writer replication, SPEC.md §13.4).
+// Una réplica responde 503 not_leader con la URL del líder para que el cliente repita ahí.
+// Si no se sabe quién es el líder (elección en curso), 503 no_leader: hay que reintentar.
+function rejectNotLeader(res) {
+  const { role, leaderUrl } = clusterState.describe();
+  if (role !== 'candidate' && leaderUrl) {
+    return sendError(
+      res,
+      503,
+      'NOT_LEADER',
+      'Este auth es una réplica: las escrituras las atiende el líder.',
+      'Repite la misma petición contra leaderUrl.',
+      undefined,
+      { error: 'not_leader', leaderUrl }
+    );
+  }
+  return sendError(
+    res,
+    503,
+    'NO_LEADER',
+    'Se está eligiendo un nuevo líder; por unos segundos no se aceptan escrituras.',
+    'Reintenta en unos segundos.',
+    undefined,
+    { error: 'no_leader' }
+  );
+}
+
 // GET /health - Monitoreo y estado del servicio (incluye jwtExpiresIn activo)
 app.get('/health', (req, res) => {
   const activeExpiresIn = getJwtExpiresIn();
@@ -599,6 +626,9 @@ app.get('/coordinators', (req, res) => {
 // POST /register - Registro de nuevo usuario
 app.post('/register', async (req, res, next) => {
   try {
+    // Taller 7: registrar es una escritura → solo el líder
+    if (!clusterState.isLeader()) return rejectNotLeader(res);
+
     // Validación de existencia y tipo de body
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
       return sendError(
@@ -846,8 +876,10 @@ app.post('/auth/google', async (req, res, next) => {
     // 2. ¿Ya existe este usuario de Google?
     const existing = stmts.findByGoogle.get(googleSub);
     if (existing) {
-      // La foto puede cambiar en Google: se actualiza en cada ingreso
-      if (pictureUrl !== existing.picture_url) {
+      // La foto puede cambiar en Google: se actualiza en cada ingreso.
+      // Taller 7: actualizarla es una escritura; una réplica deja la foto como está
+      // (el líder la actualizará en un próximo ingreso) y responde el login igual.
+      if (pictureUrl !== existing.picture_url && clusterState.isLeader()) {
         replicationLog.recordLocalWrite('update_picture', () => {
           stmts.updatePicture.run(pictureUrl, existing.id);
           return replicationLog.dataForUser('update_picture', existing.id);
@@ -886,6 +918,10 @@ app.post('/auth/google', async (req, res, next) => {
         [{ field: 'username', problem: 'must be 3-32 characters: letters, numbers or underscore' }]
       );
     }
+
+    // Taller 7: crear el usuario es una escritura → solo el líder.
+    // (La réplica sí pudo responder antes username_required o el formato inválido.)
+    if (!clusterState.isLeader()) return rejectNotLeader(res);
 
     // 4. Crear el usuario de Google (el UNIQUE de username aplica a ambos providers)
     const cleanUsername = normalizeUsername(username);
