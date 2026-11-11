@@ -199,7 +199,12 @@ async function sendHeartbeat() {
     });
 
     if (!response.ok) {
-      console.error(`[coordinator] Auth rechazó el heartbeat (HTTP ${response.status}).`);
+      const payload = await response.json().catch(() => null);
+      if (payload?.code === 'COORDINATOR_ID_CONFLICT') {
+        console.error('[coordinator] Auth rechazó el heartbeat: COORDINATOR_ID_CONFLICT. Usa un COORDINATOR_ID único para esta instancia.');
+      } else {
+        console.error(`[coordinator] Auth rechazó el heartbeat (HTTP ${response.status}).`);
+      }
     }
   } catch {
     if (!controller.signal.aborted || heartbeatTimer) {

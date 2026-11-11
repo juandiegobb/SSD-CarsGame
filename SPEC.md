@@ -786,7 +786,7 @@ ni secretos.
 
 ### 11.3 Auth — endpoints del directorio
 
-El auth guarda **en memoria** un `Map` independiente de los usuarios, identificado por `coordinatorId`. Cada entrada contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load` y `lastHeartbeat`. El heartbeat registra o reemplaza la entrada con el mismo ID. Un coordinador es vigente hasta que transcurren 6 segundos desde `lastHeartbeat` (incluido el instante exacto de 6 segundos); al superar ese límite se considera expirado. Auth comprueba la vigencia con una función reutilizable y limpia periódicamente las entradas expiradas del `Map`; el temporizador es complementario a la comprobación por antigüedad.
+El auth guarda **en memoria** un `Map` independiente de los usuarios, identificado por `coordinatorId`. Cada entrada contiene `coordinatorId`, `publicUrl`, `peerUrl`, `load` y `lastHeartbeat`. Un heartbeat con el mismo ID y endpoints iguales actualiza la entrada; si anuncia URLs distintas, se rechaza para evitar que dos instancias con ID duplicado se reemplacen silenciosamente. Un coordinador es vigente hasta que transcurren 6 segundos desde `lastHeartbeat` (incluido el instante exacto de 6 segundos); al superar ese límite se considera expirado. Auth comprueba la vigencia con una función reutilizable y limpia periódicamente las entradas expiradas del `Map`; el temporizador es complementario a la comprobación por antigüedad.
 
 **`POST /heartbeat`** — lo llama cada coordinador cada 2 s. El contrato del PDF usa `connectedPlayers` y `uptime`; `load` se mantiene como alias compatible con clientes previos. También registra `coordinatorName` para mostrar el nombre humano elegido al iniciar.
 
@@ -801,6 +801,7 @@ Debe incluir el header `x-coordinator-secret` con el valor compartido entre Auth
 | 200 | `{ "ok": true, "message": "Heartbeat recibido." }` | Registrado o actualizado (`lastHeartbeat` con la fecha y hora actual) |
 | 400 | `INVALID_BODY` | Falta algún campo o tiene un tipo incorrecto |
 | 401 | `UNAUTHORIZED` | Falta el secreto, no coincide o no está configurado |
+| 409 | `COORDINATOR_ID_CONFLICT` | El ID ya está activo anunciando endpoints distintos |
 
 **`GET /coordinator`** — lo llama el cliente después del login, antes de abrir el WebSocket.
 

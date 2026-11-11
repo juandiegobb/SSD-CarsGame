@@ -17,6 +17,7 @@ const { DatabaseSync } = require('node:sqlite');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
+const { hasCoordinatorEndpointConflict } = require('./coordinator-directory');
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
@@ -400,6 +401,17 @@ app.post('/heartbeat', (req, res) => {
       'INVALID_BODY',
       'Los datos del coordinador son inválidos o están incompletos.',
       'Envía coordinatorId, coordinatorName, publicUrl y peerUrl válidos, connectedPlayers como entero no negativo (o load por compatibilidad) y uptime opcional en segundos.'
+    );
+  }
+
+  const existingCoordinator = coordinators.get(coordinatorId);
+  if (hasCoordinatorEndpointConflict(existingCoordinator, { publicUrl, peerUrl })) {
+    return sendError(
+      res,
+      409,
+      'COORDINATOR_ID_CONFLICT',
+      'El identificador del coordinador ya está registrado con otros endpoints.',
+      'Asigna un COORDINATOR_ID único a cada coordinador y vuelve a iniciar esta instancia.'
     );
   }
 
