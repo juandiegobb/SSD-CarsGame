@@ -8,7 +8,7 @@ Este repositorio contiene el videojuego web multijugador **SSD-CarsGame**:
 
 * **Parte I (Taller 4) — Identidad:** registro, login con JWT, persistencia en SQLite, presencia de jugadores en vivo por WebSocket y despliegue con ngrok.
 * **Parte II (Taller 5) — Juego en vivo + Google:** cada jugador maneja un carro en un canvas, con el **servidor como autoridad** (game loop a 20 Hz), **login con Google** que convive con el login local en una sola tabla `users`, y un **feature extra replicado** (color del carro e insignia de provider). Ver la [sección 11](#11-taller-5--parte-ii-juego-en-vivo-y-login-con-google).
-* **Parte III (Taller 6) — Coordinadores distribuidos:** tres coordinadores mantienen presencia, movimiento, salas, colores y fotos sincronizados por un mesh WebSocket. El Auth selecciona el menos cargado y el cliente vuelve a consultarlo cuando pierde la conexión. Ver la [sección 12](#12-taller-6--coordinadores-distribuidos-y-mesh).
+* **Parte III (Taller 6) — Coordinadores distribuidos:** varios coordinadores mantienen presencia, movimiento, salas, colores y fotos sincronizados por un mesh WebSocket. El Auth selecciona el menos cargado y el cliente vuelve a consultarlo cuando pierde la conexión. La demo usa tres, pero se pueden agregar más y ejecutarlos en equipos distintos. Ver la [sección 12](#12-taller-6--coordinadores-distribuidos-y-mesh).
 
 > ℹ️ **Nota de alcance:** el estado distribuido vive en memoria. Si cae un coordinador, sus jugadores remotos se eliminan; no se persiste ni se recupera el estado de ese proceso.
 
@@ -34,7 +34,7 @@ Este repositorio contiene el videojuego web multijugador **SSD-CarsGame**:
 ## 1. Arquitectura del Sistema
 
 El sistema separa Auth, Client y los procesos Coordinator. En el Taller 6 se
-levantan tres coordinadores independientes, cada uno con un puerto para
+levantan varios coordinadores independientes (tres en el diagrama), cada uno con un puerto para
 clientes y otro para el mesh (ver la [sección 12](#12-taller-6--coordinadores-distribuidos-y-mesh)).
 
 ```mermaid
@@ -104,7 +104,8 @@ SSD-CarsGame/
 │   ├── index.js               # Verificación en upgrade, Map de jugadores, game loop y broadcast
 │   ├── package.json           # Dependencias: express, ws, jsonwebtoken, dotenv
 │   ├── .env.example           # Plantilla de variables de entorno del Coordinador
-│   └── start-three.ps1        # Arranque local de tres instancias aisladas
+│   ├── start-coordinators.ps1 # Arranque local de una cantidad configurable de instancias
+│   └── start-three.ps1        # Alias de compatibilidad
 ├── client/                    # Cliente Web Frontend y Servidor Estático (Puerto 3000)
 │   ├── server.js              # Servidor Express estático y endpoint dinámico /config.js
 │   ├── package.json           # Dependencias: express, dotenv
@@ -200,10 +201,11 @@ Copia los archivos de ejemplo en cada servicio:
    npm start --prefix coordinator
    ```
    Para iniciar tres coordinadores independientes en puertos HTTP `5001`–`5003` y peer `6001`–`6003`:
+
    ```powershell
-   .\coordinator\start-three.ps1
+   .\coordinator\start-coordinators.ps1
    ```
-   El script comprueba que los seis puertos estén libres, comparte `AUTH_URL` y `COORDINATOR_SHARED_SECRET` configurados en el entorno o en `coordinator/.env`, y restaura las variables temporales al terminar. Cada instancia registra heartbeats, consulta `GET /peers` y mantiene sus conexiones mesh.
+   Puedes cambiar la cantidad con `-Count 5` (genera HTTP `5001`–`5005` y peer `6001`–`6005`), o indicar listas iguales de puertos, IDs y URLs. El script comprueba los puertos, comparte `AUTH_URL` y `COORDINATOR_SHARED_SECRET` configurados en el entorno o en `coordinator/.env`, y restaura las variables temporales al terminar. Cada instancia registra heartbeats, consulta `GET /peers` y mantiene sus conexiones mesh.
 
 4. **Configurar `client/.env`:**
    ```dotenv
@@ -477,7 +479,7 @@ Esta sección sustenta los requerimientos clave exigidos en el taller:
 
 ## 9. Despliegue Público con ngrok
 
-El objetivo 11 configura **cinco endpoints públicos independientes**: Auth (`4000`),
+La demo base configura **cinco endpoints públicos independientes**: Auth (`4000`),
 Client (`3000`) y tres coordinadores (`5001`–`5003`). La guía completa,
 incluidas configuración v3, dominios, variables, arranque y diagnóstico está
 en [`docs/ngrok.md`](docs/ngrok.md). La plantilla [`ngrok.example.yml`](ngrok.example.yml)
@@ -498,10 +500,12 @@ vigentes en [ngrok.com/pricing](https://ngrok.com/pricing).
 En los `.env` locales configura la URL HTTPS pública de Auth en `client/.env` y
 `coordinator/.env`, el origen público de Client en `auth-service/.env` y
 `coordinator/.env`, y pasa las tres URLs `wss://` de coordinador a
-`start-three.ps1 -PublicUrls`. No publiques el authtoken, secretos ni valores
+`start-coordinators.ps1 -PublicUrls`. No publiques el authtoken, secretos ni valores
 reales de `.env`. Para la demo con los tres coordinadores en el mismo equipo,
 las conexiones peer usan `ws://localhost:6001`–`:6003` y no requieren túneles
-adicionales; `PEER_PORT` no se expone a los navegadores.
+adicionales. Si están en equipos distintos, cada `PEER_URL` también debe ser
+alcanzable por los demás coordinadores; se necesita una red privada o un endpoint
+WSS/túnel adicional por coordinador para su puerto `PEER_PORT`.
 
 ---
 
@@ -736,7 +740,7 @@ los miembros de la sala y se envían únicamente a sockets locales; las
 posiciones locales se resincronizan con los peers cada segundo. Al caer un
 peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes.
 
-### 12.2. Configurar y ejecutar tres coordinadores
+### 12.2. Configurar y ejecutar varios coordinadores
 
 1. Instala dependencias por servicio y configura los `.env` siguiendo la
    [sección 4.3](#43-configuración-de-variables-de-entorno-env). `JWT_SECRET`
@@ -749,17 +753,54 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
    npm start --prefix client
    ```
 
-3. En otra terminal, inicia las tres instancias:
+3. En otra terminal, inicia las tres instancias de ejemplo:
 
    ```powershell
-   .\coordinator\start-three.ps1
+   .\coordinator\start-coordinators.ps1
    ```
 
    Por defecto se usan `coord-1`–`coord-3`, HTTP `5001`–`5003` y peer
-   `6001`–`6003`. Las tres instancias deben correr en el mismo equipo para que
-   las URLs peer locales `ws://localhost:6001`–`:6003` sean alcanzables.
-   El script verifica los seis puertos antes de iniciar procesos. Para anunciar
-   los coordinadores detrás de ngrok, asigna las tres URLs `wss://`:
+   `6001`–`6003`. Para más instancias en el mismo equipo, por ejemplo cinco:
+
+   ```powershell
+   .\coordinator\start-coordinators.ps1 -Count 5
+   ```
+
+   El script asigna IDs `coord-1` en adelante y verifica todos los puertos antes
+   de iniciar. También admite `-HttpPorts`, `-PeerPorts` y `-CoordinatorIds`
+   para rangos o identificadores personalizados.
+
+4. **Para ejecutar coordinadores en equipos distintos**, instala el repositorio
+   y las dependencias en cada equipo, configura su propio `coordinator/.env` y
+   arranca una instancia con `npm start --prefix coordinator`. Usa un ID único
+   para cada proceso y comparte desde Auth la misma `JWT_SECRET` y
+   `COORDINATOR_SHARED_SECRET`. Ejemplo para un coordinador adicional:
+
+   ```dotenv
+   PORT=5004
+   COORDINATOR_ID=coord-4
+   PEER_PORT=6004
+   PUBLIC_URL=wss://<URL-PUBLICA-PARA-CLIENTES>
+   PEER_URL=wss://<URL-PUBLICA-DEL-MESH>
+   AUTH_URL=https://<URL-PUBLICA-DE-AUTH>
+   JWT_SECRET=<MISMO-VALOR-QUE-AUTH>
+   COORDINATOR_SHARED_SECRET=<MISMO-VALOR-QUE-AUTH>
+   CLIENT_ORIGINS=https://<URL-PUBLICA-DEL-CLIENT>
+   ```
+
+   `PUBLIC_URL` debe apuntar al listener `PORT` y la URL `PEER_URL` al listener
+   `PEER_PORT` del mismo equipo. Ambos deben ser únicos y alcanzables desde los
+   clientes/coordinadores correspondientes. No anuncies `localhost` ni `ws://`
+   para equipos remotos. Para el mesh, prefiere una VPN/red privada; si usas un
+   proxy o túnel WSS, restringe el acceso con ACL/autenticación de red: WSS cifra
+   el tráfico pero el protocolo mesh actual no autentica por sí mismo a los
+   coordinadores entrantes. Asegúrate de permitir tráfico saliente hacia Auth
+   y hacia las URLs peer.
+   Después de un heartbeat, Auth publica la instancia y el mesh la incorpora
+   automáticamente; no hay una lista fija de tres.
+
+   Para anunciar tres coordinadores locales detrás de ngrok, asigna las tres
+   URLs `wss://` de clientes:
 
    ```powershell
    $publicCoordinatorUrls = @(
@@ -767,15 +808,22 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
      "wss://<COORDINADOR-2>",
      "wss://<COORDINADOR-3>"
    )
-   .\coordinator\start-three.ps1 -PublicUrls $publicCoordinatorUrls
+   .\coordinator\start-coordinators.ps1 -PublicUrls $publicCoordinatorUrls
    ```
 
-   El túnel público se usa para los navegadores; dentro del mismo equipo, los
-   peers continúan comunicándose por `localhost`. No publiques `PEER_PORT` al
-   navegador. Para detener instancias, usa `Ctrl+C` en sus terminales o
-   `Stop-Process -Id <PID>` con los PID impresos por el script.
+   Para coordinadores en distintos equipos, también debes definir `-PeerUrls`
+   (una URL pública WSS por listener peer) o configurarlas individualmente en
+   cada `.env`; el túnel de `PUBLIC_URL` no transporta automáticamente el puerto
+   `PEER_PORT`. No publiques `PEER_PORT` al navegador. Para detener instancias
+   locales, usa `Ctrl+C` en sus terminales o `Stop-Process -Id <PID>` con los
+   PID impresos por el script.
 
-4. Comprueba el directorio y el mesh:
+   **Límite de escala:** el mesh actual conecta cada par de coordinadores entre
+   sí; no hay un máximo fijo de instancias en el directorio, pero las conexiones
+   y el tráfico crecen cuadráticamente. Es adecuado para un clúster pequeño de
+   la práctica, no para agregar nodos indefinidamente sin rediseñar el mesh.
+
+5. Comprueba el directorio y el mesh:
 
    ```powershell
    Invoke-RestMethod http://localhost:4000/coordinators
@@ -783,8 +831,8 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
    Invoke-RestMethod "http://localhost:4000/peers?coordinatorId=coord-1"
    ```
 
-   Deben aparecer tres instancias vigentes y cada consulta de `/peers` debe
-   listar los coordinadores alcanzables. El heartbeat lleva
+   Deben aparecer todas las instancias vigentes y cada consulta de `/peers` debe
+   listar los demás coordinadores alcanzables. El heartbeat lleva
    `connectedPlayers` y `uptime`; `load` se mantiene como alias compatible.
 
 ### 12.3. Protocolo replicado
@@ -832,8 +880,8 @@ unirse y jugar juntos.
 
 ### 12.5. Guion de ensayo de sustentación
 
-1. Arranca Auth, Client y los tres coordinadores; enseña
-   `GET /coordinators` y `GET /peers` con los tres peers vigentes.
+1. Arranca Auth, Client y los coordinadores; enseña
+   `GET /coordinators` y `GET /peers` con todas las instancias vigentes.
 2. Abre varios navegadores con usuarios distintos. El indicador del lobby
    muestra **Coordinador** y **Tick: 20 Hz**. Deja pasar un heartbeat entre
    conexiones para que Auth vea las cargas actualizadas.

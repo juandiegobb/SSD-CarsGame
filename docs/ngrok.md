@@ -1,9 +1,12 @@
-# Exponer cinco servicios con ngrok
+# Exponer servicios con ngrok
 
-Esta guía publica Auth, Client y tres procesos Coordinator mediante cinco
+La demo base publica Auth, Client y tres procesos Coordinator mediante cinco
 endpoints HTTP(S) independientes. ngrok termina HTTPS y también transporta
-WebSocket sobre el mismo endpoint del coordinador; no se crea un segundo
-túnel para WebSocket.
+WebSocket sobre el mismo endpoint del coordinador para los clientes. Si los
+coordinadores se ejecutan en equipos distintos, el mesh también necesita una
+ruta WSS accesible a cada listener `PEER_PORT`, preferiblemente mediante VPN o
+red privada. No expongas el listener peer al Internet abierto: WSS cifra el
+tráfico, pero el protocolo mesh actual no autentica a cada coordinador entrante.
 
 ## Requisitos
 
@@ -109,7 +112,10 @@ La configuración v3 usa `endpoints` y `upstream.url`; el endpoint HTTP del
 coordinador también soporta el upgrade WebSocket de `/connect`. Los tres
 coordinadores en este flujo corren en el mismo equipo y se comunican por sus
 listeners `PEER_PORT` locales (`6001`–`6003`); esos puertos no se exponen a los
-navegadores ni requieren túneles adicionales.
+navegadores ni requieren túneles adicionales. Para equipos distintos, cada
+coordinador debe tener además una URL WSS que reenvíe al `PEER_PORT` de ese
+equipo, o una conexión por red privada/firewall. La URL peer se comparte entre
+coordinadores por el directorio de Auth.
 
 ## 3. Variables de entorno
 
@@ -154,7 +160,7 @@ AUTH_URL=https://<DOMINIO-REAL-DE-AUTH>
 CLIENT_ORIGINS=http://localhost:3000,https://<DOMINIO-REAL-DEL-CLIENT>
 ```
 
-Con `start-three.ps1`, pasa la URL WebSocket de cada endpoint público mediante
+Con `start-coordinators.ps1`, pasa la URL WebSocket de cada endpoint público mediante
 `-PublicUrls`; el script asigna una a cada instancia como `PUBLIC_URL`:
 
 ```powershell
@@ -163,11 +169,12 @@ $publicCoordinatorUrls = @(
   "wss://<DOMINIO-REAL-DEL-COORDINADOR-2>",
   "wss://<DOMINIO-REAL-DEL-COORDINADOR-3>"
 )
-.\coordinator\start-three.ps1 -PublicUrls $publicCoordinatorUrls
+.\coordinator\start-coordinators.ps1 -PublicUrls $publicCoordinatorUrls
 ```
 
-Si omites `-PublicUrls`, el script mantiene su comportamiento local anterior:
-anuncia `ws://localhost:5001`, `:5002` y `:5003`, URLs que no sirven para
+Para más instancias locales usa `-Count`; por ejemplo,
+`.\coordinator\start-coordinators.ps1 -Count 5`. Si omites `-PublicUrls`, el
+script anuncia `ws://localhost` para cada proceso, URLs que no sirven para
 clientes remotos.
 
 `PEER_PORT` es el listener del mesh y `PEER_URL` es la dirección que el
@@ -175,12 +182,26 @@ directorio devuelve a los otros coordinadores. En esta guía los tres procesos
 comparten equipo, por lo que `ws://localhost:6001`–`:6003` son alcanzables sin
 túnel. Si los coordinadores se ejecutan en equipos distintos, cada `PEER_URL`
 debe ser accesible desde los demás y el tráfico peer requiere una ruta de red
-propia; no uses las URLs locales de esta guía en ese despliegue.
+propia; no uses las URLs locales de esta guía en ese despliegue. En ese caso,
+configura en el `.env` de cada equipo una `PUBLIC_URL` WSS que reenvíe a su
+`PORT` y una `PEER_URL` WSS distinta que reenvíe a su `PEER_PORT`. El Auth
+selecciona la `PUBLIC_URL` para los clientes y entrega `PEER_URL` al mesh.
+Alternativamente, configura `-PeerUrls` junto con `-PublicUrls` al iniciar
+varios procesos en una sola máquina.
 
-Reinicia los servicios después de modificar sus `.env`. El script de tres
+ngrok requiere un endpoint por listener peer además de los endpoints de cliente
+cuando no hay una VPN/red privada. Por ejemplo, tres coordinadores remotos
+necesitan tres rutas públicas extra para `PEER_PORT`; revisa los límites y
+costos de la cuenta y restringe cada endpoint con controles de acceso de red.
+Nunca publiques una URL `ws://` sin cifrar ni dejes el listener peer accesible
+sin restricciones desde Internet.
+
+Reinicia los servicios después de modificar sus `.env`. El script de
 coordinadores lee `AUTH_URL` y `COORDINATOR_SHARED_SECRET` desde su entorno o
 `coordinator/.env`, y exige un `PUBLIC_URL` distinto para cada proceso al
-usar ngrok.
+usar ngrok. En equipos distintos, cada instancia debe tener un
+`COORDINATOR_ID` único, además de `JWT_SECRET` y `COORDINATOR_SHARED_SECRET`
+idénticos a los de Auth.
 
 ## 4. Iniciar servicios locales
 
@@ -196,7 +217,7 @@ una terminal adicional, inicia los tres coordinadores con las tres URLs
 `wss://` mostradas/asignadas por ngrok:
 
 ```powershell
-.\coordinator\start-three.ps1 -PublicUrls $publicCoordinatorUrls
+.\coordinator\start-coordinators.ps1 -PublicUrls $publicCoordinatorUrls
 ```
 
 En la práctica, prepara primero las URLs asignadas en el dashboard y
