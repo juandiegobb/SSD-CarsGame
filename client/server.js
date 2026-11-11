@@ -51,6 +51,10 @@ app.get("/", (req, res) => {
   res.redirect(302, "/login.html");
 });
 
+app.get("/tracks.js", (req, res) => {
+  res.sendFile(path.join(__dirname, "..", "shared", "tracks.js"));
+});
+
 app.use(express.static(publicDirectory));
 
 app.use((err, req, res, next) => {

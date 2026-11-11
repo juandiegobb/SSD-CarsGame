@@ -795,7 +795,7 @@ peer, se eliminan sus jugadores remotos y se actualizan las salas supervivientes
 | `player_joined` / `player_left` | Crea y elimina presencia remota; incluye posición, provider, foto y extras iniciales |
 | `intent_replicate` / `extras_replicate` | Replica movimiento y color/otros extras; el receptor valida y no retransmite |
 | `player_sync` | Corrige cada segundo la posición real de los jugadores locales |
-| `room_replicate` | Propaga creación, entrada, salida, inicio, color y cambio de host; los snapshots llevan miembros y datos visuales |
+| `room_replicate` | Propaga creación, entrada, salida, inicio, `race`, color y cambio de host; los snapshots llevan miembros, posiciones y progreso de carrera |
 
 El token de usuario nunca se comparte con los peers. La identidad proviene del
 JWT validado para el cliente; el mesh transmite solo los datos mínimos de
@@ -850,6 +850,21 @@ unirse y jugar juntos.
 **Prueba de aceptación:** Alice en `coord-1` y Bob en `coord-2` se ven en la
 misma sala, el movimiento y el color/foto se reflejan en vivo, y matar
 `coord-1` hace que Bob deje de ver a Alice.
+
+### 12.6. Carrera por cuatro niveles
+
+Al pulsar **Iniciar partida**, todos ven la misma cuenta regresiva: rojo,
+amarillo y verde durante 2 segundos cada uno. El movimiento queda bloqueado
+hasta terminar los 6 segundos. Luego se corren en orden el Óvalo del desierto,
+la Vuelta del oasis, el Ocho cruzado y el Desafío de rocas. Cada piloto completa
+3 vueltas por pista; quien termina espera a los demás antes de que empiece el
+siguiente nivel y aparezca el semáforo otra vez.
+
+Las pistas se dibujan en el navegador desde los datos compartidos de
+[`shared/tracks.js`](./shared/tracks.js), y el coordinador limita la posición
+al asfalto y valida el cruce de meta. En salas distribuidas, el coordinador
+propietario es quien cuenta las vueltas y replica el nivel, el semáforo, el
+progreso y las posiciones iniciales a los otros coordinadores.
 
 ---
 

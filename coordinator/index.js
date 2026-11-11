@@ -13,6 +13,7 @@ const { URL } = require('node:url');
 const express = require('express');
 const { WebSocket, WebSocketServer } = require('ws');
 const jwt = require('jsonwebtoken');
+const RaceTracks = require('../shared/tracks');
 
 // ── Verificación de configuración crítica ────────────────────────────────────
 if (!process.env.JWT_SECRET) {
@@ -111,6 +112,9 @@ const TICK_RATE = Number(process.env.TICK_RATE) || 20;        // Hz
 const TICK_MS = 1000 / TICK_RATE;
 const MAX_EXTRAS_BYTES = 1024; // límite anti-abuso para extras_update
 const ROOM_COLORS = ['#2f6fed', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#ffffff'];
+const RACE_LAPS_PER_LEVEL = 3;
+const RACE_COUNTDOWN_MS = 6000;
+const RACE_COUNTDOWN_COLOR_MS = 2000;
 
 // ── Estado del coordinador ──────────────────────────────────────────────────
 // Map: userId (string) → { username, provider, socket, connectedAt, expirationTimer,
@@ -381,6 +385,17 @@ function roomPlayerList(room) {
   }).filter(Boolean);
 }
 
+function raceSnapshot(room) {
+  const race = room.race || {};
+  return {
+    level: race.level || 1,
+    phase: race.phase || 'waiting',
+    countdownStartedAt: Number.isFinite(race.countdownStartedAt) ? race.countdownStartedAt : null,
+    serverTime: Number.isFinite(race.serverTime) ? race.serverTime : Date.now(),
+    laps: { ...(race.laps || {}) }
+  };
+}
+
 function roomUpdateMessage(room) {
   return {
     type: 'room_updated',
@@ -388,7 +403,8 @@ function roomUpdateMessage(room) {
     players: roomPlayerList(room),
     status: room.status,
     hostUserId: room.hostUserId,
-    hostUsername: room.hostUsername
+    hostUsername: room.hostUsername,
+    race: raceSnapshot(room)
   };
 }
 
@@ -401,6 +417,7 @@ function roomReplicationPayload(room) {
       hostUsername: room.hostUsername,
       status: room.status,
       owner: room.owner,
+      race: raceSnapshot(room),
       members: [...room.members].map((userId) => {
         const player = players.get(userId);
         if (!player) return null;
@@ -428,6 +445,41 @@ function replicateRoom(room, op) {
   });
 }
 
+function startRaceLevel(room, level, now) {
+  const race = {
+    level,
+    phase: 'countdown',
+    countdownStartedAt: now,
+    serverTime: now,
+    laps: {},
+    previousPositions: new Map()
+  };
+  const track = RaceTracks.tracks[level - 1];
+
+  for (const [index, userId] of [...room.members].entries()) {
+    const player = players.get(userId);
+    if (!player) continue;
+    const position = RaceTracks.spawnAtStart(track, index, WORLD_WIDTH, WORLD_HEIGHT);
+    player.x = position.x;
+    player.y = position.y;
+    player.intent = { x: 0, y: 0 };
+    race.laps[userId] = 0;
+    race.previousPositions.set(userId, position);
+  }
+
+  room.race = race;
+}
+
+function publishRaceUpdate(room, operation = 'race') {
+  if (room.owner === COORDINATOR_ID) replicateRoom(room, operation);
+  broadcastRoom(room.roomId, {
+    type: operation === 'start' ? 'game_started' : 'race_update',
+    roomId: room.roomId,
+    race: raceSnapshot(room),
+    ...(operation === 'start' ? { players: roomPlayerList(room) } : {})
+  });
+}
+
 function replicateRoomRemoval(roomId) {
   broadcastPeer({ type: 'room_replicate', op: 'leave', roomId, room: null });
 }
@@ -445,7 +497,7 @@ function sendLocalRoomsToPeer(ws) {
 }
 
 function applyRemoteRoom(peerId, message) {
-  if (!['create', 'join', 'leave', 'start', 'color', 'host'].includes(message.op) ||
+  if (!['create', 'join', 'leave', 'start', 'race', 'color', 'host'].includes(message.op) ||
       typeof message.roomId !== 'string' || !message.roomId ||
       message.roomId.length > 128) return;
 
@@ -477,11 +529,34 @@ function applyRemoteRoom(peerId, message) {
   }
   if (!members.has(data.hostUserId)) return;
 
+  const raceData = data.race || { level: 1, phase: 'waiting', countdownStartedAt: null, serverTime: Date.now(), laps: {} };
+  if (!Number.isInteger(raceData.level) || raceData.level < 1 || raceData.level > RaceTracks.tracks.length ||
+      !['waiting', 'countdown', 'racing', 'finished'].includes(raceData.phase) ||
+      (raceData.countdownStartedAt !== null && !Number.isFinite(raceData.countdownStartedAt)) ||
+      !Number.isFinite(raceData.serverTime) ||
+      !raceData.laps || typeof raceData.laps !== 'object' || Array.isArray(raceData.laps)) return;
+  const laps = {};
+  for (const [memberId, completedLaps] of Object.entries(raceData.laps)) {
+    if (!members.has(memberId) || !Number.isInteger(completedLaps) ||
+        completedLaps < 0 || completedLaps > RACE_LAPS_PER_LEVEL) return;
+    laps[memberId] = completedLaps;
+  }
+
   const previousRoom = rooms.get(message.roomId);
+  const preserveLocalRace = previousRoom?.owner === COORDINATOR_ID && !['start', 'race'].includes(message.op);
+  const resetRacePositions = message.op === 'start' ||
+    (message.op === 'create' && data.status === 'playing') ||
+    (message.op === 'race' && previousRoom &&
+      (raceData.level !== previousRoom.race?.level || raceData.phase !== previousRoom.race?.phase));
   for (const member of data.members) {
     const existing = players.get(member.userId);
     if (existing?.local) {
       if (!existing.roomId || existing.roomId === message.roomId) existing.roomId = message.roomId;
+      if (resetRacePositions) {
+        existing.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, member.x));
+        existing.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, member.y));
+        existing.intent = { x: 0, y: 0 };
+      }
       continue;
     }
     players.set(member.userId, {
@@ -493,7 +568,7 @@ function applyRemoteRoom(peerId, message) {
       expirationTimer: null,
       x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, member.x)),
       y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, member.y)),
-      intent: existing?.intent || { x: 0, y: 0 },
+      intent: resetRacePositions ? { x: 0, y: 0 } : existing?.intent || { x: 0, y: 0 },
       extras: member.extras,
       roomId: message.roomId,
       home: member.home,
@@ -516,13 +591,34 @@ function applyRemoteRoom(peerId, message) {
     hostUsername: data.hostUsername || players.get(data.hostUserId)?.username || '',
     members,
     status: data.status,
-    owner: data.owner
+    owner: data.owner,
+    race: {
+      level: preserveLocalRace ? previousRoom.race.level : raceData.level,
+      phase: preserveLocalRace ? previousRoom.race.phase : raceData.phase,
+      countdownStartedAt: preserveLocalRace ? previousRoom.race.countdownStartedAt : raceData.countdownStartedAt,
+      serverTime: preserveLocalRace ? previousRoom.race.serverTime : raceData.serverTime,
+      laps: preserveLocalRace
+        ? Object.fromEntries([...members]
+          .filter((memberId) => Object.hasOwn(previousRoom.race?.laps || {}, memberId))
+          .map((memberId) => [memberId, previousRoom.race.laps[memberId]]))
+        : laps,
+      previousPositions: preserveLocalRace
+        ? previousRoom.race.previousPositions
+        : new Map()
+    }
   };
   rooms.set(room.roomId, room);
   broadcastRoomList();
   broadcastRoom(room.roomId, roomUpdateMessage(room));
   if (message.op === 'start') {
-    broadcastRoom(room.roomId, { type: 'game_started', roomId: room.roomId, players: roomPlayerList(room) });
+    broadcastRoom(room.roomId, {
+      type: 'game_started',
+      roomId: room.roomId,
+      players: roomPlayerList(room),
+      race: raceSnapshot(room)
+    });
+  } else if (message.op === 'race') {
+    broadcastRoom(room.roomId, { type: 'race_update', roomId: room.roomId, race: raceSnapshot(room) });
   }
   broadcastPlayers();
 }
@@ -604,6 +700,8 @@ function removeRemotePlayer(peerId, userId, notify = true) {
   const room = entry.roomId ? rooms.get(entry.roomId) : null;
   if (room) {
     room.members.delete(userId);
+    delete room.race?.laps?.[userId];
+    room.race?.previousPositions?.delete(userId);
     if (room.members.size === 0) rooms.delete(room.roomId);
     else {
       if (room.hostUserId === userId) {
@@ -730,26 +828,108 @@ function tick() {
 
   if (players.size === 0) return;
 
-  for (const p of players.values()) {
+  for (const room of rooms.values()) {
+    if (room.owner !== COORDINATOR_ID || room.status !== 'playing' ||
+        room.race?.phase !== 'countdown' || !Number.isFinite(room.race.countdownStartedAt)) continue;
+    if (now - room.race.countdownStartedAt >= RACE_COUNTDOWN_COLOR_MS * 3) {
+      room.race.phase = 'racing';
+      room.race.serverTime = now;
+      publishRaceUpdate(room);
+    }
+  }
+
+  const changedRaceRooms = new Set();
+  for (const [userId, p] of players) {
     if (p.roomId && !rooms.has(p.roomId)) continue;
-    // Normalizar diagonales: sin esto (1,1) avanzaría √2 ≈ 41 % más rápido.
-    const ix = p.intent.x;
-    const iy = p.intent.y;
-    const mag = Math.hypot(ix, iy);
-    if (mag > 0) {
-      p.x += (ix / mag) * PLAYER_SPEED * dt;
-      p.y += (iy / mag) * PLAYER_SPEED * dt;
+    const room = p.roomId ? rooms.get(p.roomId) : null;
+    const race = room?.race;
+    const completedLaps = race?.laps?.[userId] || 0;
+    const canMove = !room || room.status !== 'playing' ||
+      (race?.phase === 'racing' && completedLaps < RACE_LAPS_PER_LEVEL);
+    const previousPosition = { x: p.x, y: p.y };
+
+    if (canMove) {
+      // Normalizar diagonales: sin esto (1,1) avanzaría √2 ≈ 41 % más rápido.
+      const ix = p.intent.x;
+      const iy = p.intent.y;
+      const mag = Math.hypot(ix, iy);
+      if (mag > 0) {
+        const dx = (ix / mag) * PLAYER_SPEED * dt;
+        const dy = (iy / mag) * PLAYER_SPEED * dt;
+        const track = room ? RaceTracks.tracks[race.level - 1] : null;
+        const candidate = {
+          x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, p.x + dx)),
+          y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, p.y + dy))
+        };
+        if (!track || RaceTracks.isOnRoad(track, candidate.x, candidate.y, PLAYER_RADIUS, WORLD_WIDTH, WORLD_HEIGHT)) {
+          p.x = candidate.x;
+          p.y = candidate.y;
+        } else {
+          const horizontal = {
+            x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, p.x + dx)),
+            y: p.y
+          };
+          const vertical = {
+            x: p.x,
+            y: Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, p.y + dy))
+          };
+          if (RaceTracks.isOnRoad(track, horizontal.x, horizontal.y, PLAYER_RADIUS, WORLD_WIDTH, WORLD_HEIGHT)) {
+            p.x = horizontal.x;
+          } else if (RaceTracks.isOnRoad(track, vertical.x, vertical.y, PLAYER_RADIUS, WORLD_WIDTH, WORLD_HEIGHT)) {
+            p.y = vertical.y;
+          }
+        }
+      }
     }
 
     // Mantener dentro del mundo
     p.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, p.x));
     p.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, p.y));
+
+    if (room?.owner === COORDINATOR_ID && room.status === 'playing' && race.phase === 'racing') {
+      const before = race.previousPositions.get(userId) || previousPosition;
+      if ((race.laps[userId] || 0) < RACE_LAPS_PER_LEVEL &&
+          RaceTracks.crossesFinish(RaceTracks.tracks[race.level - 1], before, p, WORLD_WIDTH, WORLD_HEIGHT)) {
+        race.laps[userId] = (race.laps[userId] || 0) + 1;
+        if (race.laps[userId] === RACE_LAPS_PER_LEVEL) p.intent = { x: 0, y: 0 };
+        changedRaceRooms.add(room);
+      }
+      race.previousPositions.set(userId, { x: p.x, y: p.y });
+    }
+  }
+
+  for (const room of rooms.values()) {
+    if (room.owner === COORDINATOR_ID && room.status === 'playing' && room.race.phase === 'racing' &&
+        room.members.size > 0 &&
+        [...room.members].every((userId) => (room.race.laps[userId] || 0) >= RACE_LAPS_PER_LEVEL)) {
+      changedRaceRooms.add(room);
+    }
+  }
+
+  for (const room of changedRaceRooms) {
+    const everyoneFinished = [...room.members].every((userId) =>
+      (room.race.laps[userId] || 0) >= RACE_LAPS_PER_LEVEL
+    );
+    if (everyoneFinished) {
+      if (room.race.level < RaceTracks.tracks.length) {
+        startRaceLevel(room, room.race.level + 1, now);
+      } else {
+        room.race.phase = 'finished';
+        room.race.serverTime = now;
+      }
+    }
+    publishRaceUpdate(room);
   }
 
   // La pista muestra a los miembros durante la espera y durante la partida.
   // Solo se reproducen movimientos cuando el anfitrión inicia la sala.
   for (const room of rooms.values()) {
-    broadcastRoom(room.roomId, { type: 'state', t: now, players: snapshot(room.roomId) });
+    broadcastRoom(room.roomId, {
+      type: 'state',
+      t: now,
+      players: snapshot(room.roomId),
+      race: raceSnapshot(room)
+    });
   }
 }
 
@@ -1246,8 +1426,13 @@ wss.on('connection', (ws, payload) => {
           });
           break;
         }
+        // Durante el semáforo y al terminar una pista, no se aceptan movimientos.
+        const room = entry.roomId ? rooms.get(entry.roomId) : null;
+        const completedLaps = room?.race?.laps?.[userId] || 0;
+        const movementLocked = room?.status === 'playing' &&
+          (room.race.phase !== 'racing' || completedLaps >= RACE_LAPS_PER_LEVEL);
         // Sanitizar a -1, 0, 1: NO confiar en el cliente ({x: 9999} queda en 1)
-        entry.intent = { x: Math.sign(dir.x), y: Math.sign(dir.y) };
+        entry.intent = movementLocked ? { x: 0, y: 0 } : { x: Math.sign(dir.x), y: Math.sign(dir.y) };
         broadcastPeer({
           type: 'intent_replicate',
           userId,
@@ -1271,9 +1456,21 @@ wss.on('connection', (ws, payload) => {
           break;
         }
         const roomId = `${COORDINATOR_ID}-room-${Date.now()}-${nextRoomId++}`;
-        const room = { roomId, name, hostUserId: userId, hostUsername: username, members: new Set([userId]), status: 'waiting', owner: COORDINATOR_ID };
+        const room = {
+          roomId,
+          name,
+          hostUserId: userId,
+          hostUsername: username,
+          members: new Set([userId]),
+          status: 'waiting',
+          owner: COORDINATOR_ID,
+          race: { level: 1, phase: 'waiting', countdownStartedAt: null, serverTime: Date.now(), laps: {}, previousPositions: new Map() }
+        };
         rooms.set(roomId, room);
         entry.roomId = roomId;
+        const startPosition = RaceTracks.spawnAtStart(RaceTracks.tracks[0], 0, WORLD_WIDTH, WORLD_HEIGHT);
+        entry.x = startPosition.x;
+        entry.y = startPosition.y;
         assignAvailableRoomColor(room, userId);
         replicateRoom(room, 'create');
         broadcastRoomList();
@@ -1303,6 +1500,9 @@ wss.on('connection', (ws, payload) => {
         }
         room.members.add(userId);
         entry.roomId = room.roomId;
+        const startPosition = RaceTracks.spawnAtStart(RaceTracks.tracks[0], room.members.size - 1, WORLD_WIDTH, WORLD_HEIGHT);
+        entry.x = startPosition.x;
+        entry.y = startPosition.y;
         assignAvailableRoomColor(room, userId);
         replicateRoom(room, 'join');
         broadcastRoomList();
@@ -1319,6 +1519,8 @@ wss.on('connection', (ws, payload) => {
         }
         const roomId = room.roomId;
         room.members.delete(userId);
+        delete room.race?.laps?.[userId];
+        room.race?.previousPositions?.delete(userId);
         entry.roomId = null;
         if (room.members.size === 0) rooms.delete(roomId);
         else if (room.hostUserId === userId) {
@@ -1381,14 +1583,18 @@ wss.on('connection', (ws, payload) => {
           sendWs(ws, { type: 'error', ok: false, code: 'NOT_ROOM_HOST', message: 'Solo el creador puede iniciar la carrera.', hint: 'Espera a que el creador de la sala inicie la partida.' });
           break;
         }
+        if (room.status !== 'waiting') {
+          sendWs(ws, { type: 'error', ok: false, code: 'ROOM_ALREADY_STARTED', message: 'La carrera de esta sala ya inició.', hint: 'Espera a que termine el nivel actual.' });
+          break;
+        }
         if (room.members.size < 2) {
           sendWs(ws, { type: 'error', ok: false, code: 'MIN_PLAYERS_REQUIRED', message: 'Faltan pilotos para comenzar.', hint: 'Necesitas al menos 2 jugadores en la sala.' });
           break;
         }
         room.status = 'playing';
-        replicateRoom(room, 'start');
+        startRaceLevel(room, 1, Date.now());
+        publishRaceUpdate(room, 'start');
         broadcastRoomList();
-        broadcastRoom(room.roomId, { type: 'game_started', roomId: room.roomId, players: roomPlayerList(room) });
         break;
       }
 
@@ -1558,6 +1764,8 @@ wss.on('connection', (ws, payload) => {
         const room = rooms.get(roomId);
         if (room) {
           room.members.delete(userId);
+          delete room.race?.laps?.[userId];
+          room.race?.previousPositions?.delete(userId);
           if (room.members.size === 0) rooms.delete(roomId);
           else {
             if (room.hostUserId === userId) {
