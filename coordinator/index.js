@@ -381,11 +381,16 @@ function sendRebalanceRequest(userId, target) {
 
 function runPeerRebalance() {
   const connectedPeers = peers.filter((peer) => isOpenSocket(peerConnections.get(peer.coordinatorId)));
+  if (connectedPeers.length === 0) return; // Sin peers conectados, nada que rebalancear
+
   const activeCoordinators = [
     { coordinatorId: COORDINATOR_ID, coordinatorName: COORDINATOR_NAME, publicUrl: PUBLIC_URL },
     ...connectedPeers
   ].sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0);
-  if (activeCoordinators.length < 2 || activeCoordinators[0].coordinatorId !== COORDINATOR_ID) return;
+
+  // Cada coordinador maneja el rebalanceo de sus propios jugadores locales.
+  // El líder (ID menor) además coordina rebalanceos de jugadores remotos vía mesh.
+  const isLeader = activeCoordinators[0].coordinatorId === COORDINATOR_ID;
 
   const coordinatorById = new Map(activeCoordinators.map((coordinator) =>
     [coordinator.coordinatorId, coordinator]));
@@ -398,6 +403,11 @@ function runPeerRebalance() {
   for (const assignment of assignments) {
     const target = coordinatorById.get(assignment.targetId);
     if (!target || !isValidPeerUrl(target.publicUrl)) continue;
+
+    // Cada coordinador solo gestiona la migración de sus propios jugadores locales.
+    // El líder (ID menor) además puede pedir a peers remotos que migren sus jugadores.
+    const isLocalSource = assignment.sourceId === COORDINATOR_ID;
+    if (!isLocalSource && !isLeader) continue;
 
     console.log(`[rebalance] Planificando migración: jugador ${assignment.userId} de ${assignment.sourceId} a ${target.coordinatorId} (${target.publicUrl})`);
 
@@ -417,13 +427,14 @@ function runPeerRebalance() {
       userId: assignment.userId
     };
 
-    if (assignment.sourceId === COORDINATOR_ID) {
+    if (isLocalSource) {
       sendRebalanceRequest(assignment.userId, {
         coordinatorId: target.coordinatorId,
         coordinatorName: target.coordinatorName,
         publicUrl: target.publicUrl
       });
     } else {
+      // Solo el líder llega aquí; pide al peer remoto que migre su jugador
       broadcastPeer(request);
     }
   }
@@ -1395,6 +1406,9 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       console.log(`[coordinator] Mesh conectado con ${peerId}.`);
       sendLocalPlayersToPeer(ws);
       sendLocalRoomsToPeer(ws);
+      // Esperar a que lleguen los player_joined del peer antes de rebalancear.
+      // 1.5 s es suficiente para que los mensajes de sincronización inicial lleguen.
+      setTimeout(runPeerRebalance, 1500);
       return;
     }
 
