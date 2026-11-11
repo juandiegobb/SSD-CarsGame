@@ -335,4 +335,104 @@ test('migra jugadores y mantiene sus salas y progreso al agregar un coordinador'
     assert.ok(Math.abs(migratedPosition.x - previousPosition.x) < 5);
     assert.ok(Math.abs(migratedPosition.y - previousPosition.y) < 5);
   }
+
+  const expectedUserIds = players.map((player) => player.userId);
+  const rosterRequestedAt = Date.now();
+  for (const player of players) player.send({ type: 'who' });
+  await waitUntil(
+    () => players.every((player) => latestMessage(
+      player,
+      'players_update',
+      (message) => expectedUserIds.every((userId) =>
+        message.players.some((entry) => entry.userId === userId)),
+      rosterRequestedAt
+    )),
+    'mostrar a todos los jugadores en todos los coordinadores'
+  );
+
+  const sharedRoomListRequestedAt = Date.now();
+  for (const player of players) player.send({ type: 'room_list' });
+  await waitUntil(
+    () => players.every((player) => latestMessage(
+      player,
+      'room_list',
+      (message) => message.rooms.some((room) => room.roomId === roomId),
+      sharedRoomListRequestedAt
+    )),
+    'mostrar la misma sala en todos los coordinadores'
+  );
+
+  const leaveRequestedAt = Date.now();
+  for (const player of players) {
+    player.send({ type: 'room_leave' });
+    await waitUntil(
+      () => latestMessage(player, 'room_left', () => true, leaveRequestedAt),
+      `salir de la sala desde ${player.userId}`
+    );
+  }
+  const emptyRoomListRequestedAt = Date.now();
+  for (const player of players) player.send({ type: 'room_list' });
+  await waitUntil(
+    () => players.every((player) => latestMessage(
+      player,
+      'room_list',
+      (message) => message.rooms.every((room) => room.roomId !== roomId),
+      emptyRoomListRequestedAt
+    )),
+    'sincronizar la eliminación de la sala en todos los coordinadores'
+  );
+
+  const host = players.find((player) => player.coordinatorId === 'coord-b');
+  assert.ok(host, 'Debe haber un jugador conectado al segundo coordinador.');
+  const createRoomAt = Date.now();
+  host.send({ type: 'room_create', name: 'Sala desde coord-b' });
+  await waitUntil(
+    () => latestMessage(host, 'room_created', () => true, createRoomAt),
+    'crear una sala desde el segundo coordinador'
+  );
+  const sharedRoomId = latestMessage(host, 'room_created', () => true, createRoomAt).roomId;
+  await waitUntil(
+    () => players.filter((player) => player !== host).every((player) => latestMessage(
+      player,
+      'room_list',
+      (message) => message.rooms.some((room) => room.roomId === sharedRoomId),
+      createRoomAt
+    )),
+    'propagar la nueva sala a los otros coordinadores'
+  );
+
+  const joinRequestedAt = Date.now();
+  for (const player of players.filter((entry) => entry !== host)) {
+    player.send({ type: 'room_join', roomId: sharedRoomId });
+    await waitUntil(
+      () => latestMessage(
+        player,
+        'room_joined',
+        (message) => message.roomId === sharedRoomId,
+        joinRequestedAt
+      ),
+      `unir al jugador ${player.userId} a una sala de otro coordinador`
+    );
+  }
+  const gameStartedAt = Date.now();
+  host.send({ type: 'game_start' });
+  await waitUntil(
+    () => players.every((player) => latestMessage(
+      player,
+      'game_started',
+      (message) => message.roomId === sharedRoomId,
+      gameStartedAt
+    )),
+    'iniciar una partida con jugadores conectados a distintos coordinadores'
+  );
+  await waitUntil(
+    () => players.every((player) => latestMessage(
+      player,
+      'state',
+      (message) => expectedUserIds.every((userId) =>
+        message.players.some((entry) => entry.userId === userId)),
+      gameStartedAt
+    )),
+    'mostrar a todos los jugadores en la misma partida distribuida'
+  );
 });
