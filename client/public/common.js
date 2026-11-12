@@ -5,21 +5,168 @@ function getAppConfig() {
     return window.APP_CONFIG;
 }
 
+// ---------------------------------------------------------------------------
+// Taller 7: el auth ahora son 3 nodos (un líder y dos réplicas). El cliente
+// recibe la lista AUTH_URLS y para cada petición:
+//   1. prueba primero el último auth que funcionó (o el primero de la lista);
+//   2. error de red, timeout o 5xx  -> prueba el siguiente de la lista;
+//   3. 503 { error: "not_leader", leaderUrl } -> repite la petición en leaderUrl;
+//   4. 503 { error: "no_leader" } (elección en curso) -> espera ~1 s y reintenta.
+// Un 5xx con error propio del auth (p. ej. "replication_timeout") es una respuesta
+// definitiva: NO se repite en otro auth para no duplicar una escritura.
+// Si solo existe AUTH_URL (talleres anteriores) se usa como lista de un elemento.
+// ---------------------------------------------------------------------------
+const AUTH_LAST_GOOD_KEY = "authLastGoodUrl";
+const AUTH_REQUEST_TIMEOUT_MS = 8000;
+const AUTH_NO_LEADER_WAIT_MS = 1000;
+const AUTH_MAX_ROUNDS = 12; // ~12 s: lo que tarda en peor caso una elección
+
+function normalizeAuthUrl(value) {
+    try {
+        const url = new URL(value);
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+            return null;
+        }
+        return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+    } catch {
+        return null;
+    }
+}
+
+function readLastGoodAuthUrl() {
+    try {
+        return window.sessionStorage ? window.sessionStorage.getItem(AUTH_LAST_GOOD_KEY) : null;
+    } catch {
+        return null;
+    }
+}
+
+function rememberAuthUrl(url) {
+    try {
+        if (window.sessionStorage) window.sessionStorage.setItem(AUTH_LAST_GOOD_KEY, url);
+    } catch {
+        // sessionStorage puede no existir (pruebas) o estar bloqueado: solo se pierde la preferencia.
+    }
+}
+
+function getAuthUrls() {
+    const config = getAppConfig();
+    const configured = Array.isArray(config.AUTH_URLS) && config.AUTH_URLS.length > 0
+        ? config.AUTH_URLS
+        : [config.AUTH_URL];
+    const urls = [];
+    for (const value of configured) {
+        const url = normalizeAuthUrl(value);
+        if (url && !urls.includes(url)) urls.push(url);
+    }
+    if (urls.length === 0) throw new Error("No se pudo cargar la configuración del cliente.");
+
+    // El último auth que respondió bien va primero (si sigue en la lista o fue un leaderUrl).
+    const lastGood = normalizeAuthUrl(readLastGoodAuthUrl());
+    if (lastGood) {
+        const index = urls.indexOf(lastGood);
+        if (index > 0) urls.splice(index, 1);
+        if (index !== 0) urls.unshift(lastGood);
+    }
+    return urls;
+}
+
+// URL del auth que respondió la última petición (para mostrarlo en la UI).
+function currentAuthUrl() {
+    try {
+        return getAuthUrls()[0];
+    } catch {
+        return null;
+    }
+}
+
+const authSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchOneAuth(baseUrl, path, options) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), AUTH_REQUEST_TIMEOUT_MS);
+    try {
+        const response = await fetch(`${baseUrl}${path}`, {
+            ...options,
+            headers: { "ngrok-skip-browser-warning": "true", ...(options.headers || {}) },
+            signal: controller.signal
+        });
+        const payload = await response.json().catch(() => null);
+        return { response, payload };
+    } finally {
+        clearTimeout(timeout);
+    }
+}
+
+// Devuelve { response, payload, authUrl }. Lanza error solo si ningún auth respondió.
+async function authFetch(path, options = {}) {
+    const urls = getAuthUrls();
+    let lastAnswer = null;
+
+    for (let round = 0; round < AUTH_MAX_ROUNDS; round += 1) {
+        const queue = [...urls];
+        const tried = new Set();
+        let failoverInProgress = false;
+
+        while (queue.length > 0) {
+            const baseUrl = queue.shift();
+            if (tried.has(baseUrl)) continue;
+            tried.add(baseUrl);
+
+            let answer;
+            try {
+                answer = await fetchOneAuth(baseUrl, path, options);
+            } catch {
+                console.warn(`[auth] ${baseUrl} no responde, se prueba el siguiente.`);
+                continue;
+            }
+            const { response, payload } = answer;
+            lastAnswer = { ...answer, authUrl: baseUrl };
+
+            if (response.status === 503 && payload && payload.error === "not_leader") {
+                const leaderUrl = normalizeAuthUrl(payload.leaderUrl);
+                if (leaderUrl && !tried.has(leaderUrl)) {
+                    console.info(`[auth] ${baseUrl} es réplica; se repite la petición en el líder ${leaderUrl}.`);
+                    queue.unshift(leaderUrl);
+                } else {
+                    failoverInProgress = true; // el líder que anuncia ya no responde
+                }
+                continue;
+            }
+            if (response.status === 503 && payload && payload.error === "no_leader") {
+                console.info(`[auth] ${baseUrl}: elección de líder en curso.`);
+                failoverInProgress = true;
+                continue;
+            }
+            const definitiveError = payload && typeof payload.error === "string";
+            if (typeof response.status === "number" && response.status >= 500 && !definitiveError) {
+                console.warn(`[auth] ${baseUrl} respondió ${response.status}, se prueba el siguiente.`);
+                continue;
+            }
+
+            if (!(response.status >= 500)) rememberAuthUrl(baseUrl);
+            return lastAnswer;
+        }
+
+        // Nadie pudo atender. Solo se espera y reintenta si hay un cambio de líder en curso.
+        if (!failoverInProgress) break;
+        await authSleep(AUTH_NO_LEADER_WAIT_MS);
+    }
+
+    if (lastAnswer) return lastAnswer;
+    throw new Error("Ningún auth respondió.");
+}
+
 async function apiPost(path, body) {
     let response;
     let payload;
 
     try {
-        const { AUTH_URL } = getAppConfig();
-        response = await fetch(`${AUTH_URL}${path}`, {
+        ({ response, payload } = await authFetch(path, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "ngrok-skip-browser-warning": "true"
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body)
-        });
-        payload = await response.json();
+        }));
     } catch {
         return { ok: false, valid: false, networkError: true };
     }
@@ -63,12 +210,7 @@ async function requestCoordinator() {
     let payload = null;
 
     try {
-        const { AUTH_URL } = getAppConfig();
-        response = await fetch(`${AUTH_URL}/coordinator`, {
-            headers: { "ngrok-skip-browser-warning": "true" },
-            cache: "no-store"
-        });
-        payload = await response.json().catch(() => null);
+        ({ response, payload } = await authFetch("/coordinator", { cache: "no-store" }));
     } catch {
         return { ok: false, networkError: true };
     }
@@ -120,8 +262,7 @@ async function requestGlobalPlayers() {
     let response;
     let payload;
     try {
-        const { AUTH_URL } = getAppConfig();
-        ({ response, payload } = await fetchRosterResponse(`${AUTH_URL}/coordinators`));
+        ({ response, payload } = await authFetch("/coordinators", { cache: "no-store" }));
     } catch {
         return { ok: false, reason: "directory-unavailable", coordinators: [] };
     }

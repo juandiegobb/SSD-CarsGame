@@ -527,11 +527,8 @@
             async function checkActiveExpiration() {
                 if (intentionalClose) return;
                 try {
-                    const { AUTH_URL } = getAppConfig();
-                    const res = await fetch(`${AUTH_URL}/health`, {
-                        headers: { 'ngrok-skip-browser-warning': 'true' }
-                    });
-                    const data = await res.json();
+                    // Taller 7: /health lo responde cualquier auth (líder o réplica).
+                    const { payload: data } = await authFetch('/health', { cache: 'no-store' });
                     if (data && data.jwtExpiresIn) {
                         const currentExpiresStr = String(data.jwtExpiresIn).trim();
                         const allowedSeconds = parseDurationToSeconds(currentExpiresStr);
