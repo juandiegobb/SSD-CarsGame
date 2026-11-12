@@ -5,8 +5,9 @@
 //   leaderSeq → último lastSeq que anunció el líder (para saber qué tan atrasados estamos)
 //   peers     → lo que se sabe de los otros auths (URLs, rol, si hay conexión)
 //
-// Hasta que exista la elección (turno de Juan Diego), el líder inicial es PROVISIONAL:
-// el auth con el ID más bajo del grupo, igual que la regla del ID menor del mesh.
+// Arranque: un auth solo (sin AUTH_PEERS) es líder de una vez. Con peers, arranca como
+// réplica sin líder conocido (startAsReplica): si ya hay líder lo aprende en el hello;
+// si no lo hay, election.js elige uno.
 
 const ROLES = new Set(['leader', 'replica', 'candidate']);
 
@@ -63,7 +64,7 @@ function createClusterState({ config, replicationLog }) {
     notify('replica');
   }
 
-  // Elección (Juan Diego): sube el term, se vota a sí mismo y queda sin líder conocido
+  // Elección (election.js): sube el term, se vota a sí mismo y queda sin líder conocido
   function becomeCandidate() {
     const term = getTerm() + 1;
     setTerm(term);
@@ -95,7 +96,7 @@ function createClusterState({ config, replicationLog }) {
     return true;
   }
 
-  // Heartbeat del líder (Juan Diego lo llama al recibir { type: 'heartbeat' })
+  // Heartbeat del líder (replication.js lo llama al recibir { type: 'heartbeat' })
   function noteLeaderContact(fromLeaderId, lastSeq) {
     if (fromLeaderId && fromLeaderId !== config.authId) leaderId = fromLeaderId;
     if (Number.isSafeInteger(lastSeq) && lastSeq >= 0) leaderSeq = lastSeq;
@@ -137,7 +138,17 @@ function createClusterState({ config, replicationLog }) {
     return [...peers.values()].sort((a, b) => (a.authId < b.authId ? -1 : a.authId > b.authId ? 1 : 0));
   }
 
+  // Arranque en grupo: réplica sin líder. Un auth que vuelve NUNCA recupera el liderazgo solo.
+  function startAsReplica() {
+    role = 'replica';
+    leaderId = null;
+    leaderSeq = replicationLog.lastAppliedSeq();
+    lastLeaderContactAt = 0;
+    notify('start');
+  }
+
   // Líder provisional: el ID más bajo entre este auth y los de AUTH_PEERS
+  // (se usa solo cuando el auth está solo: entonces el más bajo es él mismo)
   function startWithProvisionalLeader() {
     const lowest = [config.authId, ...peers.keys()].sort()[0];
     if (lowest === config.authId) {
@@ -178,6 +189,7 @@ function createClusterState({ config, replicationLog }) {
     updatePeer,
     listPeers,
     startWithProvisionalLeader,
+    startAsReplica,
     describe,
     onChange: (listener) => listeners.push(listener)
   };
