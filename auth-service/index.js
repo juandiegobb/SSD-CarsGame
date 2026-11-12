@@ -394,7 +394,8 @@ app.use(express.json({ limit: '4kb' }));
 // Taller 7: solo el líder acepta escrituras (single-writer replication, SPEC.md §13.4).
 // Una réplica responde 503 not_leader con la URL del líder para que el cliente repita ahí.
 // Si no se sabe quién es el líder (elección en curso), 503 no_leader: hay que reintentar.
-// kind = 'write' (registrar, crear cuenta) o 'read' (login en una réplica demasiado atrasada)
+// kind = 'write' (registrar, crear cuenta), 'read' (login en una réplica demasiado atrasada)
+//        o 'directory' (heartbeats y consultas del directorio de coordinadores)
 function rejectNotLeader(res, kind = 'write') {
   const { role, leaderUrl } = clusterState.describe();
   if (role !== 'candidate' && leaderUrl) {
@@ -404,7 +405,9 @@ function rejectNotLeader(res, kind = 'write') {
       'NOT_LEADER',
       kind === 'read'
         ? 'Esta réplica está atrasada respecto al líder: la petición la atiende el líder.'
-        : 'Este auth es una réplica: las escrituras las atiende el líder.',
+        : kind === 'directory'
+          ? 'Este auth es una réplica: el directorio de coordinadores lo atiende el líder.'
+          : 'Este auth es una réplica: las escrituras las atiende el líder.',
       'Repite la misma petición contra leaderUrl.',
       undefined,
       { error: 'not_leader', leaderUrl }
@@ -421,6 +424,15 @@ function rejectNotLeader(res, kind = 'write') {
   );
 }
 
+// Taller 7: el directorio de coordinadores vive en memoria y NO se replica (SPEC.md §13.4).
+// Solo el líder lo atiende; una réplica responde 503 not_leader con leaderUrl y el
+// coordinador o el cliente repiten ahí. Al cambiar de líder, el nuevo empieza vacío y los
+// coordinadores lo llenan con su siguiente heartbeat (≤ 2 s).
+function requireLeaderDirectory(req, res, next) {
+  if (clusterState.isLeader()) return next();
+  return rejectNotLeader(res, 'directory');
+}
+
 // GET /health - Monitoreo y estado del servicio (incluye jwtExpiresIn activo)
 app.get('/health', (req, res) => {
   const activeExpiresIn = getJwtExpiresIn();
@@ -432,7 +444,7 @@ app.get('/health', (req, res) => {
 });
 
 // POST /heartbeat - Registra o actualiza un coordinador autenticado en memoria.
-app.post('/heartbeat', (req, res) => {
+app.post('/heartbeat', requireLeaderDirectory, (req, res) => {
   if (!hasValidCoordinatorSecret(req.get('x-coordinator-secret'))) {
     return sendError(
       res,
@@ -493,7 +505,7 @@ app.post('/heartbeat', (req, res) => {
 // Distribuye equitativamente entre los coordinadores vigentes con menor carga.
 let coordinatorTieBreaker = 0;
 
-app.get('/coordinator', (req, res) => {
+app.get('/coordinator', requireLeaderDirectory, (req, res) => {
   const now = Date.now();
   const liveCoordinators = [...coordinators.values()]
     .filter((coordinator) => isCoordinatorLive(coordinator, now))
@@ -578,6 +590,9 @@ app.get('/peers', (req, res) => {
     });
   }
 
+  // Con coordinatorId es el directorio de coordinadores (Taller 6) → solo el líder
+  if (!clusterState.isLeader()) return rejectNotLeader(res, 'directory');
+
   if (typeof coordinatorId !== 'string' ||
       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId)) {
     return sendError(
@@ -607,7 +622,7 @@ app.get('/peers', (req, res) => {
 });
 
 // GET /coordinators - Inspección de estado sin modificar el directorio.
-app.get('/coordinators', (req, res) => {
+app.get('/coordinators', requireLeaderDirectory, (req, res) => {
   const now = Date.now();
   const directory = [...coordinators.values()]
     .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
