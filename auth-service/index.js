@@ -21,6 +21,9 @@ const { hasCoordinatorEndpointConflict } = require('./coordinator-directory');
 const { loadClusterConfig, ClusterConfigError } = require('./cluster-config');
 const { createReplicationLog } = require('./replication-log');
 const { createClusterState } = require('./cluster-state');
+const { createAuthMesh } = require('./auth-mesh');
+const { createReplication } = require('./replication');
+const { createElection } = require('./election');
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
@@ -53,6 +56,14 @@ try {
   process.exit(1);
 }
 const PORT = CLUSTER.port;
+
+// Taller 7: secreto del mesh entre auths. Si no se define AUTH_MESH_SECRET se usa
+// COORDINATOR_SHARED_SECRET (ya es igual en todos los auths). Sin secreto no hay mesh.
+const AUTH_MESH_SECRET = (process.env.AUTH_MESH_SECRET || process.env.COORDINATOR_SHARED_SECRET || '').trim();
+if (CLUSTER.peers.length > 0 && AUTH_MESH_SECRET.length < 16) {
+  console.error('Error de configuración: con AUTH_PEERS hace falta AUTH_MESH_SECRET (o COORDINATOR_SHARED_SECRET) de al menos 16 caracteres, igual en todos los auths.');
+  process.exit(1);
+}
 const DB_PATH = process.env.DB_PATH || 'users.db';
 const ENV_PATH = path.join(__dirname, '.env');
 const coordinators = new Map();
@@ -248,12 +259,48 @@ if (backfilledUsers > 0) {
 }
 
 // Taller 7: rol de este auth (leader / replica / candidate), term y líder conocido.
-// Mientras no exista la elección, el líder es provisional: el de ID más bajo del grupo.
+// Un auth solo es líder de una vez. En grupo arranca como réplica: si ya hay líder lo
+// aprende en el hello del mesh; si no, se elige uno (election.js). Nunca recupera solo
+// el liderazgo que tenía antes de caerse.
 const clusterState = createClusterState({ config: CLUSTER, replicationLog });
-clusterState.startWithProvisionalLeader();
+let lastLoggedRole = null;
 clusterState.onChange((state, reason) => {
+  const summary = `${state.role}|${state.term}|${state.leaderId}`;
+  if (summary === lastLoggedRole) return;
+  lastLoggedRole = summary;
   console.log(`[auth-service] Rol: ${state.role} · term ${state.term} · líder: ${state.leaderId || 'desconocido'} (${reason}).`);
 });
+if (CLUSTER.peers.length === 0) clusterState.startWithProvisionalLeader();
+else clusterState.startAsReplica();
+
+// Taller 7: mesh entre auths + replicación (heartbeat, write_propagate/ack, sync) + elección
+let replication = null;
+const authMesh = createAuthMesh({
+  config: CLUSTER,
+  secret: AUTH_MESH_SECRET,
+  getHello: () => replication.hello()
+});
+replication = createReplication({ config: CLUSTER, mesh: authMesh, clusterState, replicationLog });
+const election = createElection({ config: CLUSTER, mesh: authMesh, clusterState, replicationLog });
+
+// Opción B (SPEC §13.7): el líder responde la escritura cuando al menos 1 réplica la confirmó.
+// Si nadie confirma en REPLICATION_ACK_TIMEOUT_MS → 503 replication_timeout (el cambio queda
+// en el líder y llegará a las réplicas por sync, pero el cliente sabe que no está confirmado).
+async function confirmReplicated(res, entry) {
+  if (!entry) return true;
+  const confirmed = await replication.waitForAck(entry.seq);
+  if (confirmed) return true;
+  sendError(
+    res,
+    503,
+    'REPLICATION_TIMEOUT',
+    'El registro quedó en el líder, pero ninguna réplica lo confirmó a tiempo.',
+    'Intenta iniciar sesión en unos segundos; si no funciona, vuelve a registrarte.',
+    undefined,
+    { error: 'replication_timeout' }
+  );
+  return false;
+}
 
 // 3. Helpers únicos de respuesta según SPEC.md §3.1
 function sendOk(res, status, message, extra = {}) {
@@ -561,6 +608,7 @@ app.get('/status', (req, res) => {
     peerUrl: CLUSTER.peerUrl,
     leaderUrl: state.leaderUrl,
     knownPeers: clusterState.listPeers().map((peer) => peer.authId),
+    connectedPeers: authMesh.connectedPeers(),
     lastAppliedSeq: state.lastAppliedSeq,
     users: replicationLog.usersCount()
   });
@@ -568,9 +616,9 @@ app.get('/status', (req, res) => {
 
 // Rol de un peer visto desde aquí: lo que dijo el mesh o, si aún no se sabe, se deduce del líder conocido
 function peerRole(peer, leaderId) {
-  if (peer.role) return peer.role;
-  if (!leaderId) return null;
-  return peer.authId === leaderId ? 'leader' : 'replica';
+  if (!peer.connected) return 'unreachable';
+  if (leaderId) return peer.authId === leaderId ? 'leader' : 'replica';
+  return peer.role;
 }
 
 // GET /peers tiene dos usos, según el parámetro (SPEC.md §13.5):
@@ -585,7 +633,8 @@ app.get('/peers', (req, res) => {
         authId: peer.authId,
         publicUrl: peer.publicUrl,
         peerUrl: peer.peerUrl,
-        role: peerRole(peer, leaderId)
+        role: peerRole(peer, leaderId),
+        connected: peer.connected
       }))
     });
   }
@@ -709,6 +758,7 @@ app.post('/register', async (req, res, next) => {
         return replicationLog.dataForUser('register', newUserId);
       });
       console.log(`Usuario registrado: ${cleanUsername} (seq ${entry.seq})`);
+      if (!(await confirmReplicated(res, entry))) return;
 
       return sendOk(res, 201, 'Usuario registrado exitosamente.', {
         userId: String(newUserId),
@@ -964,11 +1014,12 @@ app.post('/auth/google', async (req, res, next) => {
     }
     try {
       let newUserId;
-      replicationLog.recordLocalWrite('register_google', () => {
+      const entry = replicationLog.recordLocalWrite('register_google', () => {
         const info = stmts.insertGoogle.run(cleanUsername, googleSub, email, pictureUrl);
         newUserId = Number(info.lastInsertRowid);
         return replicationLog.dataForUser('register_google', newUserId);
       });
+      if (!(await confirmReplicated(res, entry))) return;
       const newUser = { id: String(newUserId), username: cleanUsername, provider: 'google', picture_url: pictureUrl };
       const token = emitToken(newUser);
       console.log(`Usuario de Google registrado: ${cleanUsername}`);
@@ -1052,10 +1103,30 @@ const server = app.listen(PORT, () => {
 });
 server.once('close', stopCoordinatorCleanup);
 
+if (CLUSTER.peers.length > 0) {
+  authMesh.start()
+    .then(() => {
+      replication.start();
+      election.start();
+      console.log(`  Mesh de auth escuchando en el puerto ${CLUSTER.peerPort} (ruta /auth-mesh).`);
+    })
+    .catch((err) => {
+      console.error(`Error crítico: no se pudo abrir el mesh de auth en el puerto ${CLUSTER.peerPort} (${err.code || err.message}).`);
+      process.exit(1);
+    });
+  server.once('close', () => {
+    election.stop();
+    replication.stop();
+    void authMesh.stop();
+  });
+}
+
 module.exports = {
   app,
   server,
   db,
+  clusterState,
+  authMesh,
   coordinators,
   isCoordinatorLive,
   pruneExpiredCoordinators
