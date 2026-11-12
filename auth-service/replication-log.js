@@ -75,7 +75,11 @@ function createReplicationLog(db) {
     applyRegisterGoogle: db.prepare(
       "INSERT INTO users (id, username, provider, google_sub, email, picture_url, created_at) VALUES (?, ?, 'google', ?, ?, ?, ?)"
     ),
-    applyUpdatePicture: db.prepare('UPDATE users SET picture_url = ? WHERE id = ?')
+    applyUpdatePicture: db.prepare('UPDATE users SET picture_url = ? WHERE id = ?'),
+    termAt: db.prepare('SELECT term FROM replication_log WHERE seq = ?'),
+    entriesAfter: db.prepare('SELECT seq, op, data FROM replication_log WHERE seq > ? ORDER BY seq DESC'),
+    deleteEntriesAfter: db.prepare('DELETE FROM replication_log WHERE seq > ?'),
+    deleteUser: db.prepare('DELETE FROM users WHERE id = ?')
   };
 
   const listeners = [];
@@ -193,7 +197,34 @@ function createReplicationLog(db) {
     }));
   }
 
-  // Juan Diego: aquí se engancha la propagación (write_propagate) al resto de auths
+  // term con el que se escribió la entrada seq (null si no existe; 0 para seq 0)
+  function termAt(seq) {
+    if (seq === 0) return 0;
+    const row = stmts.termAt.get(seq);
+    return row ? Number(row.term) : null;
+  }
+
+  // Auth que vuelve con escrituras que el líder actual NO tiene (las hizo siendo líder,
+  // justo antes de caerse, y ninguna réplica las confirmó): se descartan para que su
+  // base quede igual a la del líder. Se borran las entradas > seq y los usuarios que
+  // esas entradas crearon. (Un cambio de foto descartado no se puede deshacer: la foto
+  // se corrige en el siguiente ingreso con Google.) Devuelve cuántas entradas se borraron.
+  function truncateAfter(seq) {
+    const keep = Math.max(0, Number(seq) || 0);
+    return runInTransaction(db, () => {
+      const removed = stmts.entriesAfter.all(keep);
+      for (const row of removed) {
+        if (row.op === 'register' || row.op === 'register_google') {
+          const data = JSON.parse(row.data);
+          if (Number.isSafeInteger(data.userId)) stmts.deleteUser.run(data.userId);
+        }
+      }
+      stmts.deleteEntriesAfter.run(keep);
+      return removed.length;
+    });
+  }
+
+  // replication.js se engancha aquí para mandar write_propagate al resto de auths
   function onLocalWrite(listener) {
     listeners.push(listener);
   }
@@ -209,6 +240,8 @@ function createReplicationLog(db) {
     dataForUser,
     applyEntry,
     entriesSince,
+    termAt,
+    truncateAfter,
     onLocalWrite
   };
 }
