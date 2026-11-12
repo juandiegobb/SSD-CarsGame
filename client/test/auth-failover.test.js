@@ -130,3 +130,21 @@ test('compatibilidad: solo AUTH_URL funciona como lista de un elemento', async (
   assert.equal(result.ok, true);
   assert.deepEqual(calls, ['http://solo.test/login']);
 });
+
+test('requestAuthStatus dice qué auth atiende y cambia si ese auth se cae', async () => {
+  let aDown = false;
+  const { common } = createHarness((url) => {
+    if (url.startsWith('http://a.test')) {
+      return aDown ? new Error('ECONNREFUSED') : { status: 200, body: { authId: 'auth-a', role: 'leader', term: 1 } };
+    }
+    return { status: 200, body: { authId: 'auth-b', role: 'replica', term: 1 } };
+  });
+  const first = await common.requestAuthStatus();
+  assert.equal(first.authId, 'auth-a');
+  assert.equal(common.authRoleLabel(first.role), 'líder');
+
+  aDown = true;
+  const second = await common.requestAuthStatus();
+  assert.equal(second.authId, 'auth-b');
+  assert.equal(common.authRoleLabel(second.role), 'réplica');
+});

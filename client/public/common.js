@@ -157,6 +157,35 @@ async function authFetch(path, options = {}) {
     throw new Error("Ningún auth respondió.");
 }
 
+// Taller 7: a qué auth está hablando el cliente ahora mismo (para mostrarlo en la UI).
+// GET /status lo responde cualquier auth; authFetch lo manda al último que funcionó,
+// así que si ese auth se cae, la etiqueta cambia sola al siguiente.
+async function requestAuthStatus() {
+    try {
+        const { response, payload, authUrl } = await authFetch("/status", { cache: "no-store" });
+        if (response.ok && payload && typeof payload.authId === "string") {
+            return {
+                ok: true,
+                authId: payload.authId,
+                role: typeof payload.role === "string" ? payload.role : null,
+                term: Number.isInteger(payload.term) ? payload.term : null,
+                authUrl
+            };
+        }
+        // Auth de talleres anteriores (sin /status): solo sabemos su URL.
+        return { ok: false, authUrl };
+    } catch {
+        return { ok: false, networkError: true };
+    }
+}
+
+function authRoleLabel(role) {
+    if (role === "leader") return "líder";
+    if (role === "replica") return "réplica";
+    if (role === "candidate") return "en elección";
+    return role || "";
+}
+
 async function apiPost(path, body) {
     let response;
     let payload;

@@ -45,6 +45,7 @@
         <p id="server-info" class="server-info" hidden>
             <span>Coordinador: <strong id="coordinator-name">—</strong></span>
             <span>Tick: <strong id="tick-rate">—</strong></span>
+            <span>Auth: <strong id="auth-name">—</strong></span>
         </p>
         <div id="notice" class="message" role="alert" aria-live="assertive"></div>
         <section id="rooms-lobby" aria-labelledby="rooms-heading">
@@ -179,6 +180,31 @@
                 document.getElementById("coordinator-name").textContent =
                     currentCoordinatorName || currentCoordinatorId || "único (sin directorio)";
                 document.getElementById("tick-rate").textContent = currentTickRate ? `${currentTickRate} Hz` : "—";
+                serverInfo.hidden = false;
+            }
+
+            // Taller 7: muestra a qué auth (líder o réplica) está conectado el cliente.
+            // Se refresca cada 3 s: si el auth cae, authFetch pasa al siguiente y la etiqueta cambia.
+            const AUTH_LABEL_REFRESH_MS = 3000;
+            let lastAuthLabel = null;
+
+            async function refreshAuthLabel() {
+                if (intentionalClose) return;
+                const status = await requestAuthStatus();
+                let label;
+                if (status.ok) {
+                    const role = authRoleLabel(status.role);
+                    label = role ? `${status.authId} (${role})` : status.authId;
+                } else if (status.authUrl) {
+                    label = new URL(status.authUrl).host;
+                } else {
+                    label = "sin conexión";
+                }
+                if (label !== lastAuthLabel) {
+                    if (lastAuthLabel !== null) console.info(`[lobby] Auth: ${lastAuthLabel} → ${label}`);
+                    lastAuthLabel = label;
+                    document.getElementById("auth-name").textContent = label;
+                }
                 serverInfo.hidden = false;
             }
 
@@ -985,6 +1011,9 @@
                 showNotice("No pudimos obtener un coordinador para jugar.", "Estamos reintentando automáticamente.");
                 scheduleCoordinatorRetry("Respuesta inesperada del directorio.");
             }
+
+            refreshAuthLabel();
+            setInterval(refreshAuthLabel, AUTH_LABEL_REFRESH_MS);
 
             findCoordinatorAndConnect().catch(() => {
                 returnToLogin("No pudimos preparar el juego. Recarga la página e inténtalo de nuevo.");
