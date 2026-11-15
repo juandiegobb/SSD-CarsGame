@@ -1003,6 +1003,46 @@ Abre `http://localhost:3000` en tu navegador:
 - En la interfaz del lobby verás el indicador en vivo: **`Auth: auth-a (líder)`** junto a **`Coordinador: coord-1`** y **`Tick: 20 Hz`**.
 - Si el nodo líder muere, el cliente y el coordinador hacen failover transparente sin desconectar a los jugadores activos en carrera.
 
+### 14.3. Despliegue del Taller 7 con ngrok (Túneles HTTP y Mesh)
+
+Para exponer el clúster distribuido del Taller 7 a través de internet con `ngrok`, cada instancia de `auth-service` requiere **dos túneles públicos**:
+1. **Túnel HTTP público (`PUBLIC_URL`):** expone el puerto HTTP (`PORT`, ej. 4001, 4002, 4003) en `https://<auth-x-http>.ngrok-free.app`. Es la URL donde clientes y coordinadores consultan `/login`, `/register` y `/status`, y la que se anuncia como `leaderUrl`.
+2. **Túnel Mesh WebSocket (`PEER_URL`):** expone el puerto de malla (`PEER_PORT`, ej. 4101, 4102, 4103) en `wss://<auth-x-mesh>.ngrok-free.app` (ruta `/auth-mesh`). Permite la interconexión peer-to-peer de replicación y elecciones entre nodos auth situados en distintas máquinas o redes.
+
+#### Formato exacto de `AUTH_PEERS` con URLs públicas
+En el entorno de cada nodo auth, `AUTH_PEERS` debe definir a sus pares indicando la URL `wss://` del mesh y, tras la barra vertical `|`, la URL pública `https://` de ese nodo:
+```dotenv
+# Ejemplo para auth-a comunicándose con auth-b y auth-c públicos:
+AUTH_PEERS=auth-b=wss://auth-b-mesh.ngrok-free.app|https://auth-b-http.ngrok-free.app,auth-c=wss://auth-c-mesh.ngrok-free.app|https://auth-c-http.ngrok-free.app
+```
+*(La URL `https://` tras `|` es indispensable para que una réplica pueda responder inmediatamente el `leaderUrl` correcto al cliente o coordinador incluso antes de que el handshake del mesh haya finalizado).*
+
+#### Configuración de `AUTH_URLS` en Cliente y Coordinadores
+Tanto el cliente como las instancias del coordinador deben conocer la lista completa de URLs `https://` públicas de los tres auths:
+```dotenv
+# En client/.env y coordinator/.env:
+AUTH_URLS=https://auth-a-http.ngrok-free.app,https://auth-b-http.ngrok-free.app,https://auth-c-http.ngrok-free.app
+```
+
+#### Configuración de Seguridad y CORS
+- **En los 3 auth-services (`auth-service/.env`):**
+  ```dotenv
+  CORS_ORIGINS=https://cliente-juego.ngrok-free.app
+  ```
+  Permite las peticiones HTTP (`fetch`) desde la aplicación web servida por ngrok.
+- **En los coordinadores (`coordinator/.env`):**
+  ```dotenv
+  CLIENT_ORIGINS=https://cliente-juego.ngrok-free.app
+  ```
+  Permite al cliente autenticar tickets y realizar consultas de diagnóstico sin bloqueos de origen cruzado.
+
+> ⚠️ **ADVERTENCIA ESTRICTA DE SEGURIDAD:**
+> **NUNCA** subas ni hagas commit al repositorio de:
+> - Authtokens de ngrok (`ngrok.yml` o comandos en scripts con credenciales reales).
+> - Archivos de configuración local `.env` (`auth-service/.env`, `coordinator/.env`, `client/.env`).
+> - Bases de datos SQLite (`users.db`, `users-auth-*.db`, `*-wal`, `*-shm`).
+> Usa siempre variables de entorno y archivos `.env.example` sanitizados para documentar variables.
+
 ---
 
 ## 15. Equipo y Reparto de Fases
