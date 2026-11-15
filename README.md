@@ -953,7 +953,59 @@ progreso y las posiciones iniciales a los otros coordinadores.
 
 ---
 
-## 13. Equipo y Reparto de Fases
+## 14. Taller 7 — Auth Replicado con Líder y Single-Writer Replication
+
+En este taller se implementa alta disponibilidad y tolerancia a fallos para el servicio de autenticación mediante un clúster de tres nodos (`auth-a`, `auth-b`, `auth-c`) coordinados por un mesh WebSocket (`/auth-mesh`) y replicación de datos con elección de líder tipo Raft simplificado. Para la especificación formal y el diseño detallado, consulta la [Sección 13 de SPEC.md](SPEC.md#13-taller-7--proyecto-final-parte-iv-auth-replicado-con-líder).
+
+### 14.1. Conceptos Fundamentales del Clúster
+- **`leader` (Líder):** Único nodo autorizado para procesar escrituras (`/register`, registro Google). Asigna un `seq` monótono incremental a cada mutación en `replication_log`, la aplica en su base de datos y la propaga a las réplicas.
+- **`replica` (Réplica):** Nodo pasivo que aplica en orden secuencial estricto las entradas enviadas por el líder. Atiende lecturas locales (`/login`, `/status`) si su retraso está dentro del margen tolerado, y redirige o rechaza escrituras con `503 not_leader` indicando `leaderUrl`.
+- **`term` (Término):** Época lógica monótona del clúster persistida en SQLite (`replication_meta`). Se incrementa en cada proceso electoral para desambiguar mensajes obsoletos y garantizar que solo exista un líder reconocido por término.
+- **`lastAppliedSeq`:** Identificador de secuencia más alto aplicado con éxito en la base de datos local y su tabla `replication_log` dentro de una misma transacción ACID.
+- **Lectura en réplicas con tolerancia (`READ_LAG_TOLERANCE = 10`):** Una réplica puede responder peticiones de `/login` si `leaderSeq - lastAppliedSeq <= 10`. Si el atraso supera dicha cota, responde `503 not_leader` con `leaderUrl` para evitar falsos rechazos ("credenciales inválidas") a cuentas recién creadas.
+- **Consistencia de escrituras (Opción B con 1 confirmación):** El líder aplica la mutación localmente, emite `write_propagate` por el mesh a las réplicas y espera el `write_ack` de al menos una réplica (máximo 2 s). Con una confirmación responde `200/201 OK`; si ninguna confirma a tiempo, responde `503 replication_timeout`. Garantiza que ante la caída inmediata del líder, al menos una réplica superviviente posea la mutación antes de la siguiente elección.
+
+### 14.2. Ejecución del Clúster en Local
+
+#### 1. Iniciar los 3 nodos de Auth Service
+Ejecuta el script automatizado en PowerShell:
+```powershell
+.\auth-service\start-auths.ps1
+```
+El script verifica la disponibilidad de puertos (`4001-4003` HTTP y `4101-4103` Mesh) y abre 3 ventanas independientes:
+- **`auth-a`**: HTTP `http://localhost:4001` · Mesh `ws://localhost:4101` · Base `users-auth-a.db`
+- **`auth-b`**: HTTP `http://localhost:4002` · Mesh `ws://localhost:4102` · Base `users-auth-b.db`
+- **`auth-c`**: HTTP `http://localhost:4003` · Mesh `ws://localhost:4103` · Base `users-auth-c.db`
+
+Tras ~7 segundos, las réplicas completan el handshake del mesh, ejecutan la primera elección y designan a un líder unánime (generalmente `auth-a` por su ID menor inicial). Puedes inspeccionar el estado en cualquier momento con:
+```powershell
+Invoke-RestMethod http://localhost:4001/status
+Invoke-RestMethod http://localhost:4002/status
+Invoke-RestMethod http://localhost:4003/status
+```
+
+#### 2. Iniciar el Coordinador (o clúster de Coordinadores)
+En una nueva terminal, arranca el coordinador configurando la lista de auths:
+```powershell
+$env:AUTH_URLS = "http://localhost:4001,http://localhost:4002,http://localhost:4003"
+npm start --prefix coordinator
+```
+*(O ejecutando `.\coordinator\start-coordinators.ps1`, el cual inyecta `AUTH_URLS` automáticamente hacia los 3 auths locales).*
+El coordinador envía sus heartbeats de registro al líder activo y sigue dinámicamente cualquier redirección `leaderUrl` ante failover.
+
+#### 3. Iniciar el Cliente Web
+En otra terminal:
+```powershell
+npm start --prefix client
+```
+En entorno local, `client/server.js` ya incluye por defecto la lista de los tres auths (`AUTH_URLS=http://localhost:4001,http://localhost:4002,http://localhost:4003`) en `window.APP_CONFIG.AUTH_URLS`.
+Abre `http://localhost:3000` en tu navegador:
+- En la interfaz del lobby verás el indicador en vivo: **`Auth: auth-a (líder)`** junto a **`Coordinador: coord-1`** y **`Tick: 20 Hz`**.
+- Si el nodo líder muere, el cliente y el coordinador hacen failover transparente sin desconectar a los jugadores activos en carrera.
+
+---
+
+## 15. Equipo y Reparto de Fases
 
 | Fase | Componente / Responsabilidad | Integrante Responsable |
 |:---:|---|---|
