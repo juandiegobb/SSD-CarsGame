@@ -16,6 +16,7 @@ const { WebSocket, WebSocketServer } = require('ws');
 const jwt = require('jsonwebtoken');
 const RaceTracks = require('../shared/tracks');
 const { planRebalance } = require('./rebalance');
+const { createAuthClient, parseAuthUrls } = require('./auth-client');
 
 // ── Verificación de configuración crítica ────────────────────────────────────
 if (!process.env.JWT_SECRET) {
@@ -91,12 +92,13 @@ const PEER_URL = parseServiceUrl(
   defaultPeerUrl,
   ['ws:', 'wss:']
 );
-const AUTH_URL = parseServiceUrl(
-  'AUTH_URL',
-  process.env.AUTH_URL,
-  'http://localhost:4000',
-  ['http:', 'https:']
-);
+// Taller 7: AUTH_URLS es la lista de auths (líder + réplicas). Si no existe se usa AUTH_URL.
+const AUTH_URLS = parseAuthUrls(process.env.AUTH_URLS, process.env.AUTH_URL);
+if (!AUTH_URLS) {
+  console.error('Error de configuración: AUTH_URLS (o AUTH_URL) debe tener URLs http(s) separadas por comas, sin credenciales, query ni fragmento.');
+  process.exit(1);
+}
+const AUTH_URL = AUTH_URLS[0];
 const COORDINATOR_SHARED_SECRET = process.env.COORDINATOR_SHARED_SECRET;
 if (!COORDINATOR_SHARED_SECRET || !COORDINATOR_SHARED_SECRET.trim()) {
   console.error('Error de configuración: COORDINATOR_SHARED_SECRET es obligatorio para enviar heartbeats autenticados a Auth.');
@@ -117,7 +119,9 @@ const MAX_PENDING_WS_TICKETS = 1000;
 const HEARTBEAT_INTERVAL_MS = 2000;
 const HEARTBEAT_TIMEOUT_MS = 5000;
 const PEER_DISCOVERY_INTERVAL_MS = 2000;
-const PEER_DISCOVERY_TIMEOUT_MS = 5000;
+// Taller 7: heartbeats y /peers van al líder; si llega not_leader se sigue leaderUrl
+// y si el líder deja de responder se recorre otra vez la lista AUTH_URLS.
+const authClient = createAuthClient({ urls: AUTH_URLS, timeoutMs: HEARTBEAT_TIMEOUT_MS });
 const PEER_HELLO_TIMEOUT_MS = 5000;
 const PEER_SYNC_INTERVAL_MS = 1000;
 const PEER_REBALANCE_INTERVAL_MS = 3000;
@@ -177,16 +181,14 @@ async function sendHeartbeat() {
   heartbeatInFlight = true;
   const controller = new AbortController();
   heartbeatAbortController = controller;
-  const timeout = setTimeout(() => controller.abort(), HEARTBEAT_TIMEOUT_MS);
-  timeout.unref();
 
   try {
     const connectedPlayers = countOpenLocalPlayers();
-    const response = await fetch(`${AUTH_URL}/heartbeat`, {
+    // El timeout es por intento (dentro de authClient) para poder pasar al siguiente auth.
+    const { response, payload } = await authClient.request('/heartbeat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'ngrok-skip-browser-warning': 'true',
         'x-coordinator-secret': COORDINATOR_SHARED_SECRET
       },
       body: JSON.stringify({
@@ -202,8 +204,11 @@ async function sendHeartbeat() {
     });
 
     if (!response.ok) {
-      const payload = await response.json().catch(() => null);
-      if (payload?.code === 'COORDINATOR_ID_CONFLICT') {
+      if (payload?.error === 'no_leader') {
+        console.error('[coordinator] Auth en elección de líder: el heartbeat se reintenta en 2 s.');
+      } else if (payload?.error === 'not_leader') {
+        console.error(`[coordinator] El líder anunciado (${payload.leaderUrl}) no responde: se reintenta en 2 s mientras eligen otro.`);
+      } else if (payload?.code === 'COORDINATOR_ID_CONFLICT') {
         console.error('[coordinator] Auth rechazó el heartbeat: COORDINATOR_ID_CONFLICT. Usa un COORDINATOR_ID único para esta instancia.');
       } else {
         console.error(`[coordinator] Auth rechazó el heartbeat (HTTP ${response.status}).`);
@@ -211,10 +216,9 @@ async function sendHeartbeat() {
     }
   } catch {
     if (!controller.signal.aborted || heartbeatTimer) {
-      console.error('[coordinator] No se pudo enviar el heartbeat a Auth.');
+      console.error('[coordinator] No se pudo enviar el heartbeat a ningún Auth de AUTH_URLS.');
     }
   } finally {
-    clearTimeout(timeout);
     if (heartbeatAbortController === controller) heartbeatAbortController = null;
     heartbeatInFlight = false;
   }
@@ -288,22 +292,17 @@ async function refreshPeers() {
   peerDiscoveryInFlight = true;
   const controller = new AbortController();
   peerDiscoveryAbortController = controller;
-  const timeout = setTimeout(() => controller.abort(), PEER_DISCOVERY_TIMEOUT_MS);
-  timeout.unref();
 
   try {
-    const endpoint = new URL(`${AUTH_URL}/peers`);
-    endpoint.searchParams.set('coordinatorId', COORDINATOR_ID);
-    const response = await fetch(endpoint, {
-      headers: { 'ngrok-skip-browser-warning': 'true' },
-      signal: controller.signal
-    });
+    const path = `/peers?coordinatorId=${encodeURIComponent(COORDINATOR_ID)}`;
+    const { response, payload } = await authClient.request(path, { signal: controller.signal });
     if (!response.ok) {
-      console.error(`[coordinator] Auth rechazó la consulta de peers (HTTP ${response.status}).`);
+      if (payload?.error !== 'no_leader' && payload?.error !== 'not_leader') {
+        console.error(`[coordinator] Auth rechazó la consulta de peers (HTTP ${response.status}).`);
+      }
       return;
     }
 
-    const payload = await response.json();
     if (!payload || !Array.isArray(payload.peers) || !payload.peers.every(isValidDiscoveredPeer)) {
       console.error('[coordinator] Auth devolvió una lista de peers inválida.');
       return;
@@ -320,10 +319,9 @@ async function refreshPeers() {
     connectDiscoveredPeers();
   } catch {
     if (!peerDiscoveryStopped) {
-      console.error('[coordinator] No se pudo consultar la lista de peers en Auth.');
+      console.error('[coordinator] No se pudo consultar la lista de peers en ningún Auth de AUTH_URLS.');
     }
   } finally {
-    clearTimeout(timeout);
     if (peerDiscoveryAbortController === controller) peerDiscoveryAbortController = null;
     peerDiscoveryInFlight = false;
   }
@@ -2173,6 +2171,7 @@ async function startCoordinator() {
   });
   server.listen(PORT, () => {
     console.log(`Coordinador "${COORDINATOR_NAME}" (${COORDINATOR_ID}) escuchando en http://localhost:${PORT} y peers en ws://localhost:${PORT}/mesh (secundario: ${PEER_PORT}).`);
+    console.log(`  Auths (AUTH_URLS): ${AUTH_URLS.join(', ')}`);
     console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
     try {
       peerHttpServer.listen(PEER_PORT);
@@ -2230,6 +2229,10 @@ module.exports = {
     PUBLIC_URL,
     PEER_URL,
     AUTH_URL,
+    AUTH_URLS,
+    get currentAuthUrl() {
+      return authClient.currentUrl;
+    },
     hasCoordinatorSharedSecret: Boolean(COORDINATOR_SHARED_SECRET)
   }
 };

@@ -16,6 +16,23 @@ function publicServiceUrl(value, fallback, protocols) {
   return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
+// Taller 7: lista de auths separada por comas (AUTH_URLS). Si no existe se usa AUTH_URL
+// (talleres anteriores) como lista de un elemento, y si tampoco existe, la lista por defecto.
+const DEFAULT_LOCAL_AUTH_URLS = "http://localhost:4001,http://localhost:4002,http://localhost:4003,http://localhost:4000";
+
+function publicServiceUrlList(listValue, singleValue, defaultList, protocols) {
+  const split = (value) => (value || "").split(",").map((item) => item.trim()).filter(Boolean);
+  let values = split(listValue);
+  if (values.length === 0 && singleValue) values = [singleValue];
+  if (values.length === 0) values = split(defaultList);
+  const urls = [];
+  for (const value of values) {
+    const url = publicServiceUrl(value, value, protocols);
+    if (!urls.includes(url)) urls.push(url);
+  }
+  return urls;
+}
+
 app.get("/config.js", (req, res) => {
   const host = req.headers["x-forwarded-host"] || req.headers.host || "";
   const isLocal = host.includes("localhost") || host.includes("127.0.0.1");
@@ -25,10 +42,10 @@ app.get("/config.js", (req, res) => {
 
   try {
     if (isLocal) {
-      currentAuth = publicServiceUrl(process.env.LOCAL_AUTH_URL, "http://localhost:4000", ["http:", "https:"]);
+      currentAuth = publicServiceUrlList(process.env.LOCAL_AUTH_URLS, process.env.LOCAL_AUTH_URL, DEFAULT_LOCAL_AUTH_URLS, ["http:", "https:"]);
       currentWs = publicServiceUrl(process.env.LOCAL_COORDINATOR_WS_URL, "ws://localhost:5000", ["ws:", "wss:"]);
     } else {
-      currentAuth = publicServiceUrl(process.env.AUTH_URL, "http://localhost:4000", ["http:", "https:"]);
+      currentAuth = publicServiceUrlList(process.env.AUTH_URLS, process.env.AUTH_URL, DEFAULT_LOCAL_AUTH_URLS, ["http:", "https:"]);
       currentWs = publicServiceUrl(process.env.COORDINATOR_WS_URL, "ws://localhost:5000", ["ws:", "wss:"]);
     }
   } catch {
@@ -36,7 +53,7 @@ app.get("/config.js", (req, res) => {
     return res.status(500).type("text/plain").send("Configuración del cliente no disponible.");
   }
 
-  console.log(`[config.js] Configuración solicitada (${isLocal ? "MODO LOCAL" : "MODO NGROK"}).`);
+  console.log(`[config.js] Configuración solicitada (${isLocal ? "MODO LOCAL" : "MODO NGROK"}, ${currentAuth.length} auth(s)).`);
 
   // Taller 5: el Client ID de Google es público (va en el botón del navegador), no es un secreto.
   const googleClientId = process.env.GOOGLE_CLIENT_ID || "";
@@ -44,7 +61,7 @@ app.get("/config.js", (req, res) => {
   res
     .type("application/javascript")
     .set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate")
-    .send(`window.APP_CONFIG = ${JSON.stringify({ AUTH_URL: currentAuth, COORDINATOR_WS_URL: currentWs, GOOGLE_CLIENT_ID: googleClientId })};\n`);
+    .send(`window.APP_CONFIG = ${JSON.stringify({ AUTH_URL: currentAuth[0], AUTH_URLS: currentAuth, COORDINATOR_WS_URL: currentWs, GOOGLE_CLIENT_ID: googleClientId })};\n`);
 });
 
 app.get("/", (req, res) => {
@@ -66,5 +83,5 @@ app.use((err, req, res, next) => {
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Cliente web escuchando en http://localhost:${port}`);
-  console.log(`  - Soporte automático: Local (localhost:3000 -> 4000/5000) y ngrok (túnel público)`);
+  console.log(`  - Soporte automático: Local (localhost:3000 -> auths 4001-4003 / 5000) y ngrok (túnel público)`);
 });

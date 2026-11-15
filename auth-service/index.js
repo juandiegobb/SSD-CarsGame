@@ -18,6 +18,12 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const { hasCoordinatorEndpointConflict } = require('./coordinator-directory');
+const { loadClusterConfig, ClusterConfigError } = require('./cluster-config');
+const { createReplicationLog } = require('./replication-log');
+const { createClusterState } = require('./cluster-state');
+const { createAuthMesh } = require('./auth-mesh');
+const { createReplication } = require('./replication');
+const { createElection } = require('./election');
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
@@ -39,7 +45,25 @@ if (!googleClient) {
 }
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const PORT = Number(process.env.PORT) || 4000;
+
+// Taller 7: identidad de este auth dentro del grupo replicado (AUTH_ID, puertos, peers…)
+let CLUSTER;
+try {
+  CLUSTER = loadClusterConfig();
+} catch (err) {
+  if (!(err instanceof ClusterConfigError)) throw err;
+  console.error(`Error de configuración: ${err.message}`);
+  process.exit(1);
+}
+const PORT = CLUSTER.port;
+
+// Taller 7: secreto del mesh entre auths. Si no se define AUTH_MESH_SECRET se usa
+// COORDINATOR_SHARED_SECRET (ya es igual en todos los auths). Sin secreto no hay mesh.
+const AUTH_MESH_SECRET = (process.env.AUTH_MESH_SECRET || process.env.COORDINATOR_SHARED_SECRET || '').trim();
+if (CLUSTER.peers.length > 0 && AUTH_MESH_SECRET.length < 16) {
+  console.error('Error de configuración: con AUTH_PEERS hace falta AUTH_MESH_SECRET (o COORDINATOR_SHARED_SECRET) de al menos 16 caracteres, igual en todos los auths.');
+  process.exit(1);
+}
 const DB_PATH = process.env.DB_PATH || 'users.db';
 const ENV_PATH = path.join(__dirname, '.env');
 const coordinators = new Map();
@@ -226,6 +250,58 @@ const stmts = {
   findByGoogle: db.prepare('SELECT * FROM users WHERE google_sub = ?')
 };
 
+// Taller 7: registro numerado de escrituras (replication_log) y metadatos (term, voto).
+// Las bases anteriores al Taller 7 anotan una vez a sus usuarios para poder replicarlos.
+const replicationLog = createReplicationLog(db);
+const backfilledUsers = replicationLog.backfillExistingUsers();
+if (backfilledUsers > 0) {
+  console.log(`[auth-service] ${backfilledUsers} usuario(s) existente(s) anotado(s) en replication_log.`);
+}
+
+// Taller 7: rol de este auth (leader / replica / candidate), term y líder conocido.
+// Un auth solo es líder de una vez. En grupo arranca como réplica: si ya hay líder lo
+// aprende en el hello del mesh; si no, se elige uno (election.js). Nunca recupera solo
+// el liderazgo que tenía antes de caerse.
+const clusterState = createClusterState({ config: CLUSTER, replicationLog });
+let lastLoggedRole = null;
+clusterState.onChange((state, reason) => {
+  const summary = `${state.role}|${state.term}|${state.leaderId}`;
+  if (summary === lastLoggedRole) return;
+  lastLoggedRole = summary;
+  console.log(`[auth-service] Rol: ${state.role} · term ${state.term} · líder: ${state.leaderId || 'desconocido'} (${reason}).`);
+});
+if (CLUSTER.peers.length === 0) clusterState.startWithProvisionalLeader();
+else clusterState.startAsReplica();
+
+// Taller 7: mesh entre auths + replicación (heartbeat, write_propagate/ack, sync) + elección
+let replication = null;
+const authMesh = createAuthMesh({
+  config: CLUSTER,
+  secret: AUTH_MESH_SECRET,
+  getHello: () => replication.hello()
+});
+replication = createReplication({ config: CLUSTER, mesh: authMesh, clusterState, replicationLog });
+const election = createElection({ config: CLUSTER, mesh: authMesh, clusterState, replicationLog });
+
+// Opción B (SPEC §13.7): el líder responde la escritura cuando al menos 1 réplica la confirmó.
+// Si nadie confirma en REPLICATION_ACK_TIMEOUT_MS → 503 replication_timeout (el cambio queda
+// en el líder y llegará a las réplicas por sync, pero el cliente sabe que no está confirmado).
+async function confirmReplicated(res, entry) {
+  if (!entry) return true;
+  const confirmed = await replication.waitForAck(entry.seq);
+  if (confirmed) return true;
+  sendError(
+    res,
+    503,
+    'REPLICATION_TIMEOUT',
+    'El registro quedó en el líder, pero ninguna réplica lo confirmó a tiempo.',
+    'Intenta iniciar sesión en unos segundos; si no funciona, vuelve a registrarte.',
+    undefined,
+    { error: 'replication_timeout' }
+  );
+  return false;
+}
+
 // 3. Helpers únicos de respuesta según SPEC.md §3.1
 function sendOk(res, status, message, extra = {}) {
   return res.status(status).json({
@@ -362,6 +438,48 @@ app.use(express.json({ limit: '4kb' }));
 
 // 5. Endpoints de la API
 
+// Taller 7: solo el líder acepta escrituras (single-writer replication, SPEC.md §13.4).
+// Una réplica responde 503 not_leader con la URL del líder para que el cliente repita ahí.
+// Si no se sabe quién es el líder (elección en curso), 503 no_leader: hay que reintentar.
+// kind = 'write' (registrar, crear cuenta), 'read' (login en una réplica demasiado atrasada)
+//        o 'directory' (heartbeats y consultas del directorio de coordinadores)
+function rejectNotLeader(res, kind = 'write') {
+  const { role, leaderUrl } = clusterState.describe();
+  if (role !== 'candidate' && leaderUrl) {
+    return sendError(
+      res,
+      503,
+      'NOT_LEADER',
+      kind === 'read'
+        ? 'Esta réplica está atrasada respecto al líder: la petición la atiende el líder.'
+        : kind === 'directory'
+          ? 'Este auth es una réplica: el directorio de coordinadores lo atiende el líder.'
+          : 'Este auth es una réplica: las escrituras las atiende el líder.',
+      'Repite la misma petición contra leaderUrl.',
+      undefined,
+      { error: 'not_leader', leaderUrl }
+    );
+  }
+  return sendError(
+    res,
+    503,
+    'NO_LEADER',
+    'Se está eligiendo un nuevo líder; por unos segundos no se aceptan escrituras.',
+    'Reintenta en unos segundos.',
+    undefined,
+    { error: 'no_leader' }
+  );
+}
+
+// Taller 7: el directorio de coordinadores vive en memoria y NO se replica (SPEC.md §13.4).
+// Solo el líder lo atiende; una réplica responde 503 not_leader con leaderUrl y el
+// coordinador o el cliente repiten ahí. Al cambiar de líder, el nuevo empieza vacío y los
+// coordinadores lo llenan con su siguiente heartbeat (≤ 2 s).
+function requireLeaderDirectory(req, res, next) {
+  if (clusterState.isLeader()) return next();
+  return rejectNotLeader(res, 'directory');
+}
+
 // GET /health - Monitoreo y estado del servicio (incluye jwtExpiresIn activo)
 app.get('/health', (req, res) => {
   const activeExpiresIn = getJwtExpiresIn();
@@ -373,7 +491,7 @@ app.get('/health', (req, res) => {
 });
 
 // POST /heartbeat - Registra o actualiza un coordinador autenticado en memoria.
-app.post('/heartbeat', (req, res) => {
+app.post('/heartbeat', requireLeaderDirectory, (req, res) => {
   if (!hasValidCoordinatorSecret(req.get('x-coordinator-secret'))) {
     return sendError(
       res,
@@ -434,7 +552,7 @@ app.post('/heartbeat', (req, res) => {
 // Distribuye equitativamente entre los coordinadores vigentes con menor carga.
 let coordinatorTieBreaker = 0;
 
-app.get('/coordinator', (req, res) => {
+app.get('/coordinator', requireLeaderDirectory, (req, res) => {
   const now = Date.now();
   const liveCoordinators = [...coordinators.values()]
     .filter((coordinator) => isCoordinatorLive(coordinator, now))
@@ -478,11 +596,54 @@ app.get('/coordinator', (req, res) => {
 });
 
 // GET /peers - Lista coordinadores vigentes excepto el solicitante, sin mutar el directorio.
+// Taller 7: GET /status - estado de este auth dentro del grupo replicado. Lo responde
+// cualquier rol (líder, réplica o candidato) y nunca redirige: sirve para la demo y el debug.
+app.get('/status', (req, res) => {
+  const state = clusterState.describe();
+  return res.json({
+    authId: CLUSTER.authId,
+    role: state.role,
+    term: state.term,
+    publicUrl: CLUSTER.publicUrl,
+    peerUrl: CLUSTER.peerUrl,
+    leaderUrl: state.leaderUrl,
+    knownPeers: clusterState.listPeers().map((peer) => peer.authId),
+    connectedPeers: authMesh.connectedPeers(),
+    lastAppliedSeq: state.lastAppliedSeq,
+    users: replicationLog.usersCount()
+  });
+});
+
+// Rol de un peer visto desde aquí: lo que dijo el mesh o, si aún no se sabe, se deduce del líder conocido
+function peerRole(peer, leaderId) {
+  if (!peer.connected) return 'unreachable';
+  if (leaderId) return peer.authId === leaderId ? 'leader' : 'replica';
+  return peer.role;
+}
+
+// GET /peers tiene dos usos, según el parámetro (SPEC.md §13.5):
+//   GET /peers                     → Taller 7: los auth-services conocidos por este nodo
+//   GET /peers?coordinatorId=<ID>  → Taller 6: el directorio de coordinadores (así lo llaman siempre)
 app.get('/peers', (req, res) => {
   const coordinatorId = req.query.coordinatorId;
-  if (coordinatorId !== undefined &&
-      (typeof coordinatorId !== 'string' ||
-       !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId))) {
+  if (coordinatorId === undefined) {
+    const { leaderId } = clusterState.describe();
+    return res.json({
+      peers: clusterState.listPeers().map((peer) => ({
+        authId: peer.authId,
+        publicUrl: peer.publicUrl,
+        peerUrl: peer.peerUrl,
+        role: peerRole(peer, leaderId),
+        connected: peer.connected
+      }))
+    });
+  }
+
+  // Con coordinatorId es el directorio de coordinadores (Taller 6) → solo el líder
+  if (!clusterState.isLeader()) return rejectNotLeader(res, 'directory');
+
+  if (typeof coordinatorId !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(coordinatorId)) {
     return sendError(
       res,
       400,
@@ -495,7 +656,7 @@ app.get('/peers', (req, res) => {
   const now = Date.now();
   const peers = [...coordinators.values()]
     .filter((coordinator) =>
-      (!coordinatorId || coordinator.coordinatorId !== coordinatorId) &&
+      coordinator.coordinatorId !== coordinatorId &&
       isCoordinatorLive(coordinator, now)
     )
     .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
@@ -510,7 +671,7 @@ app.get('/peers', (req, res) => {
 });
 
 // GET /coordinators - Inspección de estado sin modificar el directorio.
-app.get('/coordinators', (req, res) => {
+app.get('/coordinators', requireLeaderDirectory, (req, res) => {
   const now = Date.now();
   const directory = [...coordinators.values()]
     .sort((a, b) => a.coordinatorId < b.coordinatorId ? -1 : a.coordinatorId > b.coordinatorId ? 1 : 0)
@@ -532,6 +693,9 @@ app.get('/coordinators', (req, res) => {
 // POST /register - Registro de nuevo usuario
 app.post('/register', async (req, res, next) => {
   try {
+    // Taller 7: registrar es una escritura → solo el líder
+    if (!clusterState.isLeader()) return rejectNotLeader(res);
+
     // Validación de existencia y tipo de body
     if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
       return sendError(
@@ -586,11 +750,18 @@ app.post('/register', async (req, res, next) => {
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
     try {
-      const info = stmts.insertLocal.run(cleanUsername, passwordHash);
-      console.log(`Usuario registrado: ${cleanUsername}`);
+      // Taller 7: la fila en users y su entrada en replication_log van en una sola transacción
+      let newUserId;
+      const entry = replicationLog.recordLocalWrite('register', () => {
+        const info = stmts.insertLocal.run(cleanUsername, passwordHash);
+        newUserId = Number(info.lastInsertRowid);
+        return replicationLog.dataForUser('register', newUserId);
+      });
+      console.log(`Usuario registrado: ${cleanUsername} (seq ${entry.seq})`);
+      if (!(await confirmReplicated(res, entry))) return;
 
       return sendOk(res, 201, 'Usuario registrado exitosamente.', {
-        userId: String(info.lastInsertRowid),
+        userId: String(newUserId),
         username: cleanUsername
       });
     } catch (dbErr) {
@@ -647,6 +818,10 @@ app.post('/login', async (req, res, next) => {
         'Envía JSON con header Content-Type: application/json y los campos username y password.'
       );
     }
+
+    // Taller 7: login es una lectura. Una réplica responde solo si no está muy atrasada
+    // (READ_LAG_TOLERANCE); si no, redirige al líder. Así una réplica atrasada nunca emite tokens.
+    if (!clusterState.canServeReads()) return rejectNotLeader(res, 'read');
 
     const cleanUsername = normalizeUsername(username);
     const user = stmts.findByUsername.get(cleanUsername);
@@ -770,12 +945,21 @@ app.post('/auth/google', async (req, res, next) => {
     const email = payload.email;
     const pictureUrl = safePictureUrl(payload.picture);
 
+    // Taller 7: buscar al usuario es una lectura; una réplica muy atrasada podría no conocerlo
+    // y pedirle un username a alguien que ya tiene cuenta → mejor redirigir al líder.
+    if (!clusterState.canServeReads()) return rejectNotLeader(res, 'read');
+
     // 2. ¿Ya existe este usuario de Google?
     const existing = stmts.findByGoogle.get(googleSub);
     if (existing) {
-      // La foto puede cambiar en Google: se actualiza en cada ingreso
-      if (pictureUrl !== existing.picture_url) {
-        stmts.updatePicture.run(pictureUrl, existing.id);
+      // La foto puede cambiar en Google: se actualiza en cada ingreso.
+      // Taller 7: actualizarla es una escritura; una réplica deja la foto como está
+      // (el líder la actualizará en un próximo ingreso) y responde el login igual.
+      if (pictureUrl !== existing.picture_url && clusterState.isLeader()) {
+        replicationLog.recordLocalWrite('update_picture', () => {
+          stmts.updatePicture.run(pictureUrl, existing.id);
+          return replicationLog.dataForUser('update_picture', existing.id);
+        });
         existing.picture_url = pictureUrl;
       }
       const token = emitToken(existing);
@@ -811,6 +995,10 @@ app.post('/auth/google', async (req, res, next) => {
       );
     }
 
+    // Taller 7: crear el usuario es una escritura → solo el líder.
+    // (La réplica sí pudo responder antes username_required o el formato inválido.)
+    if (!clusterState.isLeader()) return rejectNotLeader(res);
+
     // 4. Crear el usuario de Google (el UNIQUE de username aplica a ambos providers)
     const cleanUsername = normalizeUsername(username);
     if (stmts.findByUsername.get(cleanUsername)) {
@@ -825,8 +1013,14 @@ app.post('/auth/google', async (req, res, next) => {
       );
     }
     try {
-      const info = stmts.insertGoogle.run(cleanUsername, googleSub, email, pictureUrl);
-      const newUser = { id: String(info.lastInsertRowid), username: cleanUsername, provider: 'google', picture_url: pictureUrl };
+      let newUserId;
+      const entry = replicationLog.recordLocalWrite('register_google', () => {
+        const info = stmts.insertGoogle.run(cleanUsername, googleSub, email, pictureUrl);
+        newUserId = Number(info.lastInsertRowid);
+        return replicationLog.dataForUser('register_google', newUserId);
+      });
+      if (!(await confirmReplicated(res, entry))) return;
+      const newUser = { id: String(newUserId), username: cleanUsername, provider: 'google', picture_url: pictureUrl };
       const token = emitToken(newUser);
       console.log(`Usuario de Google registrado: ${cleanUsername}`);
       return sendOk(res, 200, 'Cuenta creada con Google e inicio de sesión exitoso.', {
@@ -871,7 +1065,7 @@ app.use((req, res) => {
     404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas disponibles: GET /health, POST /heartbeat, GET /coordinator, GET /peers, GET /coordinators, POST /register, POST /login, POST /auth/google.'
+    'Rutas disponibles: GET /health, GET /status, GET /peers, GET /peers?coordinatorId=<ID>, POST /heartbeat, GET /coordinator, GET /coordinators, POST /register, POST /login, POST /auth/google.'
   );
 });
 
@@ -902,14 +1096,37 @@ app.use((err, req, res, next) => {
 // 6. Arranque del servidor HTTP
 const server = app.listen(PORT, () => {
   startCoordinatorCleanup();
-  console.log(`Auth Service escuchando en http://localhost:${PORT}`);
+  console.log(`Auth Service ${CLUSTER.authId} escuchando en http://localhost:${PORT} (pública: ${CLUSTER.publicUrl}).`);
+  console.log(`  Mesh de auth: ${CLUSTER.peerUrl} · peers: ${CLUSTER.peers.map((peer) => peer.authId).join(', ') || 'ninguno (auth único)'} · base: ${DB_PATH}`);
+  const state = clusterState.describe();
+  console.log(`  Rol: ${state.role} · term: ${state.term} · líder: ${state.leaderId || 'desconocido'} · usuarios: ${replicationLog.usersCount()} · lastAppliedSeq: ${state.lastAppliedSeq}`);
 });
 server.once('close', stopCoordinatorCleanup);
+
+if (CLUSTER.peers.length > 0) {
+  authMesh.start()
+    .then(() => {
+      replication.start();
+      election.start();
+      console.log(`  Mesh de auth escuchando en el puerto ${CLUSTER.peerPort} (ruta /auth-mesh).`);
+    })
+    .catch((err) => {
+      console.error(`Error crítico: no se pudo abrir el mesh de auth en el puerto ${CLUSTER.peerPort} (${err.code || err.message}).`);
+      process.exit(1);
+    });
+  server.once('close', () => {
+    election.stop();
+    replication.stop();
+    void authMesh.stop();
+  });
+}
 
 module.exports = {
   app,
   server,
   db,
+  clusterState,
+  authMesh,
   coordinators,
   isCoordinatorLive,
   pruneExpiredCoordinators
