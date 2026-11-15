@@ -1,4 +1,4 @@
-param(
+﻿param(
   [ValidateRange(1, 65535)] [int]$Count = 3,
   [int]$HttpPortStart = 5001,
   [int]$PeerPortStart = 6001,
@@ -7,7 +7,8 @@ param(
   [string[]]$CoordinatorIds = @(),
   [string[]]$CoordinatorNames = @(),
   [string[]]$PublicUrls = @(),
-  [string[]]$PeerUrls = @()
+  [string[]]$PeerUrls = @(),
+  [string]$AuthUrls = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -118,14 +119,46 @@ if (Test-Path -LiteralPath $envPath) {
   }
 }
 
-$authUrl = if (-not [string]::IsNullOrWhiteSpace($env:AUTH_URL)) {
+$defaultAuthUrls = 'http://localhost:4001,http://localhost:4002,http://localhost:4003'
+
+$resolvedAuthUrlsInput = if (-not [string]::IsNullOrWhiteSpace($AuthUrls)) {
+  $AuthUrls
+} elseif (-not [string]::IsNullOrWhiteSpace($env:AUTH_URLS)) {
+  $env:AUTH_URLS
+} elseif ($dotenvValues.ContainsKey('AUTH_URLS') -and
+    -not [string]::IsNullOrWhiteSpace($dotenvValues['AUTH_URLS'])) {
+  $dotenvValues['AUTH_URLS']
+} elseif (-not [string]::IsNullOrWhiteSpace($env:AUTH_URL)) {
   $env:AUTH_URL
 } elseif ($dotenvValues.ContainsKey('AUTH_URL') -and
     -not [string]::IsNullOrWhiteSpace($dotenvValues['AUTH_URL'])) {
   $dotenvValues['AUTH_URL']
 } else {
-  'http://localhost:4000'
+  $defaultAuthUrls
 }
+
+$authUrlItems = @(($resolvedAuthUrlsInput -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+if ($authUrlItems.Count -eq 0) {
+  throw 'AUTH_URLS debe contener al menos una URL HTTP(S).'
+}
+
+$normalizedAuthUrlItems = @()
+foreach ($u in $authUrlItems) {
+  try {
+    $uri = [Uri]$u
+    if ($uri.Scheme -notin @('http', 'https') -or
+        [string]::IsNullOrWhiteSpace($uri.Host) -or
+        $uri.UserInfo -or $uri.Query -or $uri.Fragment) {
+      throw "Cada URL en AUTH_URLS debe ser una URL HTTP(S) sin credenciales, query ni fragmento: $u"
+    }
+    $norm = $uri.GetLeftPart([System.UriPartial]::Authority) + $uri.PathAndQuery.TrimEnd('/')
+    $normalizedAuthUrlItems += $norm
+  } catch {
+    throw "AUTH_URLS contiene una URL inválida ($u): $($_.Exception.Message)"
+  }
+}
+$normalizedAuthUrls = $normalizedAuthUrlItems -join ','
+$authUrl = $normalizedAuthUrlItems[0]
 
 $sharedSecret = if (-not [string]::IsNullOrWhiteSpace($env:COORDINATOR_SHARED_SECRET)) {
   $env:COORDINATOR_SHARED_SECRET
@@ -136,17 +169,6 @@ $sharedSecret = if (-not [string]::IsNullOrWhiteSpace($env:COORDINATOR_SHARED_SE
 }
 if ([string]::IsNullOrWhiteSpace($sharedSecret)) {
   throw 'Configura COORDINATOR_SHARED_SECRET en coordinator/.env o en el entorno antes de iniciar las instancias.'
-}
-
-try {
-  $authUri = [Uri]$authUrl
-  if ($authUri.Scheme -notin @('http', 'https') -or
-      [string]::IsNullOrWhiteSpace($authUri.Host) -or
-      $authUri.UserInfo -or $authUri.Query -or $authUri.Fragment) {
-    throw 'AUTH_URL debe ser una URL HTTP(S) sin credenciales, query ni fragmento.'
-  }
-} catch {
-  throw 'AUTH_URL no es una URL HTTP(S) válida.'
 }
 
 foreach ($port in $allPorts) {
@@ -169,6 +191,7 @@ $instanceEnvironment = @(
   'PUBLIC_URL',
   'PEER_URL',
   'AUTH_URL',
+  'AUTH_URLS',
   'COORDINATOR_SHARED_SECRET'
 )
 $originalEnvironment = @{}
@@ -217,22 +240,21 @@ try {
     } else {
       "ws://localhost:$peerPort"
     }
-    $normalizedAuthUrl = $authUri.GetLeftPart([System.UriPartial]::Authority) + $authUri.PathAndQuery.TrimEnd('/')
-
     $env:PORT = [string]$httpPort
     $env:COORDINATOR_ID = $coordinatorId
     $env:COORDINATOR_NAME = $coordinatorName
     $env:PEER_PORT = [string]$peerPort
     $env:PUBLIC_URL = $publicUrl
     $env:PEER_URL = $peerUrl
-    $env:AUTH_URL = $normalizedAuthUrl
+    $env:AUTH_URL = $authUrl
+    $env:AUTH_URLS = $normalizedAuthUrls
     if ($null -ne $sharedSecret) {
       $env:COORDINATOR_SHARED_SECRET = $sharedSecret
     } else {
       Remove-Item Env:COORDINATOR_SHARED_SECRET -ErrorAction SilentlyContinue
     }
 
-    Write-Host "Iniciando '$coordinatorName' (${coordinatorId}): PORT=$httpPort, PEER_PORT=$peerPort, AUTH_URL=$authUrl"
+    Write-Host "Iniciando '$coordinatorName' (${coordinatorId}): PORT=$httpPort, PEER_PORT=$peerPort, AUTH_URLS=$normalizedAuthUrls"
     $process = Start-Process `
       -FilePath $nodePath `
       -ArgumentList @('index.js') `
@@ -270,7 +292,8 @@ try {
       PeerPort = $peerPort
       PublicUrl = $publicUrl
       PeerUrl = $peerUrl
-      AuthUrl = $normalizedAuthUrl
+      AuthUrl = $authUrl
+      AuthUrls = $normalizedAuthUrls
       HasSharedSecret = $null -ne $sharedSecret
     })
   }

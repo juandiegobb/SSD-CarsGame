@@ -7,7 +7,8 @@ param(
   [string[]]$CoordinatorIds = @(),
   [string[]]$CoordinatorNames = @(),
   [string[]]$PublicUrls = @(),
-  [string[]]$PeerUrls = @()
+  [string[]]$PeerUrls = @(),
+  [string]$AuthUrls = ''
 )
 
 Write-Warning 'start-three.ps1 se conserva por compatibilidad; usa start-coordinators.ps1.'
@@ -20,4 +21,5 @@ Write-Warning 'start-three.ps1 se conserva por compatibilidad; usa start-coordin
   -CoordinatorIds $CoordinatorIds `
   -CoordinatorNames $CoordinatorNames `
   -PublicUrls $PublicUrls `
-  -PeerUrls $PeerUrls
+  -PeerUrls $PeerUrls `
+  -AuthUrls $AuthUrls
