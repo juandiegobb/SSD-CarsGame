@@ -52,6 +52,11 @@ function normalizeCoordinatorUrl(value) {
         if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
             return null;
         }
+        // Si la página se sirve por HTTPS (ej. ngrok), forzar WSS para evitar que el navegador
+        // bloquee peticiones por contenido mixto (Mixed Content).
+        if (typeof window !== "undefined" && window.location && window.location.protocol === "https:" && url.protocol === "ws:") {
+            url.protocol = "wss:";
+        }
         return `${url.protocol}//${url.host}`;
     } catch {
         return null;
@@ -93,7 +98,8 @@ function coordinatorPlayersUrl(value) {
         if (!["ws:", "wss:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
             return null;
         }
-        url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+        const isSecure = url.protocol === "wss:" || (typeof window !== "undefined" && window.location && window.location.protocol === "https:");
+        url.protocol = isSecure ? "https:" : "http:";
         url.pathname = "/players";
         return url.toString();
     } catch {
