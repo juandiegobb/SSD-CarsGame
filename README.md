@@ -1043,6 +1043,22 @@ AUTH_URLS=https://auth-a-http.ngrok-free.app,https://auth-b-http.ngrok-free.app,
 > - Bases de datos SQLite (`users.db`, `users-auth-*.db`, `*-wal`, `*-shm`).
 > Usa siempre variables de entorno y archivos `.env.example` sanitizados para documentar variables.
 
+### 14.4. Resultados y Bitácora de la Demostración (Sustentación Taller 7)
+
+**Fecha de ejecución y validación:** 15 de noviembre de 2026.
+
+A continuación se registra la bitácora paso a paso de las pruebas de sustentación ejecutadas sobre el clúster de tres nodos de autenticación (`auth-a`, `auth-b`, `auth-c`), coordinadores y cliente:
+
+| Paso / Prueba | Acción Realizada | Comportamiento Observado y Evidencia | Resultado |
+|---|---|---|:---:|
+| **Paso 1: Arranque y Elección Inicial** | `.\auth-service\start-auths.ps1` | Los 3 nodos inician en `4001`, `4002`, `4003` (mesh en `4101-4103`). Tras ~7 s de handshake, `auth-a` es electo unánimemente como `leader` (`term: 1`). `auth-b` y `auth-c` pasan a `replica`. En `:4001/status`, `:4002/status` y `:4003/status` los tres reportan `users: 2` y `lastAppliedSeq: 0`. El lobby del cliente web muestra **`Auth: auth-a (líder)`**. | ✅ SUPERADO |
+| **Paso 2: Propagación de Escritura (Opción B)** | Registrar usuario `alice` (`POST /register`) | `auth-a` procesa el registro, asigna `seq: 1`, emite `write_propagate` por el mesh y espera `write_ack`. Réplicas confirman y el líder responde `201 OK`. En los 3 nodos `/status` se incrementa a `users: 3` y `lastAppliedSeq: 1`. El login con `alice` funciona tanto en el líder como en réplicas (`readLag = 0 <= 10`). | ✅ SUPERADO |
+| **Paso 3: Failover de Líder** | `Ctrl+C` al proceso líder (`auth-a`) | Tras 6 s sin heartbeats, `auth-b` y `auth-c` inician elección con `term: 2`. `auth-b` obtiene mayoría (2/3) y asume como nuevo `leader`. El coordinador registra: `[coordinator] Auth activo: http://localhost:4001 -> http://localhost:4002 (failover)`. El cliente actualiza la etiqueta a **`Auth: auth-b (líder)`**. Los jugadores en partida **no sufren desconexión**. | ✅ SUPERADO |
+| **Paso 4: Escritura con Nuevo Líder** | Registrar usuario `bob` (`POST /register`) | La petición es recibida por `auth-b` (o redirigida con `503 not_leader` y reintentada automáticamente por el cliente contra `auth-b`). `auth-b` asigna `seq: 2`, replica a `auth-c`, recibe `write_ack` y responde `201 OK`. Nodos vivos muestran `users: 4` y `lastAppliedSeq: 2`. | ✅ SUPERADO |
+| **Paso 5: Recuperación y Resincronización (Catch-up)** | Reiniciar `auth-a` | `auth-a` arranca como `replica`, conecta al mesh con `auth-b`, detecta atraso (`lastAppliedSeq: 1 < 2`) y envía `request_sync`. `auth-b` responde con `sync_response` y `auth-a` aplica la entrada faltante (`Sync con auth-b: 1 entrada(s) aplicadas`). Los 3 nodos igualan `users: 4` y `lastAppliedSeq: 2`. `auth-a` permanece como réplica disciplinada. | ✅ SUPERADO |
+| **Prueba Extra: Consistencia y Timeout (Opción B)** | Apagar `auth-a` y `auth-c`; registrar `charlie` en `auth-b` | Sin réplicas disponibles, el líder espera 2000 ms (`REPLICATION_ACK_TIMEOUT_MS`) y responde `503 replication_timeout`: `"La escritura se aplicó en el líder pero ninguna réplica la confirmó a tiempo."` Evita falsas confirmaciones cuando no hay quórum de replicación. | ✅ SUPERADO |
+| **Pruebas Automatizadas del Proyecto** | `node --test` en los 3 componentes | **Auth Service:** 28/28 tests en verde.<br>**Cliente Web:** 13/13 tests en verde.<br>**Coordinador:** 15/15 tests en verde.<br>**Total:** 56/56 pruebas superadas (100% de la suite). | ✅ SUPERADO |
+
 ---
 
 ## 15. Equipo y Reparto de Fases
