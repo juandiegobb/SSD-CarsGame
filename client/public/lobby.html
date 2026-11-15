@@ -17,10 +17,14 @@
         .color-picker input { width: 44px; height: 32px; padding: 2px; cursor: pointer; }
         .track-heading { display: flex; align-items: center; gap: 10px; }
         .track-heading::before { content: "🏁"; font-size: 22px; }
-        /* Taller 6: a qué coordinador del mesh está conectado este cliente */
-        .server-info { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
-        .server-info span { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; font-size: 14px; }
-        .server-info strong { font-family: ui-monospace, monospace; }
+        /* Taller 6 y 7: barra de telemetría y estado de nodo activo (Coordinador, Tick y Auth) */
+        .server-info { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 16px; align-items: center; }
+        .server-info span { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; background: rgba(18, 24, 38, 0.85); border: 1px solid rgba(255, 207, 63, 0.28); border-radius: 999px; font-size: 13px; font-weight: 500; color: #e2e8f0; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2); }
+        .server-info strong { font-family: ui-monospace, monospace; color: #ffcf3f; font-weight: 700; }
+        .server-info .auth-badge { border-color: rgba(74, 222, 128, 0.35); }
+        .server-info .auth-badge strong { color: #4ade80; }
+        .server-info .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px #4ade80; display: inline-block; animation: pulse-dot-anim 2s infinite; }
+        @keyframes pulse-dot-anim { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.3); opacity: 0.6; } }
         .coordinator-tag { display: block; color: var(--muted); font-size: 12px; }
         /* Foto de perfil de Google (o inicial para cuentas locales) */
         .avatar { width: 28px; height: 28px; flex: none; border-radius: 50%; object-fit: cover; display: inline-flex; align-items: center; justify-content: center; background: #2f6fed; color: #fff; font-weight: 700; font-size: 13px; text-transform: uppercase; }
@@ -43,9 +47,9 @@
 
         <p id="connection-status" class="status" aria-live="polite">Conectando con el coordinador…</p>
         <p id="server-info" class="server-info" hidden>
-            <span>Coordinador: <strong id="coordinator-name">—</strong></span>
-            <span>Tick: <strong id="tick-rate">—</strong></span>
-            <span>Auth: <strong id="auth-name">—</strong></span>
+            <span class="coord-badge"><i class="pulse-dot" aria-hidden="true"></i> Coordinador: <strong id="coordinator-name">—</strong></span>
+            <span class="tick-badge">⚡ Tick: <strong id="tick-rate">—</strong></span>
+            <span class="auth-badge">🛡️ Auth: <strong id="auth-name">—</strong></span>
         </p>
         <div id="notice" class="message" role="alert" aria-live="assertive"></div>
         <section id="rooms-lobby" aria-labelledby="rooms-heading">
