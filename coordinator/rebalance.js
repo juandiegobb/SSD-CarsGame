@@ -9,14 +9,19 @@ function planRebalance(players, coordinatorIds, inFlight = new Map()) {
     const assignedCoordinator = inFlight.get(userId) || player.home;
     if (!counts.has(assignedCoordinator)) continue;
     counts.set(assignedCoordinator, counts.get(assignedCoordinator) + 1);
-    // Solo rebalancear jugadores que están en el lobby (no interrumpir a los que ya están en una sala/carrera)
-    if (!inFlight.has(userId) && !player.roomId && candidates.has(player.home)) {
+    if (!inFlight.has(userId) && candidates.has(player.home)) {
       candidates.get(player.home).push(userId);
     }
   }
 
-  for (const coordinatorPlayers of candidates.values()) {
-    coordinatorPlayers.sort();
+  for (const [coordId, userIds] of candidates) {
+    // Prioriza migrar primero a jugadores en el lobby; si todos están en sala, permite migrar jugadores en sala conservando su estado
+    userIds.sort((a, b) => {
+      const aInRoom = Boolean(players.get(a)?.roomId);
+      const bInRoom = Boolean(players.get(b)?.roomId);
+      if (aInRoom !== bInRoom) return aInRoom ? 1 : -1;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
   }
 
   const plan = [];
