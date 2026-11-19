@@ -19,7 +19,7 @@ if (cliArg) {
       DB_PATH: 'users-auth-a.db',
       PUBLIC_URL: 'https://elinor-globose-jonah.ngrok-free.dev',
       PEER_URL: 'ws://localhost:4101',
-      AUTH_PEERS: 'auth-b=ws://localhost:4102|https://defiance-decree-otter.ngrok-free.dev'
+      AUTH_PEERS: 'auth-b=ws://localhost:4102|https://defiance-decree-otter.ngrok-free.dev,auth-c=ws://localhost:4103|http://localhost:4003'
     },
     '4002': {
       AUTH_ID: 'auth-b',
@@ -28,7 +28,7 @@ if (cliArg) {
       DB_PATH: 'users-auth-b.db',
       PUBLIC_URL: 'https://defiance-decree-otter.ngrok-free.dev',
       PEER_URL: 'ws://localhost:4102',
-      AUTH_PEERS: 'auth-a=ws://localhost:4101|https://elinor-globose-jonah.ngrok-free.dev'
+      AUTH_PEERS: 'auth-a=ws://localhost:4101|https://elinor-globose-jonah.ngrok-free.dev,auth-c=ws://localhost:4103|http://localhost:4003'
     },
     '4003': {
       AUTH_ID: 'auth-c',
