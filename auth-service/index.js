@@ -7,6 +7,65 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { timingSafeEqual } = require('node:crypto');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+
+// Atajo por argumento CLI: node index.js 4001 (o npm start 4001 / npm run start:4001)
+const cliArg = (process.argv[2] || '').trim().toLowerCase();
+if (cliArg) {
+  const nodeProfiles = {
+    '4001': {
+      AUTH_ID: 'auth-a',
+      PORT: '4001',
+      PEER_PORT: '4101',
+      DB_PATH: 'users-auth-a.db',
+      PUBLIC_URL: 'https://elinor-globose-jonah.ngrok-free.dev',
+      PEER_URL: 'ws://localhost:4101',
+      AUTH_PEERS: 'auth-b=ws://localhost:4102|https://defiance-decree-otter.ngrok-free.dev'
+    },
+    '4002': {
+      AUTH_ID: 'auth-b',
+      PORT: '4002',
+      PEER_PORT: '4102',
+      DB_PATH: 'users-auth-b.db',
+      PUBLIC_URL: 'https://defiance-decree-otter.ngrok-free.dev',
+      PEER_URL: 'ws://localhost:4102',
+      AUTH_PEERS: 'auth-a=ws://localhost:4101|https://elinor-globose-jonah.ngrok-free.dev'
+    },
+    '4003': {
+      AUTH_ID: 'auth-c',
+      PORT: '4003',
+      PEER_PORT: '4103',
+      DB_PATH: 'users-auth-c.db',
+      PUBLIC_URL: 'http://localhost:4003',
+      PEER_URL: 'ws://localhost:4103',
+      AUTH_PEERS: 'auth-a=ws://localhost:4101|https://elinor-globose-jonah.ngrok-free.dev,auth-b=ws://localhost:4102|https://defiance-decree-otter.ngrok-free.dev'
+    }
+  };
+
+  const alias = cliArg === 'a' || cliArg === 'auth-a' ? '4001'
+    : cliArg === 'b' || cliArg === 'auth-b' ? '4002'
+    : cliArg === 'c' || cliArg === 'auth-c' ? '4003'
+    : cliArg;
+
+  const profile = nodeProfiles[alias];
+  if (profile) {
+    process.env.AUTH_ID = profile.AUTH_ID;
+    process.env.PORT = profile.PORT;
+    process.env.PEER_PORT = profile.PEER_PORT;
+    process.env.DB_PATH = profile.DB_PATH;
+    if (!process.env.PUBLIC_URL || process.env.PUBLIC_URL.includes('localhost:4000')) {
+      process.env.PUBLIC_URL = profile.PUBLIC_URL;
+    }
+    if (!process.env.PEER_URL) {
+      process.env.PEER_URL = profile.PEER_URL;
+    }
+    if (!process.env.AUTH_PEERS) {
+      process.env.AUTH_PEERS = profile.AUTH_PEERS;
+    }
+  } else if (!isNaN(Number(cliArg))) {
+    process.env.PORT = cliArg;
+  }
+}
+
 const dotenv = require('dotenv');
 const express = require('express');
 const cors = require('cors');

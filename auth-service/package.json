@@ -5,6 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "start:4001": "node index.js 4001",
+    "start:4002": "node index.js 4002",
+    "start:4003": "node index.js 4003",
     "dev": "node --watch index.js",
     "test": "node --test"
   },
