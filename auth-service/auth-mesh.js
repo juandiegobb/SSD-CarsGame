@@ -120,11 +120,6 @@ function createAuthMesh({
       ws.close(4003, 'auth desconocido');
       return null;
     }
-    // Regla del ID menor: solo aceptamos conexiones ENTRANTES de auths con ID menor al nuestro
-    if (direction === 'in' && !(authId < config.authId)) {
-      ws.close(4004, 'debe conectar el ID menor');
-      return null;
-    }
     const existing = sockets.get(authId);
     if (existing && existing !== ws && existing.readyState === WebSocket.OPEN) {
       ws.close(4009, 'conexión duplicada');
@@ -242,7 +237,7 @@ function createAuthMesh({
 
     const initPeersAndPings = () => {
       for (const peer of knownPeers.values()) {
-        if (config.authId < peer.authId) connectTo(peer);
+        connectTo(peer);
       }
       pingTimer = setInterval(() => {
         const now = Date.now();
