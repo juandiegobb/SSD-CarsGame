@@ -13,7 +13,7 @@ const cliArg = (process.argv[2] || '').trim().toLowerCase();
 if (cliArg) {
   const authA_Http = (process.env.AUTH_A_URL || 'https://elinor-globose-jonah.ngrok-free.dev').replace(/\/+$/, '');
   const authB_Http = (process.env.AUTH_B_URL || 'https://defiance-decree-otter.ngrok-free.dev').replace(/\/+$/, '');
-  const authC_Http = (process.env.AUTH_C_URL || 'http://localhost:4003').replace(/\/+$/, '');
+  const authC_Http = (process.env.AUTH_C_URL || 'https://prenebular-nontortuously-jordan.ngrok-free.dev').replace(/\/+$/, '');
 
   const toPeerWs = (httpUrl, fallbackLocalWs) => {
     if (httpUrl.startsWith('https://')) return httpUrl.replace(/^https:/, 'wss:');
