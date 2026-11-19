@@ -137,19 +137,19 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     max-width: 1240px;
     margin: 0 auto;
     min-height: 100vh;
-    padding: clamp(24px, 4vh, 48px) 24px;
+    padding: clamp(16px, 3vh, 36px) 24px;
     display: grid;
     grid-template-columns: 1.15fr 0.95fr;
     align-items: center;
-    gap: clamp(28px, 4vw, 64px);
+    gap: clamp(20px, 3vw, 48px);
 }
 
-/* Columna Izquierda: Animación 3D limpia (sin bordes, sin textos, fondo transparente) */
+/* Columna Izquierda: Animación 3D limpia */
 .login-left-showcase {
     position: relative;
     width: 100%;
     height: 100%;
-    min-height: 540px;
+    min-height: clamp(380px, 50vh, 520px);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -164,7 +164,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     position: relative;
     width: 100%;
     height: 100%;
-    min-height: 540px;
+    min-height: clamp(380px, 50vh, 520px);
     background: transparent !important;
     border: none !important;
     box-shadow: none !important;
@@ -193,7 +193,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 .login-right-auth {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
     width: 100%;
     max-width: 480px;
     justify-self: end;
@@ -228,22 +228,27 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
     box-shadow: 0 28px 70px rgba(0, 0, 0, 0.65), inset 0 0 35px rgba(0, 240, 255, 0.08);
 }
 
-@media (max-width: 960px) {
+/* En pantallas compactas o con DevTools/inspección abierta: el formulario de login se prioriza centrado y no se baja */
+@media (max-width: 1040px) {
     .auth-page .login-wrapper.login-split-layout {
-        grid-template-columns: 1fr;
-        max-width: 520px;
-        gap: 20px;
-        padding-top: 20px;
-        padding-bottom: 40px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        max-width: 480px;
+        min-height: 100vh;
+        gap: 16px;
+        padding: 24px 16px 40px;
     }
     .login-left-showcase,
     .showcase-canvas-container {
-        min-height: 280px;
-        height: 280px;
+        display: none !important; /* Oculta el contenedor 3D para evitar empujar el login hacia abajo */
     }
     .login-right-auth {
         justify-self: center;
+        width: 100%;
         max-width: 100%;
+        margin: 0 auto;
     }
 }
 
