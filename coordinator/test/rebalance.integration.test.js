@@ -164,6 +164,7 @@ function spawnCoordinator({ id, port, peerPort, authUrl, publicUrl }) {
       PUBLIC_URL: publicUrl,
       PEER_URL: `ws://127.0.0.1:${peerPort}`,
       AUTH_URL: authUrl,
+      AUTH_URLS: authUrl,
       CLIENT_ORIGINS: 'http://localhost:3000'
     },
     stdio: ['ignore', 'pipe', 'pipe']
