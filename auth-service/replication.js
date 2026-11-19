@@ -96,6 +96,11 @@ function createReplication({
       waiter.timer = setTimeout(() => {
         const index = waiters.indexOf(waiter);
         if (index >= 0) waiters.splice(index, 1);
+        if (config.allowSingleNodeLeadership) {
+          log.warn(`[replication] Ninguna réplica confirmó seq ${seq} en ${timeoutMs} ms; se confirma localmente (quórum adaptativo).`);
+          resolve(true);
+          return;
+        }
         log.error(`[replication] Ninguna réplica confirmó seq ${seq} en ${timeoutMs} ms.`);
         resolve(false);
       }, timeoutMs);

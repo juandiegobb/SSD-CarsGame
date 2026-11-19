@@ -332,3 +332,23 @@ test('líder solitario confirma escrituras localmente sin esperar réplicas cuan
   const ok = await rep.waitForAck(1, 50);
   assert.equal(ok, true);
 });
+
+test('candidato sin respuestas en electionTimeout asume liderazgo si allowSingleNodeLeadership es true', async () => {
+  const bus = cluster3();
+  await settle();
+  const c = bus.nodes.get('auth-c');
+  const election = createElection({
+    config: { authId: 'auth-c', clusterSize: 3, majority: 2, allowSingleNodeLeadership: true },
+    mesh: c.mesh,
+    clusterState: c.clusterState,
+    replicationLog: c.replicationLog,
+    log: silent,
+    leaderTimeoutMs: 0,
+    jitterMs: 0,
+    electionTimeoutMs: 10
+  });
+  c.clusterState.becomeCandidate();
+  await new Promise((r) => setTimeout(r, 20));
+  election.tick();
+  assert.equal(c.clusterState.getRole(), 'leader');
+});

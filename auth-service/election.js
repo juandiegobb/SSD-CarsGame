@@ -87,6 +87,10 @@ function createElection({
     if (role === 'leader') return;
     if (role === 'candidate') {
       if (now - electionStartedAt >= electionTimeoutMs + jitter) {
+        if (config.allowSingleNodeLeadership) {
+          log.info(`[election] Ningún peer respondió con votos en el term ${myTerm()}: ${me()} asume liderazgo.`);
+          return becomeLeader(myTerm());
+        }
         log.info(`[election] Sin mayoría en el term ${myTerm()}: nueva elección.`);
         startElection();
       }
