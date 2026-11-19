@@ -104,7 +104,8 @@ function loadClusterConfig(env = process.env) {
     clusterSize: peers.length + 1,
     majority: Math.floor((peers.length + 1) / 2) + 1,
     readLagTolerance: parsePositiveInt('READ_LAG_TOLERANCE', env.READ_LAG_TOLERANCE, 10),
-    replicationAckTimeoutMs: parsePositiveInt('REPLICATION_ACK_TIMEOUT_MS', env.REPLICATION_ACK_TIMEOUT_MS, 2000)
+    replicationAckTimeoutMs: parsePositiveInt('REPLICATION_ACK_TIMEOUT_MS', env.REPLICATION_ACK_TIMEOUT_MS, 2000),
+    allowSingleNodeLeadership: env.ALLOW_SINGLE_NODE_LEADERSHIP !== 'false'
   };
 }
 

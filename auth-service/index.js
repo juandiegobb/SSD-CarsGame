@@ -11,33 +11,45 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 // Atajo por argumento CLI: node index.js 4001 (o npm start 4001 / npm run start:4001)
 const cliArg = (process.argv[2] || '').trim().toLowerCase();
 if (cliArg) {
+  const authA_Http = (process.env.AUTH_A_URL || 'https://elinor-globose-jonah.ngrok-free.dev').replace(/\/+$/, '');
+  const authB_Http = (process.env.AUTH_B_URL || 'https://defiance-decree-otter.ngrok-free.dev').replace(/\/+$/, '');
+  const authC_Http = (process.env.AUTH_C_URL || 'http://localhost:4003').replace(/\/+$/, '');
+
+  const toPeerWs = (httpUrl, fallbackLocalWs) => {
+    if (httpUrl.startsWith('https://')) return httpUrl.replace(/^https:/, 'wss:');
+    if (httpUrl.startsWith('http://') && !httpUrl.includes('localhost') && !httpUrl.includes('127.0.0.1')) {
+      return httpUrl.replace(/^http:/, 'ws:');
+    }
+    return fallbackLocalWs;
+  };
+
   const nodeProfiles = {
     '4001': {
       AUTH_ID: 'auth-a',
       PORT: '4001',
       PEER_PORT: '4101',
       DB_PATH: 'users-auth-a.db',
-      PUBLIC_URL: 'https://elinor-globose-jonah.ngrok-free.dev',
-      PEER_URL: 'ws://localhost:4101',
-      AUTH_PEERS: 'auth-b=ws://localhost:4102|https://defiance-decree-otter.ngrok-free.dev,auth-c=ws://localhost:4103|http://localhost:4003'
+      PUBLIC_URL: authA_Http,
+      PEER_URL: toPeerWs(authA_Http, 'ws://localhost:4101'),
+      AUTH_PEERS: `auth-b=${toPeerWs(authB_Http, 'ws://localhost:4102')}|${authB_Http},auth-c=${toPeerWs(authC_Http, 'ws://localhost:4103')}|${authC_Http}`
     },
     '4002': {
       AUTH_ID: 'auth-b',
       PORT: '4002',
       PEER_PORT: '4102',
       DB_PATH: 'users-auth-b.db',
-      PUBLIC_URL: 'https://defiance-decree-otter.ngrok-free.dev',
-      PEER_URL: 'ws://localhost:4102',
-      AUTH_PEERS: 'auth-a=ws://localhost:4101|https://elinor-globose-jonah.ngrok-free.dev,auth-c=ws://localhost:4103|http://localhost:4003'
+      PUBLIC_URL: authB_Http,
+      PEER_URL: toPeerWs(authB_Http, 'ws://localhost:4102'),
+      AUTH_PEERS: `auth-a=${toPeerWs(authA_Http, 'ws://localhost:4101')}|${authA_Http},auth-c=${toPeerWs(authC_Http, 'ws://localhost:4103')}|${authC_Http}`
     },
     '4003': {
       AUTH_ID: 'auth-c',
       PORT: '4003',
       PEER_PORT: '4103',
       DB_PATH: 'users-auth-c.db',
-      PUBLIC_URL: 'http://localhost:4003',
-      PEER_URL: 'ws://localhost:4103',
-      AUTH_PEERS: 'auth-a=ws://localhost:4101|https://elinor-globose-jonah.ngrok-free.dev,auth-b=ws://localhost:4102|https://defiance-decree-otter.ngrok-free.dev'
+      PUBLIC_URL: authC_Http,
+      PEER_URL: toPeerWs(authC_Http, 'ws://localhost:4103'),
+      AUTH_PEERS: `auth-a=${toPeerWs(authA_Http, 'ws://localhost:4101')}|${authA_Http},auth-b=${toPeerWs(authB_Http, 'ws://localhost:4102')}|${authB_Http}`
     }
   };
 
@@ -1163,7 +1175,7 @@ const server = app.listen(PORT, () => {
 server.once('close', stopCoordinatorCleanup);
 
 if (CLUSTER.peers.length > 0) {
-  authMesh.start()
+  authMesh.start(server)
     .then(() => {
       replication.start();
       election.start();

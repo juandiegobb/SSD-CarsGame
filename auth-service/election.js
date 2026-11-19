@@ -56,6 +56,15 @@ function createElection({
   function startElection() {
     const reachable = mesh.connectedPeers().length + 1;
     if (reachable < config.majority) {
+      if (reachable === 1 && config.allowSingleNodeLeadership) {
+        warnedNoQuorum = false;
+        const term = clusterState.becomeCandidate();
+        votes = new Set([me()]);
+        electionStartedAt = Date.now();
+        jitter = random() * jitterMs;
+        log.info(`[election] ${me()} es el único auth visible: asume liderazgo en el term ${term}.`);
+        return becomeLeader(term);
+      }
       if (!warnedNoQuorum) {
         log.info(`[election] Sin líder, pero solo veo ${reachable} de ${config.clusterSize} auths: no me postulo (hace falta mayoría ${config.majority}).`);
         warnedNoQuorum = true;

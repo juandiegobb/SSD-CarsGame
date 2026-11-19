@@ -87,6 +87,9 @@ function createReplication({
   // Devuelve true si alguien confirmó, false si no.
   function waitForAck(seq, timeoutMs = config.replicationAckTimeoutMs) {
     if (config.clusterSize === 1) return Promise.resolve(true); // auth solo: no hay a quién esperar
+    if (config.allowSingleNodeLeadership && mesh.connectedPeers().length === 0) {
+      return Promise.resolve(true); // líder solitario: confirma localmente sin esperar réplicas desconectadas
+    }
     if (Math.max(0, ...ackedSeq.values()) >= seq) return Promise.resolve(true);
     return new Promise((resolve) => {
       const waiter = { seq, resolve };

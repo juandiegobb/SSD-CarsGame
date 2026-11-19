@@ -296,3 +296,39 @@ test('auth aislado no se postula (no infla su term)', async () => {
   assert.equal(c.clusterState.getTerm(), before);
   assert.equal(c.clusterState.getRole(), 'replica');
 });
+
+test('auth aislado asume liderazgo cuando allowSingleNodeLeadership es true', async () => {
+  const bus = cluster3();
+  await settle();
+  const c = bus.nodes.get('auth-c');
+  bus.isolate('auth-c');
+  const election = createElection({
+    config: { authId: 'auth-c', clusterSize: 3, majority: 2, allowSingleNodeLeadership: true },
+    mesh: c.mesh,
+    clusterState: c.clusterState,
+    replicationLog: c.replicationLog,
+    log: silent,
+    leaderTimeoutMs: 0,
+    jitterMs: 0
+  });
+  election.tick();
+  assert.equal(c.clusterState.getRole(), 'leader');
+  assert.equal(c.clusterState.getTerm(), 1);
+});
+
+test('líder solitario confirma escrituras localmente sin esperar réplicas cuando allowSingleNodeLeadership es true', async () => {
+  const bus = cluster3();
+  await settle();
+  const a = bus.nodes.get('auth-a');
+  bus.isolate('auth-b');
+  bus.isolate('auth-c');
+  const rep = createReplication({
+    config: { authId: 'auth-a', clusterSize: 3, majority: 2, replicationAckTimeoutMs: 100, allowSingleNodeLeadership: true },
+    mesh: a.mesh,
+    clusterState: a.clusterState,
+    replicationLog: a.replicationLog,
+    log: silent
+  });
+  const ok = await rep.waitForAck(1, 50);
+  assert.equal(ok, true);
+});

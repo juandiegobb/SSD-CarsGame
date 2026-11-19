@@ -65,6 +65,9 @@ function createAuthMesh({
   const downListeners = [];
   const reconnectTimers = new Map();
   let server = null;
+  let httpWss = null;
+  let upgradeListener = null;
+  let attachedHttpServer = null;
   let pingTimer = null;
   let stopped = true;
 
@@ -205,9 +208,60 @@ function createAuthMesh({
     reconnectTimers.set(authId, timer);
   }
 
-  function start() {
+  function start(httpServer = null) {
     if (!stopped) return Promise.resolve();
     stopped = false;
+    attachedHttpServer = httpServer || config?.httpServer || null;
+    if (attachedHttpServer) {
+      httpWss = new WebSocketServer({
+        noServer: true,
+        maxPayload: MAX_MESSAGE_BYTES
+      });
+      httpWss.on('connection', (ws) => attach(ws, 'in'));
+      upgradeListener = (req, socket, head) => {
+        let pathname = '';
+        try {
+          pathname = new URL(req.url, 'http://localhost').pathname;
+        } catch {
+          socket.destroy();
+          return;
+        }
+        if (pathname !== MESH_PATH) return;
+        if (!secretsMatch(req.headers[SECRET_HEADER], secret)) {
+          log.error('[auth-mesh] Conexión rechazada por upgrade: secreto del mesh incorrecto.');
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
+        httpWss.handleUpgrade(req, socket, head, (ws) => {
+          attach(ws, 'in');
+        });
+      };
+      attachedHttpServer.on('upgrade', upgradeListener);
+    }
+
+    const initPeersAndPings = () => {
+      for (const peer of knownPeers.values()) {
+        if (config.authId < peer.authId) connectTo(peer);
+      }
+      pingTimer = setInterval(() => {
+        const now = Date.now();
+        for (const ws of sockets.values()) {
+          if (now - ws.lastPongAt > deadAfterMs) {
+            ws.terminate();
+            continue;
+          }
+          if (ws.readyState === WebSocket.OPEN) ws.ping();
+        }
+      }, pingIntervalMs);
+      pingTimer.unref?.();
+    };
+
+    if (config.peerPort && config.peerPort === config.port && attachedHttpServer) {
+      initPeersAndPings();
+      return Promise.resolve();
+    }
+
     return new Promise((resolve, reject) => {
       server = new WebSocketServer({
         port: config.peerPort,
@@ -224,21 +278,7 @@ function createAuthMesh({
       server.once('listening', () => {
         server.off('error', reject);
         server.on('error', (err) => log.error(`[auth-mesh] Error del servidor del mesh: ${err.message}`));
-        // Inicia las conexiones hacia los peers con ID MAYOR que el nuestro
-        for (const peer of knownPeers.values()) {
-          if (config.authId < peer.authId) connectTo(peer);
-        }
-        pingTimer = setInterval(() => {
-          const now = Date.now();
-          for (const ws of sockets.values()) {
-            if (now - ws.lastPongAt > deadAfterMs) {
-              ws.terminate(); // no contesta: se da por caído
-              continue;
-            }
-            if (ws.readyState === WebSocket.OPEN) ws.ping();
-          }
-        }, pingIntervalMs);
-        pingTimer.unref?.();
+        initPeersAndPings();
         resolve();
       });
     });
@@ -251,6 +291,16 @@ function createAuthMesh({
     reconnectTimers.clear();
     for (const ws of sockets.values()) ws.terminate();
     sockets.clear();
+    if (attachedHttpServer && upgradeListener) {
+      attachedHttpServer.off('upgrade', upgradeListener);
+      upgradeListener = null;
+    }
+    if (httpWss) {
+      for (const client of httpWss.clients) client.terminate();
+      httpWss.close();
+      httpWss = null;
+    }
+    attachedHttpServer = null;
     return new Promise((resolve) => {
       if (!server) return resolve();
       for (const client of server.clients) client.terminate();
