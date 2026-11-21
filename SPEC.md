@@ -1087,3 +1087,138 @@ Compatibilidad: si solo existe `AUTH_URL`, se trata como una lista de un element
 5. Levantar el auth muerto → pide sync, iguala `users` y `lastAppliedSeq` y queda como `replica`.
 
 Durante toda la demo, un cliente jugando **no se desconecta**.
+
+---
+
+## 14. Proyecto final — integración, carreras, observabilidad (2.2) y espectadores (2.5)
+
+Esta sección es la **fuente de verdad del examen final**. Todo lo de las secciones 1–13 se mantiene. Si algo de aquí choca con el PDF del examen, gana el PDF.
+
+### 14.1 Qué se entrega y cómo se califica
+
+En orden de importancia (PDF):
+
+1. **Integración limpia** de los Talleres 4–7 en un solo repositorio que funciona **en local y por túnel (ngrok)**.
+2. **Dos tracks**: **principal 2.2 Auditoría y observabilidad** (demo completa, casos límite) y **secundario 2.5 Spectator mode** (demo completa, atajos documentados).
+3. **Gameplay profundo**: carreras de carros con estado autoritativo replicado entre coordinadores y condición de victoria.
+4. **README técnico profesional**: arquitectura, decisiones, modos de falla conocidos y cómo levantar todo; un ingeniero externo lo entiende en menos de 10 minutos.
+
+Entrega: link al repo con **commits incrementales**, README completo y el sistema corriendo por ngrok en la sustentación.
+
+### 14.2 Restricciones que se mantienen
+
+| Restricción | Cómo se cumple |
+|---|---|
+| Servidor autoritativo | El cliente solo manda `intent` (teclas); posiciones, choques, vueltas, objetos y resultados los calcula el coordinador |
+| Sin Redis, Kafka ni librerías de consenso | Solo `express`, `ws`, `node:sqlite`, `jsonwebtoken`, `bcryptjs`, `google-auth-library`. La elección de líder es propia (§13.9) |
+| JWT con secreto compartido, sin sesiones en el auth | Igual que los Talleres 4–7 |
+| Sin proxy reverso | El cliente y los coordinadores tienen la lista de servidores (`AUTH_URLS`, directorio de coordinadores) |
+| Sin sticky sessions | Cualquier auth atiende cualquier petición; el balanceo de coordinadores lo hace el directorio |
+
+Cualquier excepción se justifica en el README.
+
+### 14.3 Integración (local y túnel)
+
+- **Arranque único:** `start-all.ps1` en la raíz levanta 3 auths (4001–4003, mesh 4101–4103), 3 coordinadores y el cliente (3000), cada uno en su ventana con su nombre en el título.
+- **Dos modos, sin tocar código:**
+  - **Local:** URLs `http://localhost:…` (valores por defecto).
+  - **Túnel:** las URLs `https://…` de ngrok van en los `.env` (`AUTH_A_URL`…`AUTH_C_URL`, `AUTH_URLS`, `PUBLIC_URL` de cada coordinador). El mesh del auth puede ir por el mismo túnel HTTP con `wss://` (`/auth-mesh` también se atiende en el puerto HTTP).
+- **Ninguna URL de ngrok ni secreto escrito en el código.** Plantillas en `.env.example` y `ngrok.example.yml`; los archivos reales no se suben.
+- **Pruebas:** `npm test` en la raíz corre las pruebas de los 3 servicios. Las pruebas no leen los `.env` locales (no deben fallar por la configuración de quien las corre).
+- **Quórum adaptativo apagado** (`ALLOW_SINGLE_NODE_LEADERSHIP=false`, §13.9).
+
+### 14.4 Gameplay: carreras de carros
+
+El juego es una **carrera de 4 niveles** (§12) con salas, semáforo y 3 vueltas por nivel. El proyecto final agrega:
+
+| Mecánica | Regla | Quién la calcula |
+|---|---|---|
+| **Choques entre carros** | Dos carros **no se superponen**: si el movimiento de un carro lo deja a menos de `2 × PLAYER_RADIUS` de otro de la misma sala, se separa por la línea entre centros y se frena la componente del movimiento que va hacia el otro | El coordinador **home** del jugador mueve a sus jugadores locales y choca contra **todos** los de la sala (locales y remotos, con la última posición replicada). Solo corrige a sus locales |
+| **Checkpoints** | Cada pista tiene N checkpoints en orden (`shared/tracks.js`). Una vuelta cuenta solo si se pasó por todos en orden y luego por la meta. Ir y venir sobre la meta no suma | Coordinador **propietario** de la sala |
+| **Orden de llegada y tiempos** | Al completar las 3 vueltas, el jugador entra en `race.results` con su posición y su tiempo del nivel. Al final del nivel 4 hay clasificación general (menor tiempo total) y un ganador | Coordinador propietario |
+| **Objetos en la pista** | **Turbo** (más velocidad por 2 s) y **aceite** (menos velocidad por 1,5 s). Aparecen en puntos de la pista, se recogen al pasar encima y reaparecen a los 5 s | Propietario: aparición y recogida. Home del jugador: aplica el efecto a la velocidad |
+| **Fin de partida** | `phase: "finished"` con podio (1.º, 2.º, 3.º) y tiempos | Propietario |
+
+**Estado nuevo en `race`** (viaja en `state`, `race_update` y `room_replicate op: "race"`):
+```json
+{
+  "level": 2, "phase": "racing", "laps": { "7": 1 },
+  "checkpoints": { "7": 3 },
+  "results": [ { "userId": "7", "position": 1, "timeMs": 41230 } ],
+  "items": [ { "id": "t1", "type": "turbo", "x": 400, "y": 90, "active": true } ],
+  "effects": { "7": { "type": "turbo", "until": 1732140000000 } },
+  "standings": [ { "userId": "7", "totalMs": 120400 } ]
+}
+```
+El cliente **solo dibuja** este estado: carros, objetos, podio y tiempos. No calcula choques, vueltas ni efectos.
+
+### 14.5 Track principal 2.2 — Auditoría y observabilidad
+
+#### 14.5.1 `GET /metrics` (auth y coordinador)
+
+JSON, ventana deslizante de los **últimos 60 s**. Mínimo:
+
+| Campo | Auth | Coordinador | Cómo se mide |
+|---|---|---|---|
+| `http.rps` | ✅ | ✅ | Peticiones de los últimos 60 s / 60 |
+| `http.latencyMs.p50/p95/p99` | ✅ | ✅ | Middleware que toma el tiempo de cada petición; percentiles sobre las muestras de la ventana |
+| `ws.connections` | mesh | jugadores + espectadores + mesh | Conexiones abiertas ahora |
+| `tick.configuredHz` / `tick.effectiveHz` | — | ✅ | Ticks reales del último segundo (no los 20 configurados) |
+| `players.local` / `players.remote` | — | ✅ | Del `Map` de jugadores |
+| `spectators` | — | ✅ | §14.6 |
+| `replication.intentLagMs.p50/p95` | — | ✅ | Ver §14.5.2 |
+| `replication.clockOffsetMs` | — | ✅ por peer | Ver §14.5.2 |
+| `cluster.role/term/lastAppliedSeq/leaderSeq/lag` | ✅ | — | De `cluster-state.js` |
+
+#### 14.5.2 Latencia de replicación y relojes desfasados
+
+- Cada `intent_replicate` lleva `sentAt` (reloj del emisor).
+- Los coordinadores estiman el **desfase de reloj** con cada par del mesh mediante ping/pong cada 5 s (estilo NTP): `t0` envío, `t1` llegada al par, `t2` respuesta, `t3` llegada de vuelta → `offset = ((t1 − t0) + (t2 − t3)) / 2`, `rtt = (t3 − t0) − (t2 − t1)`. Se guarda la estimación con menor `rtt` reciente.
+- **Latencia corregida** = `recibidoEn − (sentAt − offsetDelEmisor)`. Si sale negativa (estimación mala), se descarta la muestra.
+- **[Decisión]** No se sincronizan los relojes de las máquinas; se estima el desfase. En el README se documenta el error esperado (≈ rtt/2).
+
+#### 14.5.3 Trazas (`traceId`)
+
+- Cada petición HTTP lleva el header `x-trace-id`. Si no viene, el primer servicio genera uno (`crypto.randomUUID()`) y lo devuelve en la respuesta.
+- Los mensajes WS importantes llevan `traceId`: `write_propagate`, `write_ack`, `request_sync`, `intent_replicate` (muestreado), `room_replicate`, `election`/`vote`/`new_leader`.
+- Cada servicio guarda en memoria las **últimas 500 entradas** `{ traceId, service, id, event, at, durationMs, detail }` y las expone en `GET /traces/:traceId`.
+- Los logs de consola incluyen el `traceId`.
+- Ejemplo de traza de un registro: cliente → auth réplica (`503 not_leader`) → auth líder (`register`) → `write_propagate` → `write_ack` (réplica) → `201`.
+
+#### 14.5.4 Dashboard
+
+- `dashboard.html`, servido por el cliente (puerto 3000). Consulta cada **1 s** los `/metrics` de los 3 auths (`AUTH_URLS`) y de los coordinadores vivos (lista sacada de `/coordinators` del líder).
+- Muestra: quién es el líder y su `term`, el estado de cada auth (caído / réplica / líder, lag), jugadores por coordinador, tick efectivo, latencia de replicación entre coordinadores y peticiones/s.
+- Buscador de `traceId`: junta `/traces/:id` de todos los servicios y los ordena en una línea de tiempo.
+- **Demo obligatoria:** con el dashboard abierto, matar un coordinador o registrar un usuario y ver el cambio en **menos de 3 s**; mostrar la traza de una petición atravesando el sistema.
+
+### 14.6 Track secundario 2.5 — Spectator mode
+
+- **Endpoint:** el coordinador acepta WebSocket en `/spectate` **sin ticket ni JWT**. El espectador elige sala con `{ type: "watch", roomId }` (o ve el lobby si no elige).
+- **Recibe** `room_list`, `state` y `race_update` igual que un jugador de esa sala.
+- **No puede jugar:** cualquier `intent`, `extras_update`, `create_room`, `join_room` u otro mensaje que no sea `watch`/`ping` se **ignora sin cerrar la conexión ni caer el proceso** (se cuenta en `/metrics` como mensaje rechazado).
+- **Separado de los jugadores:** los espectadores viven en otro `Map`; **no cuentan en `connectedPlayers`** del heartbeat, así que no afectan el balanceo. `/status` y `/metrics` los reportan aparte.
+- **[Decisión] Costo de los espectadores:** el `state` de cada sala se serializa **una vez por tick** y el mismo texto se envía a jugadores y espectadores. Límite `MAX_SPECTATORS` por coordinador (por defecto 50); al pasarlo, el coordinador responde `{ type: "spectate_full" }` y cierra. Atajo documentado: no hay coordinador dedicado a espectadores.
+- **Cliente:** `spectator.html`, sin login y sin controles, con el aviso **"MODO ESPECTADOR"**.
+- **Demo obligatoria:** una pestaña espectador y otra jugador; el espectador ve moverse al jugador; un `intent` forzado desde DevTools del espectador no tiene efecto.
+
+### 14.7 README técnico
+
+Secciones mínimas: resumen y diagrama de arquitectura; componentes y puertos; cómo levantar (local y túnel); decisiones de diseño con su porqué (single-writer, opción B, tolerancia 10, quórum, juego autoritativo, choques en el home, desfase de relojes, costo de espectadores); los dos tracks; el juego; **modos de falla conocidos** (qué pasa si cae cada pieza, qué se pierde, qué no está resuelto); pruebas; equipo.
+
+### 14.8 Reparto y orden de trabajo (por turnos)
+
+| Turno | Persona | Parte | Explica en la sustentación |
+|---|---|---|---|
+| 1 | Paula | Integración (§14.3) y juego (§14.4): choques, checkpoints, resultados, objetos, podio | Arranque local/túnel y el juego autoritativo |
+| 2 | Camilo | 2.2 parte A: `/metrics` en auth y coordinador, desfase de relojes y latencia de replicación (§14.5.1–14.5.2) | Qué se mide y cómo se corrige el desfase |
+| 3 | Mery | 2.2 parte B: `traceId`, `/traces` y dashboard (§14.5.3–14.5.4) | Dashboard en vivo y una traza completa |
+| 4 | Juan Diego | 2.5 espectadores (§14.6) y README final (§14.7) | Espectadores y arquitectura general |
+
+### 14.9 Guion de sustentación
+
+1. **Demo del sistema (5 min):** login con Google, autoridad del servidor (un intent falso no teletransporta), caída de un coordinador (los jugadores siguen) y caída del auth líder (elección), con el dashboard abierto.
+2. **Gameplay (3 min):** una carrera con choques, objetos, checkpoints y podio, y qué estado se replica.
+3. **Cada integrante explica su pieza (5 min)** (§14.8).
+4. **Preguntas técnicas (4 min).**
+5. **Cierre (3 min):** qué haríamos distinto y qué limitaciones quedaron.
