@@ -142,6 +142,8 @@
                 { x: 400, y: 210 }
             ]),
             roadWidth: ROAD_WIDTH,
+            // 0,85 queda cerca de otra parte del circuito: se usa 0,8
+            checkpoints: [0.15, 0.4, 0.6, 0.8],
             obstacles: [
                 { x: 270, y: 310, shape: "rock" },
                 { x: 520, y: 310, shape: "rock" },
@@ -199,6 +201,36 @@
         };
     }
 
+    // Checkpoints (SPEC §14.4): puntos del circuito por los que hay que pasar EN ORDEN para
+    // que la vuelta cuente al cruzar la meta. Se dan como fracción del largo de la pista
+    // (0 = meta). Están lejos del cruce del "ocho" para que no se activen desde el otro tramo.
+    const DEFAULT_CHECKPOINTS = [0.15, 0.4, 0.6, 0.85];
+
+    function trackLength(track, width = WORLD_WIDTH, height = WORLD_HEIGHT) {
+        const points = scaledPoints(track, width, height);
+        return points.reduce((total, point, index) => {
+            const next = points[(index + 1) % points.length];
+            return total + Math.hypot(next.x - point.x, next.y - point.y);
+        }, 0);
+    }
+
+    function checkpointPositions(track, width = WORLD_WIDTH, height = WORLD_HEIGHT) {
+        const length = trackLength(track, width, height);
+        return (track.checkpoints || DEFAULT_CHECKPOINTS).map((fraction) => {
+            const point = pointAtDistance(track, fraction * length, width, height);
+            return { x: point.x, y: point.y, tangent: point.tangent };
+        });
+    }
+
+    // ¿El carro (x, y) está pasando por el checkpoint número index? Cuenta todo el ancho
+    // de la pista en ese punto.
+    function reachesCheckpoint(track, index, x, y, width = WORLD_WIDTH, height = WORLD_HEIGHT) {
+        const checkpoint = checkpointPositions(track, width, height)[index];
+        if (!checkpoint) return false;
+        const scale = Math.min(width / WORLD_WIDTH, height / WORLD_HEIGHT);
+        return Math.hypot(x - checkpoint.x, y - checkpoint.y) <= track.roadWidth * scale / 2;
+    }
+
     function distanceToTrack(track, x, y, width = WORLD_WIDTH, height = WORLD_HEIGHT) {
         const points = scaledPoints(track, width, height);
         let minimum = Infinity;
@@ -252,6 +284,9 @@
         spawnAtStart,
         distanceToTrack,
         isOnRoad,
-        crossesFinish
+        crossesFinish,
+        trackLength,
+        checkpointPositions,
+        reachesCheckpoint
     };
 });

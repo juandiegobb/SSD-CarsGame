@@ -59,3 +59,29 @@ test('cada circuito registra una sola meta por vuelta completa', () => {
     assert.equal(crossings, 1, track.name);
   }
 });
+
+test('cada pista tiene sus checkpoints sobre el asfalto y lejos de los otros tramos', () => {
+  for (const track of RaceTracks.tracks) {
+    const gates = RaceTracks.checkpointPositions(track);
+    assert.ok(gates.length >= 3, `${track.name}: tiene ${gates.length} checkpoints`);
+    const length = RaceTracks.trackLength(track);
+    gates.forEach((gate, index) => {
+      assert.ok(RaceTracks.isOnRoad(track, gate.x, gate.y), `${track.name}: checkpoint ${index + 1} fuera de la pista`);
+      assert.equal(RaceTracks.reachesCheckpoint(track, index, gate.x, gate.y), true);
+      // Un carro en otro tramo del circuito (más de 250 px de recorrido antes o después)
+      // no puede activar este checkpoint: por ejemplo, en el cruce del "ocho".
+      const fraction = (track.checkpoints || [0.15, 0.4, 0.6, 0.85])[index];
+      for (let distance = 0; distance < length; distance += 5) {
+        let along = Math.abs(distance - fraction * length);
+        along = Math.min(along, length - along);
+        if (along < 250) continue;
+        const point = RaceTracks.pointAtDistance(track, distance);
+        assert.equal(
+          RaceTracks.reachesCheckpoint(track, index, point.x, point.y),
+          false,
+          `${track.name}: el checkpoint ${index + 1} se activa desde otro tramo (recorrido ${distance})`
+        );
+      }
+    });
+  }
+});

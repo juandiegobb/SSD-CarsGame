@@ -635,7 +635,8 @@ function raceSnapshot(room) {
     phase: race.phase || 'waiting',
     countdownStartedAt: Number.isFinite(race.countdownStartedAt) ? race.countdownStartedAt : null,
     serverTime: Number.isFinite(race.serverTime) ? race.serverTime : Date.now(),
-    laps: { ...(race.laps || {}) }
+    laps: { ...(race.laps || {}) },
+    checkpoints: { ...(race.checkpoints || {}) }
   };
 }
 
@@ -696,6 +697,7 @@ function startRaceLevel(room, level, now) {
     countdownStartedAt: now,
     serverTime: now,
     laps: {},
+    checkpoints: {},
     previousPositions: new Map()
   };
   const track = RaceTracks.tracks[level - 1];
@@ -708,6 +710,7 @@ function startRaceLevel(room, level, now) {
     player.y = position.y;
     player.intent = { x: 0, y: 0 };
     race.laps[userId] = 0;
+    race.checkpoints[userId] = 0;
     race.previousPositions.set(userId, position);
   }
 
@@ -786,6 +789,15 @@ function applyRemoteRoom(peerId, message) {
         completedLaps < 0 || completedLaps > RACE_LAPS_PER_LEVEL) return;
     laps[memberId] = completedLaps;
   }
+  // checkpoints es opcional (coordinadores de versiones anteriores no lo mandan)
+  const checkpointCount = RaceTracks.checkpointPositions(RaceTracks.tracks[raceData.level - 1]).length;
+  const checkpointData = raceData.checkpoints || {};
+  if (typeof checkpointData !== 'object' || Array.isArray(checkpointData)) return;
+  const checkpoints = {};
+  for (const [memberId, passed] of Object.entries(checkpointData)) {
+    if (!members.has(memberId) || !Number.isInteger(passed) || passed < 0 || passed > checkpointCount) return;
+    checkpoints[memberId] = passed;
+  }
 
   const previousRoom = rooms.get(message.roomId);
   const preserveLocalRace = previousRoom?.owner === COORDINATOR_ID && !['start', 'race'].includes(message.op);
@@ -850,6 +862,11 @@ function applyRemoteRoom(peerId, message) {
           .filter((memberId) => Object.hasOwn(previousRoom.race?.laps || {}, memberId))
           .map((memberId) => [memberId, previousRoom.race.laps[memberId]]))
         : laps,
+      checkpoints: preserveLocalRace
+        ? Object.fromEntries([...members]
+          .filter((memberId) => Object.hasOwn(previousRoom.race?.checkpoints || {}, memberId))
+          .map((memberId) => [memberId, previousRoom.race.checkpoints[memberId]]))
+        : checkpoints,
       previousPositions: preserveLocalRace
         ? previousRoom.race.previousPositions
         : new Map()
@@ -952,6 +969,7 @@ function removeRemotePlayer(peerId, userId, notify = true) {
   if (room) {
     room.members.delete(userId);
     delete room.race?.laps?.[userId];
+    delete room.race?.checkpoints?.[userId];
     room.race?.previousPositions?.delete(userId);
     if (room.members.size === 0) rooms.delete(room.roomId);
     else {
@@ -1171,9 +1189,23 @@ function tick() {
 
     if (room?.owner === COORDINATOR_ID && room.status === 'playing' && race.phase === 'racing') {
       const before = race.previousPositions.get(userId) || previousPosition;
+      const raceTrack = RaceTracks.tracks[race.level - 1];
+      if (!race.checkpoints) race.checkpoints = {};
+      const passed = race.checkpoints[userId] || 0;
+      // Checkpoints en orden: solo cuenta el siguiente que le falta
       if ((race.laps[userId] || 0) < RACE_LAPS_PER_LEVEL &&
-          RaceTracks.crossesFinish(RaceTracks.tracks[race.level - 1], before, p, WORLD_WIDTH, WORLD_HEIGHT)) {
+          RaceTracks.reachesCheckpoint(raceTrack, passed, p.x, p.y, WORLD_WIDTH, WORLD_HEIGHT)) {
+        race.checkpoints[userId] = passed + 1;
+        changedRaceRooms.add(room);
+      }
+      // La vuelta cuenta solo si pasó por TODOS los checkpoints antes de cruzar la meta.
+      // Ir y venir sobre la meta (o arrancar detrás de ella) no suma.
+      const allCheckpoints = RaceTracks.checkpointPositions(raceTrack, WORLD_WIDTH, WORLD_HEIGHT).length;
+      if ((race.laps[userId] || 0) < RACE_LAPS_PER_LEVEL &&
+          (race.checkpoints[userId] || 0) >= allCheckpoints &&
+          RaceTracks.crossesFinish(raceTrack, before, p, WORLD_WIDTH, WORLD_HEIGHT)) {
         race.laps[userId] = (race.laps[userId] || 0) + 1;
+        race.checkpoints[userId] = 0;
         if (race.laps[userId] === RACE_LAPS_PER_LEVEL) p.intent = { x: 0, y: 0 };
         changedRaceRooms.add(room);
       }
@@ -1852,7 +1884,7 @@ wss.on('connection', (ws, payload) => {
           members: new Set([userId]),
           status: 'waiting',
           owner: COORDINATOR_ID,
-          race: { level: 1, phase: 'waiting', countdownStartedAt: null, serverTime: Date.now(), laps: {}, previousPositions: new Map() }
+          race: { level: 1, phase: 'waiting', countdownStartedAt: null, serverTime: Date.now(), laps: {}, checkpoints: {}, previousPositions: new Map() }
         };
         rooms.set(roomId, room);
         entry.roomId = roomId;
@@ -1908,6 +1940,7 @@ wss.on('connection', (ws, payload) => {
         const roomId = room.roomId;
         room.members.delete(userId);
         delete room.race?.laps?.[userId];
+        delete room.race?.checkpoints?.[userId];
         room.race?.previousPositions?.delete(userId);
         entry.roomId = null;
         if (room.members.size === 0) rooms.delete(roomId);
@@ -2158,6 +2191,7 @@ wss.on('connection', (ws, payload) => {
         if (room) {
           room.members.delete(userId);
           delete room.race?.laps?.[userId];
+          delete room.race?.checkpoints?.[userId];
           room.race?.previousPositions?.delete(userId);
           if (room.members.size === 0) rooms.delete(roomId);
           else {

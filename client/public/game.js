@@ -220,6 +220,37 @@
             ctx.stroke();
             ctx.setLineDash([]);
             drawTrackDecorations(track, points, scale);
+            drawCheckpoints(track, scale);
+        }
+
+        // Checkpoints (SPEC §14.4): el servidor dice cuántos pasó cada jugador en esta vuelta.
+        // Se dibuja una franja por checkpoint: el siguiente que me falta brilla, los que ya
+        // pasé quedan en verde. El cliente no decide nada: solo muestra lo que manda el servidor.
+        function drawCheckpoints(track, scale) {
+            if (!RaceTracks.checkpointPositions || raceState.phase === "waiting") return;
+            const gates = RaceTracks.checkpointPositions(track, world.width, world.height);
+            const passed = Number(raceState.checkpoints?.[meId]) || 0;
+            const half = track.roadWidth * scale / 2;
+            gates.forEach((gate, index) => {
+                const normal = { x: -gate.tangent.y, y: gate.tangent.x };
+                const done = index < passed;
+                const next = index === passed;
+                ctx.save();
+                ctx.strokeStyle = done ? "rgba(53, 230, 75, .85)" : next ? "#ffe32b" : "rgba(255, 255, 255, .35)";
+                ctx.lineWidth = (next ? 6 : 4) * scale;
+                ctx.setLineDash(next ? [] : [8 * scale, 6 * scale]);
+                ctx.beginPath();
+                ctx.moveTo(gate.x - normal.x * half, gate.y - normal.y * half);
+                ctx.lineTo(gate.x + normal.x * half, gate.y + normal.y * half);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                ctx.fillStyle = ctx.strokeStyle;
+                ctx.font = `700 ${Math.round(12 * scale)}px system-ui, sans-serif`;
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText(String(index + 1), gate.x + normal.x * (half + 12 * scale), gate.y + normal.y * (half + 12 * scale));
+                ctx.restore();
+            });
         }
 
         function drawTrackDecorations(track, points, scale) {
@@ -518,7 +549,8 @@
                 phase: next.phase,
                 countdownStartedAt: Number.isFinite(next.countdownStartedAt) ? next.countdownStartedAt : null,
                 serverTime: Number.isFinite(next.serverTime) ? next.serverTime : Date.now(),
-                laps: next.laps && typeof next.laps === "object" ? next.laps : {}
+                laps: next.laps && typeof next.laps === "object" ? next.laps : {},
+                checkpoints: next.checkpoints && typeof next.checkpoints === "object" ? next.checkpoints : {}
             };
             updateDisplayWorld();
             if (changed && (raceState.phase !== "racing" || previousPhase === "countdown")) {
