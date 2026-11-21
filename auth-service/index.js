@@ -8,72 +8,15 @@ const path = require('node:path');
 const { timingSafeEqual } = require('node:crypto');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-// Atajo por argumento CLI: node index.js 4001 (o npm start 4001 / npm run start:4001)
-const cliArg = (process.argv[2] || '').trim().toLowerCase();
+// Atajo por argumento CLI: node index.js 4001 (o a / auth-a, npm run start:4001).
+// Las URLs de cada auth salen del .env (AUTH_A_URL, AUTH_B_URL, AUTH_C_URL); ver node-profiles.js.
+const { resolveNodeProfile } = require('./node-profiles');
+const cliArg = (process.argv[2] || '').trim();
 if (cliArg) {
-  const authA_Http = (process.env.AUTH_A_URL || 'https://elinor-globose-jonah.ngrok-free.dev').replace(/\/+$/, '');
-  const authB_Http = (process.env.AUTH_B_URL || 'https://defiance-decree-otter.ngrok-free.dev').replace(/\/+$/, '');
-  const authC_Http = (process.env.AUTH_C_URL || 'https://prenebular-nontortuously-jordan.ngrok-free.dev').replace(/\/+$/, '');
-
-  const toPeerWs = (httpUrl, fallbackLocalWs) => {
-    if (httpUrl.startsWith('https://')) return httpUrl.replace(/^https:/, 'wss:');
-    if (httpUrl.startsWith('http://') && !httpUrl.includes('localhost') && !httpUrl.includes('127.0.0.1')) {
-      return httpUrl.replace(/^http:/, 'ws:');
-    }
-    return fallbackLocalWs;
-  };
-
-  const nodeProfiles = {
-    '4001': {
-      AUTH_ID: 'auth-a',
-      PORT: '4001',
-      PEER_PORT: '4101',
-      DB_PATH: 'users-auth-a.db',
-      PUBLIC_URL: authA_Http,
-      PEER_URL: toPeerWs(authA_Http, 'ws://localhost:4101'),
-      AUTH_PEERS: `auth-b=${toPeerWs(authB_Http, 'ws://localhost:4102')}|${authB_Http},auth-c=${toPeerWs(authC_Http, 'ws://localhost:4103')}|${authC_Http}`
-    },
-    '4002': {
-      AUTH_ID: 'auth-b',
-      PORT: '4002',
-      PEER_PORT: '4102',
-      DB_PATH: 'users-auth-b.db',
-      PUBLIC_URL: authB_Http,
-      PEER_URL: toPeerWs(authB_Http, 'ws://localhost:4102'),
-      AUTH_PEERS: `auth-a=${toPeerWs(authA_Http, 'ws://localhost:4101')}|${authA_Http},auth-c=${toPeerWs(authC_Http, 'ws://localhost:4103')}|${authC_Http}`
-    },
-    '4003': {
-      AUTH_ID: 'auth-c',
-      PORT: '4003',
-      PEER_PORT: '4103',
-      DB_PATH: 'users-auth-c.db',
-      PUBLIC_URL: authC_Http,
-      PEER_URL: toPeerWs(authC_Http, 'ws://localhost:4103'),
-      AUTH_PEERS: `auth-a=${toPeerWs(authA_Http, 'ws://localhost:4101')}|${authA_Http},auth-b=${toPeerWs(authB_Http, 'ws://localhost:4102')}|${authB_Http}`
-    }
-  };
-
-  const alias = cliArg === 'a' || cliArg === 'auth-a' ? '4001'
-    : cliArg === 'b' || cliArg === 'auth-b' ? '4002'
-    : cliArg === 'c' || cliArg === 'auth-c' ? '4003'
-    : cliArg;
-
-  const profile = nodeProfiles[alias];
+  const profile = resolveNodeProfile(cliArg, process.env);
   if (profile) {
-    process.env.AUTH_ID = profile.AUTH_ID;
-    process.env.PORT = profile.PORT;
-    process.env.PEER_PORT = profile.PEER_PORT;
-    process.env.DB_PATH = profile.DB_PATH;
-    if (!process.env.PUBLIC_URL || process.env.PUBLIC_URL.includes('localhost:4000')) {
-      process.env.PUBLIC_URL = profile.PUBLIC_URL;
-    }
-    if (!process.env.PEER_URL) {
-      process.env.PEER_URL = profile.PEER_URL;
-    }
-    if (!process.env.AUTH_PEERS) {
-      process.env.AUTH_PEERS = profile.AUTH_PEERS;
-    }
-  } else if (!isNaN(Number(cliArg))) {
+    Object.assign(process.env, profile);
+  } else if (/^\d+$/.test(cliArg)) {
     process.env.PORT = cliArg;
   }
 }
