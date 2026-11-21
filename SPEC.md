@@ -1234,3 +1234,20 @@ Secciones mínimas: resumen y diagrama de arquitectura; componentes y puertos; c
 
 **Responsable:** Juan Diego (turno 4), junto con las interfaces. Commit sugerido: `fix(client): el recuadro de inicio de sesión queda fijo al escribir`.
 
+
+### 14.11 Demo del juego (gameplay, 3 min)
+
+**Preparación:** `.\start-all.ps1` (o por túnel), dos navegadores (uno en incógnito) con dos usuarios. Para que la carrera sea corta en la demo se puede arrancar con `RACE_LAPS_PER_LEVEL=1` en `coordinator/.env` (en el juego normal son 3).
+
+| Paso | Qué hacer | Qué se ve | Qué explicar |
+|---|---|---|---|
+| 1 | Crear sala, unirse con el otro usuario, "Iniciar carrera" | Parrilla de salida y semáforo de 6 s | La sala la lleva un coordinador (propietario) y se replica con `room_replicate` |
+| 2 | Chocar un carro contra el otro | Se empujan y se deslizan; nunca quedan encimados | Choques en el servidor (`collisions.js`); el cliente solo manda teclas |
+| 3 | Cruzar la meta y volver atrás varias veces | Las vueltas no suben; la franja del checkpoint 1 sigue amarilla | Checkpoints en orden: sin los 4 no hay vuelta |
+| 4 | Dar la vuelta | Las franjas pasan a verde, una por una; al cruzar la meta sube la vuelta | `race.checkpoints` y `race.laps` los cuenta el propietario |
+| 5 | Pasar por un turbo y por un aceite | El objeto desaparece 5 s; aviso "⚡ TURBO" o "🛢 ACEITE" y el carro cambia de velocidad | Estado nuevo replicado: `race.items` y `race.effects` |
+| 6 | Terminar el nivel | Cronómetro, orden de llegada; en el semáforo del nivel siguiente se ve el resultado del anterior | `race.results`, `race.totals`, `race.previousResults` |
+| 7 | Terminar el nivel 4 | Podio 🥇🥈🥉 con tiempos totales y ganador | `race.standings` |
+| 8 | Abrir DevTools y mandar `{"type":"intent","intent":{"dir":{"x":5,"y":5}}}` o cambiar `x` en el `state` | El carro no va más rápido: el servidor solo usa el signo de cada eje (-1, 0 o 1) y la posición la calcula él | Servidor autoritativo |
+
+**Modo de falla conocido (para el README):** si cae el coordinador **propietario** de una sala en plena carrera, los demás coordinadores conservan su último estado replicado (vueltas, checkpoints, objetos y resultados) y los jugadores siguen moviéndose, pero nadie más cuenta vueltas ni recoge objetos en esa sala, porque hoy ningún coordinador adopta la propiedad. Es una limitación para el cierre de la sustentación.
