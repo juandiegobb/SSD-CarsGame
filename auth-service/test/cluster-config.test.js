@@ -13,6 +13,13 @@ test('sin configuración se comporta como auth único (Talleres 4-6)', () => {
   assert.equal(config.majority, 1);
   assert.equal(config.readLagTolerance, 10);
   assert.equal(config.replicationAckTimeoutMs, 2000);
+  assert.equal(config.allowSingleNodeLeadership, false, 'el quórum adaptativo viene apagado');
+});
+
+test('ALLOW_SINGLE_NODE_LEADERSHIP solo se activa con "true"', () => {
+  assert.equal(loadClusterConfig({ ALLOW_SINGLE_NODE_LEADERSHIP: 'true' }).allowSingleNodeLeadership, true);
+  assert.equal(loadClusterConfig({ ALLOW_SINGLE_NODE_LEADERSHIP: 'false' }).allowSingleNodeLeadership, false);
+  assert.equal(loadClusterConfig({ ALLOW_SINGLE_NODE_LEADERSHIP: '' }).allowSingleNodeLeadership, false);
 });
 
 test('lee un grupo de 3 auths y calcula la mayoría', () => {

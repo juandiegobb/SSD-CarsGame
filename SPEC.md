@@ -1059,6 +1059,8 @@ Si `leaderSeq - lastAppliedSeq <= READ_LAG_TOLERANCE` (10), la réplica responde
 
 **[Decisión] Sin quórum no hay candidatura:** un auth que solo ve a menos de la mayoría (está aislado) no se postula. Así no sube su `term` mientras está solo y, al volver, no tumba a un líder que sí existe.
 
+**[Decisión] Quórum adaptativo apagado por defecto:** `ALLOW_SINGLE_NODE_LEADERSHIP=true` deja que un auth aislado se declare líder y confirme escrituras sin réplicas. Sirve solo para probar con un único auth. Con 3 auths debe estar en `false` (valor por defecto): con `true` dos auths aislados pueden ser líderes a la vez y la opción B deja de responder `503 replication_timeout`.
+
 **Auth que vuelve:** arranca como `replica`. En el `hello` se entera del líder y del `term` actuales, y si su `lastSeq` es menor pide `request_sync`. **No recupera el liderazgo.**
 
 ### 13.10 Cliente y coordinadores

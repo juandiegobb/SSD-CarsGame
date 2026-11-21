@@ -105,7 +105,11 @@ function loadClusterConfig(env = process.env) {
     majority: Math.floor((peers.length + 1) / 2) + 1,
     readLagTolerance: parsePositiveInt('READ_LAG_TOLERANCE', env.READ_LAG_TOLERANCE, 10),
     replicationAckTimeoutMs: parsePositiveInt('REPLICATION_ACK_TIMEOUT_MS', env.REPLICATION_ACK_TIMEOUT_MS, 2000),
-    allowSingleNodeLeadership: env.ALLOW_SINGLE_NODE_LEADERSHIP !== 'false'
+    // Quórum adaptativo (solo para pruebas con un auth): un auth aislado se declara líder y
+    // confirma escrituras sin réplicas. APAGADO por defecto: rompe la mayoría (puede haber dos
+    // líderes) y la opción B (no habría 503 replication_timeout). Se activa con
+    // ALLOW_SINGLE_NODE_LEADERSHIP=true.
+    allowSingleNodeLeadership: env.ALLOW_SINGLE_NODE_LEADERSHIP === 'true'
   };
 }
 
