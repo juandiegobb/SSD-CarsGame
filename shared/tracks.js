@@ -188,9 +188,11 @@
         return { x: last.x, y: last.y, tangent: { x: 1, y: 0 } };
     }
 
+    // Parrilla de salida: dos filas (carriles a ±24 px) y 48 px entre puestos, para que
+    // ningún carro arranque encima de otro (choques, SPEC §14.4: radio 20 → 40 px mínimo).
     function spawnAtStart(track, index, width = WORLD_WIDTH, height = WORLD_HEIGHT) {
-        const position = pointAtDistance(track, -(index + 1) * 28, width, height);
-        const lane = index % 2 === 0 ? -18 : 18;
+        const position = pointAtDistance(track, -(index + 1) * 48, width, height);
+        const lane = index % 2 === 0 ? -24 : 24;
         return {
             x: position.x - position.tangent.y * lane,
             y: position.y + position.tangent.x * lane

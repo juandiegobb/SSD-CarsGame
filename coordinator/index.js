@@ -18,6 +18,7 @@ const { WebSocket, WebSocketServer } = require('ws');
 const jwt = require('jsonwebtoken');
 const RaceTracks = require('../shared/tracks');
 const { planRebalance } = require('./rebalance');
+const { limitMove, separateOverlaps } = require('./collisions');
 const { createAuthClient, parseAuthUrls } = require('./auth-client');
 
 // ── Verificación de configuración crítica ────────────────────────────────────
@@ -1096,6 +1097,15 @@ function tick() {
     }
   }
 
+  // Carros por sala en juego, para los choques (SPEC §14.4): nadie pasa por encima de otro
+  const carsByRoom = new Map();
+  for (const [userId, p] of players) {
+    const room = p.roomId ? rooms.get(p.roomId) : null;
+    if (!room || room.status !== 'playing') continue;
+    if (!carsByRoom.has(room.roomId)) carsByRoom.set(room.roomId, []);
+    carsByRoom.get(room.roomId).push({ userId, player: p });
+  }
+
   const changedRaceRooms = new Set();
   for (const [userId, p] of players) {
     if (p.roomId && !rooms.has(p.roomId)) continue;
@@ -1144,6 +1154,21 @@ function tick() {
     p.x = Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, p.x));
     p.y = Math.max(PLAYER_RADIUS, Math.min(WORLD_HEIGHT - PLAYER_RADIUS, p.y));
 
+    // Choques: si el movimiento lo mete dentro de otro carro de la sala, solo se desliza
+    const roomCars = room ? carsByRoom.get(room.roomId) : null;
+    if (roomCars && (p.x !== previousPosition.x || p.y !== previousPosition.y)) {
+      const others = roomCars.filter((car) => car.userId !== userId).map((car) => car.player);
+      const allowed = limitMove(previousPosition, { x: p.x, y: p.y }, others, PLAYER_RADIUS);
+      const track = race ? RaceTracks.tracks[race.level - 1] : null;
+      if (!track || RaceTracks.isOnRoad(track, allowed.x, allowed.y, PLAYER_RADIUS, WORLD_WIDTH, WORLD_HEIGHT)) {
+        p.x = allowed.x;
+        p.y = allowed.y;
+      } else {
+        p.x = previousPosition.x;
+        p.y = previousPosition.y;
+      }
+    }
+
     if (room?.owner === COORDINATOR_ID && room.status === 'playing' && race.phase === 'racing') {
       const before = race.previousPositions.get(userId) || previousPosition;
       if ((race.laps[userId] || 0) < RACE_LAPS_PER_LEVEL &&
@@ -1153,6 +1178,23 @@ function tick() {
         changedRaceRooms.add(room);
       }
       race.previousPositions.set(userId, { x: p.x, y: p.y });
+    }
+  }
+
+  // Si aun así quedaron dos carros encimados (llegaron a la vez o una posición remota cayó
+  // encima), se separan sin sacarlos de la pista. Todos los coordinadores simulan lo mismo;
+  // el player_sync del coordinador home de cada jugador corrige cualquier diferencia.
+  for (const [roomId, roomCars] of carsByRoom) {
+    if (roomCars.length < 2) continue;
+    const room = rooms.get(roomId);
+    const track = room?.race ? RaceTracks.tracks[room.race.level - 1] : null;
+    const cars = roomCars.map(({ userId, player }) => ({ id: userId, x: player.x, y: player.y, player }));
+    const canPlace = (x, y) => !track || RaceTracks.isOnRoad(track, x, y, PLAYER_RADIUS, WORLD_WIDTH, WORLD_HEIGHT);
+    if (separateOverlaps(cars, PLAYER_RADIUS, canPlace) > 0) {
+      for (const car of cars) {
+        car.player.x = car.x;
+        car.player.y = car.y;
+      }
     }
   }
 
