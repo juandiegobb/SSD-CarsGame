@@ -7,7 +7,9 @@ const { randomBytes } = require('node:crypto');
 const readline = require('node:readline/promises');
 const fs = require('node:fs');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// SKIP_DOTENV=1 (lo ponen las pruebas y npm test de la raíz): no leer el .env local,
+// así las pruebas no dependen de la configuración de quien las corre.
+if (process.env.SKIP_DOTENV !== '1') require('dotenv').config({ path: path.join(__dirname, '.env') });
 const dotenv = require('dotenv');
 const http = require('node:http');
 const { URL } = require('node:url');
@@ -1499,7 +1501,7 @@ function classifyJwtError(err) {
 function getLiveJwtExpiresInSeconds() {
   try {
     const authEnvPath = path.join(__dirname, '../auth-service/.env');
-    if (fs.existsSync(authEnvPath)) {
+    if (process.env.SKIP_DOTENV !== '1' && fs.existsSync(authEnvPath)) {
       const parsed = dotenv.parse(fs.readFileSync(authEnvPath, 'utf8'));
       if (parsed.JWT_EXPIRES_IN) {
         let val = parsed.JWT_EXPIRES_IN.trim();

@@ -155,6 +155,7 @@ function spawnCoordinator({ id, port, peerPort, authUrl, publicUrl }) {
     cwd: coordinatorDirectory,
     env: {
       ...process.env,
+      SKIP_DOTENV: '1', // no leer coordinator/.env
       JWT_SECRET: jwtSecret,
       COORDINATOR_SHARED_SECRET: coordinatorSecret,
       COORDINATOR_ID: id,

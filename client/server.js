@@ -1,5 +1,7 @@
 const path = require("node:path");
-require("dotenv").config({ path: path.join(__dirname, ".env") });
+// SKIP_DOTENV=1 (lo ponen las pruebas y npm test de la raíz): no leer el .env local,
+// así las pruebas no dependen de la configuración de quien las corre.
+if (process.env.SKIP_DOTENV !== "1") require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const express = require("express");
 

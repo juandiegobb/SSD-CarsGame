@@ -1,0 +1,11 @@
+{
+  "name": "ssd-carsgame",
+  "private": true,
+  "description": "Proyecto final de Sistemas Distribuidos: carreras multijugador con auth replicado y coordinadores en mesh",
+  "scripts": {
+    "test": "node scripts/test-all.js",
+    "test:auth": "node scripts/test-all.js auth-service",
+    "test:coordinator": "node scripts/test-all.js coordinator",
+    "test:client": "node scripts/test-all.js client"
+  }
+}

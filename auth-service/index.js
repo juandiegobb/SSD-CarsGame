@@ -6,7 +6,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { timingSafeEqual } = require('node:crypto');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// SKIP_DOTENV=1 (lo ponen las pruebas y npm test de la raíz): no leer el .env local,
+// así las pruebas no dependen de la configuración de quien las corre.
+if (process.env.SKIP_DOTENV !== '1') require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // Atajo por argumento CLI: node index.js 4001 (o a / auth-a, npm run start:4001).
 // Las URLs de cada auth salen del .env (AUTH_A_URL, AUTH_B_URL, AUTH_C_URL); ver node-profiles.js.
@@ -130,7 +132,7 @@ if (/^\d+$/.test(String(currentJwtExpiresIn).trim())) {
 // Función que lee el .env en caliente en cada consulta sin reiniciar el proceso
 function getJwtExpiresIn() {
   try {
-    if (fs.existsSync(ENV_PATH)) {
+    if (process.env.SKIP_DOTENV !== '1' && fs.existsSync(ENV_PATH)) {
       const rawEnv = fs.readFileSync(ENV_PATH, 'utf8');
       const parsed = dotenv.parse(rawEnv);
       if (parsed && parsed.JWT_EXPIRES_IN !== undefined) {

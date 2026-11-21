@@ -7,6 +7,9 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
+// La prueba no debe leer auth-service/.env (si tiene AUTH_PEERS el auth arrancaría como réplica)
+process.env.SKIP_DOTENV = '1';
+
 async function unusedPort() {
   const listener = net.createServer();
   await new Promise((resolve, reject) => {
