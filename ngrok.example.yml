@@ -1,19 +1,47 @@
+# Plantilla de tuneles ngrok (formato v3) para el proyecto final.
+#
+# Uso: copia este archivo a ngrok.local.yml (no se sube a git), deja SOLO los endpoints
+# que corren en tu PC, cambia cada "url" por el dominio que te asigno ngrok y arranca:
+#   ngrok config check --config .\ngrok.local.yml
+#   ngrok start --all --config .\ngrok.local.yml
+# El authtoken NUNCA va aqui: se configura con "ngrok config add-authtoken" en tu PC.
+#
+# Un tunel por servicio (7). El mesh de auths y coordinadores va por el mismo tunel HTTP.
+# Las URLs que pongas aqui son las mismas de deploy.env.
+#
+# Reparto sugerido si cada cuenta gratuita admite pocos endpoints (una PC por cuenta):
+#   PC 1: auth-a, coordinator-1, client  -> .\start-all.ps1 -Mode Tunnel -Only auth-a,coord-1,client
+#   PC 2: auth-b, coordinator-2          -> .\start-all.ps1 -Mode Tunnel -Only auth-b,coord-2
+#   PC 3: auth-c, coordinator-3          -> .\start-all.ps1 -Mode Tunnel -Only auth-c,coord-3
 version: 3
 agent: {}
 
 endpoints:
-  - name: auth
+  - name: auth-a
+    url: https://auth-a-ejemplo.ngrok-free.dev
     upstream:
-      url: 4000
-  - name: client
+      url: 4001
+  - name: auth-b
+    url: https://auth-b-ejemplo.ngrok-free.dev
     upstream:
-      url: 3000
+      url: 4002
+  - name: auth-c
+    url: https://auth-c-ejemplo.ngrok-free.dev
+    upstream:
+      url: 4003
   - name: coordinator-1
+    url: https://coord-1-ejemplo.ngrok-free.dev
     upstream:
       url: 5001
   - name: coordinator-2
+    url: https://coord-2-ejemplo.ngrok-free.dev
     upstream:
       url: 5002
   - name: coordinator-3
+    url: https://coord-3-ejemplo.ngrok-free.dev
     upstream:
       url: 5003
+  - name: client
+    url: https://cliente-ejemplo.ngrok-free.dev
+    upstream:
+      url: 3000

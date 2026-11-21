@@ -14,24 +14,33 @@
     5. Abre el cliente (http://localhost:3000).
 
   Modos:
-    -Mode Local   (por defecto) todo en localhost; ignora las URLs de ngrok del .env.
-    -Mode Tunnel  usa las URLs publicas del .env de cada servicio (AUTH_A_URL..AUTH_C_URL,
-                  AUTH_URLS) y las de los coordinadores que pases en -CoordinatorPublicUrls.
+    -Mode Local   (por defecto) todo en localhost; ignora las URLs de ngrok de los .env.
+    -Mode Tunnel  usa las URLs publicas (https://) de deploy.env, en la raiz del proyecto
+                  (copia deploy.env.example). Con ellas arma PUBLIC_URL, PEER_URL, AUTH_URLS,
+                  AUTH_PEERS y los origenes permitidos (CORS) de cada servicio. El mesh de los
+                  auths (/auth-mesh) y de los coordinadores (/mesh) va por el mismo tunel HTTP.
+
+  Varias PCs: con -Only cada PC levanta solo sus servicios (todas con el mismo deploy.env):
+    PC 1: .\start-all.ps1 -Mode Tunnel -Only auth-a,coord-1,client
+    PC 2: .\start-all.ps1 -Mode Tunnel -Only auth-b,coord-2
+    PC 3: .\start-all.ps1 -Mode Tunnel -Only auth-c,coord-3
 
 .EXAMPLE
   .\start-all.ps1
 .EXAMPLE
   .\start-all.ps1 -Install
 .EXAMPLE
-  .\start-all.ps1 -Mode Tunnel -CoordinatorPublicUrls wss://c1.ngrok-free.dev,wss://c2.ngrok-free.dev,wss://c3.ngrok-free.dev
+  .\start-all.ps1 -Mode Tunnel
+.EXAMPLE
+  .\start-all.ps1 -Mode Tunnel -Only auth-b,coord-2
 #>
 [CmdletBinding()]
 param(
   [ValidateSet('Local', 'Tunnel')] [string]$Mode = 'Local',
   [ValidateRange(1, 9)] [int]$Coordinators = 3,
   [string[]]$CoordinatorNames = @('Norte', 'Centro', 'Sur', 'Este', 'Oeste', 'Rio', 'Monte', 'Valle', 'Costa'),
-  [string[]]$CoordinatorPublicUrls = @(),
-  [string[]]$CoordinatorPeerUrls = @(),
+  [string[]]$Only = @(),
+  [string]$DeployFile = 'deploy.env',
   [int]$CoordinatorHttpPortStart = 5001,
   [int]$CoordinatorPeerPortStart = 6001,
   [int]$ClientPort = 3000,
@@ -77,13 +86,49 @@ function Wait-Port([int]$port, [int]$seconds) {
   return $false
 }
 
+# ---------------------------------------------------------------- 0. que se levanta aqui
+$allNames = @('auth-a', 'auth-b', 'auth-c') + @(1..$Coordinators | ForEach-Object { "coord-$_" })
+if (-not $NoClient) { $allNames += 'client' }
+$selected = if ($Only.Count -gt 0) { @($Only | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim().ToLower() } | Where-Object { $_ }) } else { $allNames }
+foreach ($name in $selected) {
+  if ($allNames -notcontains $name) { throw "Servicio desconocido en -Only: $name. Validos: $($allNames -join ', ')" }
+}
+function Wants([string]$name) { return $selected -contains $name }
+
+# ---------------------------------------------------------------- deploy.env (modo Tunnel)
+$deploy = @{}
+function HttpsUrl([string]$key) {
+  $value = "$($deploy[$key])".Trim().TrimEnd('/')
+  if (-not $value) { throw "Falta $key en $DeployFile." }
+  if ($value -notmatch '^https://[^/\s?#]+$') { throw "$key debe ser una URL https:// sin ruta (ejemplo: https://algo.ngrok-free.dev). Valor: $value" }
+  return $value
+}
+function WssOf([string]$httpsUrl) { return $httpsUrl -replace '^https:', 'wss:' }
+
+if ($Mode -eq 'Tunnel') {
+  $deployPath = if ([IO.Path]::IsPathRooted($DeployFile)) { $DeployFile } else { Join-Path $root $DeployFile }
+  if (-not (Test-Path -LiteralPath $deployPath)) {
+    throw "Falta $DeployFile. Copia deploy.env.example a deploy.env y pon las URLs https:// de ngrok."
+  }
+  foreach ($line in Get-Content -LiteralPath $deployPath) {
+    if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$') { $deploy[$Matches[1]] = $Matches[2] }
+  }
+  # Siempre hacen falta las 3 URLs de los auths (son la lista AUTH_URLS y los peers del mesh)
+  $tunnelAuth = @{ A = (HttpsUrl 'AUTH_A_URL'); B = (HttpsUrl 'AUTH_B_URL'); C = (HttpsUrl 'AUTH_C_URL') }
+  $tunnelAuthUrls = "$($tunnelAuth.A),$($tunnelAuth.B),$($tunnelAuth.C)"
+  $tunnelClient = if ($deploy['CLIENT_URL']) { HttpsUrl 'CLIENT_URL' } else { '' }
+  $tunnelOrigins = (@('http://localhost:3000') + @($tunnelClient | Where-Object { $_ })) -join ','
+}
+
 # ---------------------------------------------------------------- 1. requisitos
 Write-Step 'Revisando requisitos'
 Get-Command node -ErrorAction Stop | Out-Null
 Write-Host "node $(node --version)"
 
-$services = @('auth-service', 'coordinator', 'client')
-if ($NoClient) { $services = @('auth-service', 'coordinator') }
+$services = @()
+if ($selected | Where-Object { $_ -like 'auth-*' }) { $services += 'auth-service' }
+if ($selected | Where-Object { $_ -like 'coord-*' }) { $services += 'coordinator' }
+if (Wants 'client') { $services += 'client' }
 foreach ($service in $services) {
   $folder = Join-Path $root $service
   if ($Install) {
@@ -98,23 +143,22 @@ foreach ($service in $services) {
   }
 }
 
-if ($Mode -eq 'Tunnel' -and $CoordinatorPublicUrls.Count -ne $Coordinators) {
-  throw "En modo Tunnel pasa una URL publica (wss://...) por coordinador en -CoordinatorPublicUrls ($Coordinators en total)."
-}
-if ($CoordinatorPeerUrls.Count -gt 0 -and $CoordinatorPeerUrls.Count -ne $Coordinators) {
-  throw "-CoordinatorPeerUrls debe tener una URL por coordinador ($Coordinators en total)."
-}
 if ($CoordinatorNames.Count -lt $Coordinators) {
   throw "-CoordinatorNames debe tener al menos $Coordinators nombres."
 }
 
 # ---------------------------------------------------------------- 2. puertos
 Write-Step 'Revisando puertos'
-$authPorts = @(4001, 4002, 4003, 4101, 4102, 4103)
 $coordHttpPorts = @(0..($Coordinators - 1) | ForEach-Object { $CoordinatorHttpPortStart + $_ })
 $coordPeerPorts = @(0..($Coordinators - 1) | ForEach-Object { $CoordinatorPeerPortStart + $_ })
-$ports = $authPorts + $coordHttpPorts + $coordPeerPorts
-if (-not $NoClient) { $ports += $ClientPort }
+$ports = @()
+foreach ($pair in @(@('auth-a', 4001), @('auth-b', 4002), @('auth-c', 4003))) {
+  if (Wants $pair[0]) { $ports += $pair[1]; $ports += $pair[1] + 100 }
+}
+for ($i = 0; $i -lt $Coordinators; $i++) {
+  if (Wants "coord-$($i + 1)") { $ports += $coordHttpPorts[$i]; $ports += $coordPeerPorts[$i] }
+}
+if (Wants 'client') { $ports += $ClientPort }
 $busy = @($ports | Where-Object { -not (Test-PortFree $_) })
 if ($busy.Count -gt 0) {
   throw "Puertos ocupados: $($busy -join ', '). Cierra las ventanas de una ejecucion anterior y vuelve a intentar. No se inicio nada."
@@ -122,7 +166,8 @@ if ($busy.Count -gt 0) {
 Write-Host "Libres: $($ports -join ', ')"
 
 # ---------------------------------------------------------------- 3. auths
-Write-Step 'Iniciando los 3 auths'
+$startedAuths = @()
+Write-Step 'Iniciando los auths'
 $authFolder = Join-Path $root 'auth-service'
 $auths = @(
   @{ Id = 'auth-a'; Arg = 'a'; Port = 4001; Key = 'A' },
@@ -130,28 +175,35 @@ $auths = @(
   @{ Id = 'auth-c'; Arg = 'c'; Port = 4003; Key = 'C' }
 )
 foreach ($auth in $auths) {
+  if (-not (Wants $auth.Id)) { continue }
   $vars = @{}
-  if ($Mode -eq 'Local') {
-    # En local se ignoran las URLs de ngrok que tenga el .env
-    foreach ($other in $auths) {
+  foreach ($other in $auths) {
+    if ($Mode -eq 'Local') {
+      # En local se ignoran las URLs de ngrok que tenga el .env
       $vars["AUTH_$($other.Key)_URL"] = "http://localhost:$($other.Port)"
       $vars["AUTH_$($other.Key)_PEER_URL"] = "ws://localhost:$($other.Port + 100)"
+    } else {
+      # Por tunel: el mesh va por el mismo tunel HTTP con wss:// (/auth-mesh)
+      $vars["AUTH_$($other.Key)_URL"] = $tunnelAuth[$other.Key]
+      $vars["AUTH_$($other.Key)_PEER_URL"] = WssOf $tunnelAuth[$other.Key]
     }
   }
+  if ($Mode -eq 'Tunnel') { $vars.CORS_ORIGINS = $tunnelOrigins }
   Start-ServiceWindow "$($auth.Id) (HTTP :$($auth.Port) / mesh :$($auth.Port + 100))" $authFolder $vars "node index.js $($auth.Arg)"
+  $startedAuths += $auth
   Write-Host "Abierto $($auth.Id)"
 }
 
-foreach ($auth in $auths) {
+foreach ($auth in $startedAuths) {
   if (-not (Wait-Port $auth.Port 20)) { throw "$($auth.Id) no abrio el puerto $($auth.Port). Revisa su ventana." }
 }
 
-Write-Host 'Esperando la eleccion del lider (unos 7 s)...'
 $leader = $null
 $deadline = (Get-Date).AddSeconds($LeaderWaitSeconds)
-while (-not $leader -and (Get-Date) -lt $deadline) {
+if ($startedAuths.Count -gt 0) { Write-Host 'Esperando la eleccion del lider (unos 7 s)...' }
+while ($startedAuths.Count -gt 0 -and -not $leader -and (Get-Date) -lt $deadline) {
   Start-Sleep -Seconds 1
-  foreach ($auth in $auths) {
+  foreach ($auth in $startedAuths) {
     try {
       $status = Invoke-RestMethod -Uri "http://localhost:$($auth.Port)/status" -TimeoutSec 2
       if ($status.role -eq 'leader') { $leader = $status; break }
@@ -160,16 +212,18 @@ while (-not $leader -and (Get-Date) -lt $deadline) {
 }
 if ($leader) {
   Write-Host "Lider: $($leader.authId) (term $($leader.term))" -ForegroundColor Green
-} else {
+} elseif ($startedAuths.Count -gt 0) {
   Write-Warning "Todavia no hay lider. Los coordinadores reintentan solos; revisa las ventanas de los auths."
 }
 
 # ---------------------------------------------------------------- 4. coordinadores
-Write-Step "Iniciando $Coordinators coordinadores"
+Write-Step 'Iniciando los coordinadores'
 $coordFolder = Join-Path $root 'coordinator'
-$authUrls = if ($Mode -eq 'Local') { 'http://localhost:4001,http://localhost:4002,http://localhost:4003' } else { '' }
+$authUrls = if ($Mode -eq 'Local') { 'http://localhost:4001,http://localhost:4002,http://localhost:4003' } else { $tunnelAuthUrls }
 for ($i = 0; $i -lt $Coordinators; $i++) {
   $id = "coord-$($i + 1)"
+  if (-not (Wants $id)) { continue }
+  $coordPublic = if ($Mode -eq 'Tunnel') { WssOf (HttpsUrl "COORD_$($i + 1)_URL") } else { '' }
   $name = $CoordinatorNames[$i]
   $httpPort = $coordHttpPorts[$i]
   $peerPort = $coordPeerPorts[$i]
@@ -178,28 +232,39 @@ for ($i = 0; $i -lt $Coordinators; $i++) {
     PEER_PORT = $peerPort
     COORDINATOR_ID = $id
     COORDINATOR_NAME = $name
-    PUBLIC_URL = if ($CoordinatorPublicUrls.Count -gt 0) { $CoordinatorPublicUrls[$i] } else { "ws://localhost:$httpPort" }
-    PEER_URL = if ($CoordinatorPeerUrls.Count -gt 0) { $CoordinatorPeerUrls[$i] } else { "ws://localhost:$peerPort" }
+    # Por tunel el mesh de coordinadores va por el mismo tunel HTTP (ruta /mesh)
+    PUBLIC_URL = if ($coordPublic) { $coordPublic } else { "ws://localhost:$httpPort" }
+    PEER_URL = if ($coordPublic) { $coordPublic } else { "ws://localhost:$peerPort" }
+    AUTH_URLS = $authUrls
   }
-  # En modo Tunnel AUTH_URLS sale de coordinator/.env
-  if ($authUrls) { $vars.AUTH_URLS = $authUrls }
+  if ($Mode -eq 'Tunnel') { $vars.CLIENT_ORIGINS = $tunnelOrigins }
   Start-ServiceWindow "$id $name (HTTP :$httpPort / mesh :$peerPort)" $coordFolder $vars 'node index.js'
   if (-not (Wait-Port $httpPort 20)) { throw "$id no abrio el puerto $httpPort. Revisa su ventana." }
   Write-Host "Abierto $id ($name) en :$httpPort"
 }
 
 # ---------------------------------------------------------------- 5. cliente
-if (-not $NoClient) {
+if (Wants 'client') {
   Write-Step 'Iniciando el cliente'
-  $clientVars = @{ PORT = $ClientPort }
-  if ($Mode -eq 'Local') { $clientVars.LOCAL_AUTH_URLS = 'http://localhost:4001,http://localhost:4002,http://localhost:4003' }
+  $clientVars = @{ PORT = $ClientPort; LOCAL_AUTH_URLS = 'http://localhost:4001,http://localhost:4002,http://localhost:4003' }
+  if ($Mode -eq 'Tunnel') {
+    # Quien entre por la URL de ngrok del cliente usa los auths por tunel
+    $clientVars.AUTH_URLS = $tunnelAuthUrls
+    $clientVars.COORDINATOR_WS_URL = WssOf (HttpsUrl 'COORD_1_URL')
+  }
   Start-ServiceWindow "cliente (:$ClientPort)" (Join-Path $root 'client') $clientVars 'node server.js'
   if (-not (Wait-Port $ClientPort 20)) { throw "El cliente no abrio el puerto $ClientPort. Revisa su ventana." }
 }
 
 # ---------------------------------------------------------------- resumen
-Write-Step "Listo (modo $Mode)"
-Write-Host 'Auths:          http://localhost:4001/status  :4002/status  :4003/status'
-Write-Host "Coordinadores:  $(($coordHttpPorts | ForEach-Object { "http://localhost:$_/health" }) -join '  ')"
-if (-not $NoClient) { Write-Host "Cliente:        http://localhost:$ClientPort" -ForegroundColor Green }
+Write-Step "Listo (modo $Mode): $($selected -join ', ')"
+if ($Mode -eq 'Tunnel') {
+  Write-Host "Auths:          $($tunnelAuth.A)/status  $($tunnelAuth.B)/status  $($tunnelAuth.C)/status"
+  if ($tunnelClient) { Write-Host "Cliente:        $tunnelClient" -ForegroundColor Green }
+  Write-Host 'Recuerda tener abiertos los tuneles de ngrok de estos servicios (ngrok.example.yml).'
+} else {
+  Write-Host 'Auths:          http://localhost:4001/status  :4002/status  :4003/status'
+  Write-Host "Coordinadores:  $(($coordHttpPorts | ForEach-Object { "http://localhost:$_/health" }) -join '  ')"
+  if (Wants 'client') { Write-Host "Cliente:        http://localhost:$ClientPort" -ForegroundColor Green }
+}
 Write-Host 'Para la demo: Ctrl+C en la ventana de un servicio lo apaga; flecha arriba + Enter lo revive.'

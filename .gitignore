@@ -74,6 +74,8 @@ web_modules/
 
 # Local ngrok endpoint URLs
 ngrok.local.yml
+# URLs publicas del despliegue por tunel (start-all.ps1 -Mode Tunnel)
+deploy.env
 
 # SQLite database files
 *.db
