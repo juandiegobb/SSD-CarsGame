@@ -19,6 +19,7 @@ const jwt = require('jsonwebtoken');
 const RaceTracks = require('../shared/tracks');
 const { planRebalance } = require('./rebalance');
 const { limitMove, separateOverlaps } = require('./collisions');
+const { recordFinish, closeLevel, buildStandings } = require('./race-results');
 const { createAuthClient, parseAuthUrls } = require('./auth-client');
 
 // ── Verificación de configuración crítica ────────────────────────────────────
@@ -139,7 +140,11 @@ const TICK_RATE = Number(process.env.TICK_RATE) || 20;        // Hz
 const TICK_MS = 1000 / TICK_RATE;
 const MAX_EXTRAS_BYTES = 1024; // límite anti-abuso para extras_update
 const ROOM_COLORS = ['#2f6fed', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#ffffff'];
-const RACE_LAPS_PER_LEVEL = 3;
+// Vueltas por nivel (3 en el juego). Se puede bajar con RACE_LAPS_PER_LEVEL solo para pruebas.
+const RACE_LAPS_PER_LEVEL = (() => {
+  const value = Number(process.env.RACE_LAPS_PER_LEVEL);
+  return Number.isInteger(value) && value >= 1 && value <= 10 ? value : 3;
+})();
 const RACE_COUNTDOWN_MS = 6000;
 const RACE_COUNTDOWN_COLOR_MS = 2000;
 
@@ -636,9 +641,19 @@ function raceSnapshot(room) {
     countdownStartedAt: Number.isFinite(race.countdownStartedAt) ? race.countdownStartedAt : null,
     serverTime: Number.isFinite(race.serverTime) ? race.serverTime : Date.now(),
     laps: { ...(race.laps || {}) },
-    checkpoints: { ...(race.checkpoints || {}) }
+    checkpoints: { ...(race.checkpoints || {}) },
+    startedAt: Number.isFinite(race.startedAt) ? race.startedAt : null,
+    results: (race.results || []).map((result) => ({ ...result })),
+    totals: { ...(race.totals || {}) },
+    standings: (race.standings || []).map((standing) => ({ ...standing })),
+    previousResults: race.previousResults
+      ? { level: race.previousResults.level, results: race.previousResults.results.map((result) => ({ ...result })) }
+      : null
   };
 }
+
+// Resultados, tiempos y ganador: ver race-results.js (SPEC §14.4)
+const nameOfPlayer = (userId) => players.get(userId)?.username;
 
 function roomUpdateMessage(room) {
   return {
@@ -698,6 +713,14 @@ function startRaceLevel(room, level, now) {
     serverTime: now,
     laps: {},
     checkpoints: {},
+    startedAt: null,
+    results: [],
+    totals: { ...(room.race?.totals || {}) }, // los tiempos de los niveles anteriores se conservan
+    standings: [],
+    // Orden de llegada del nivel que acaba de terminar, para mostrarlo durante el semáforo
+    previousResults: room.race?.results?.length
+      ? { level: room.race.level, results: room.race.results.map((result) => ({ ...result })) }
+      : null,
     previousPositions: new Map()
   };
   const track = RaceTracks.tracks[level - 1];
@@ -798,6 +821,45 @@ function applyRemoteRoom(peerId, message) {
     if (!members.has(memberId) || !Number.isInteger(passed) || passed < 0 || passed > checkpointCount) return;
     checkpoints[memberId] = passed;
   }
+  // Resultados (opcionales para compatibilidad): puestos, tiempos y clasificación general
+  const validName = (name) => typeof name === 'string' && name.length > 0 && name.length <= 64;
+  const validMs = (value) => Number.isFinite(value) && value >= 0 && value <= 24 * 60 * 60 * 1000;
+  const resultsData = raceData.results || [];
+  const totalsData = raceData.totals || {};
+  const standingsData = raceData.standings || [];
+  if (!Array.isArray(resultsData) || !Array.isArray(standingsData) ||
+      typeof totalsData !== 'object' || Array.isArray(totalsData) ||
+      (raceData.startedAt !== undefined && raceData.startedAt !== null && !Number.isFinite(raceData.startedAt))) return;
+  const results = [];
+  for (const result of resultsData) {
+    if (!result || !members.has(result.userId) || !validName(result.username) ||
+        !Number.isInteger(result.position) || result.position < 1 || !validMs(result.timeMs)) return;
+    results.push({ userId: result.userId, username: result.username, position: result.position, timeMs: result.timeMs });
+  }
+  const totals = {};
+  for (const [memberId, totalMs] of Object.entries(totalsData)) {
+    if (!validMs(totalMs)) return;
+    if (members.has(memberId)) totals[memberId] = totalMs;
+  }
+  const standings = [];
+  for (const standing of standingsData) {
+    if (!standing || !members.has(standing.userId) || !validName(standing.username) ||
+        !Number.isInteger(standing.position) || standing.position < 1 || !validMs(standing.totalMs)) return;
+    standings.push({ userId: standing.userId, username: standing.username, position: standing.position, totalMs: standing.totalMs });
+  }
+  let previousResults = null;
+  if (raceData.previousResults) {
+    const previous = raceData.previousResults;
+    if (!Number.isInteger(previous.level) || previous.level < 1 || previous.level > RaceTracks.tracks.length ||
+        !Array.isArray(previous.results)) return;
+    const previousList = [];
+    for (const result of previous.results) {
+      if (!result || typeof result.userId !== 'string' || !validName(result.username) ||
+          !Number.isInteger(result.position) || result.position < 1 || !validMs(result.timeMs)) return;
+      previousList.push({ userId: result.userId, username: result.username, position: result.position, timeMs: result.timeMs });
+    }
+    previousResults = { level: previous.level, results: previousList };
+  }
 
   const previousRoom = rooms.get(message.roomId);
   const preserveLocalRace = previousRoom?.owner === COORDINATOR_ID && !['start', 'race'].includes(message.op);
@@ -867,6 +929,11 @@ function applyRemoteRoom(peerId, message) {
           .filter((memberId) => Object.hasOwn(previousRoom.race?.checkpoints || {}, memberId))
           .map((memberId) => [memberId, previousRoom.race.checkpoints[memberId]]))
         : checkpoints,
+      startedAt: preserveLocalRace ? previousRoom.race.startedAt ?? null : (Number.isFinite(raceData.startedAt) ? raceData.startedAt : null),
+      results: preserveLocalRace ? (previousRoom.race.results || []) : results,
+      totals: preserveLocalRace ? (previousRoom.race.totals || {}) : totals,
+      standings: preserveLocalRace ? (previousRoom.race.standings || []) : standings,
+      previousResults: preserveLocalRace ? (previousRoom.race.previousResults || null) : previousResults,
       previousPositions: preserveLocalRace
         ? previousRoom.race.previousPositions
         : new Map()
@@ -1111,6 +1178,7 @@ function tick() {
     if (now - room.race.countdownStartedAt >= RACE_COUNTDOWN_COLOR_MS * 3) {
       room.race.phase = 'racing';
       room.race.serverTime = now;
+      room.race.startedAt = now; // el cronómetro del nivel arranca con el verde
       publishRaceUpdate(room);
     }
   }
@@ -1206,7 +1274,10 @@ function tick() {
           RaceTracks.crossesFinish(raceTrack, before, p, WORLD_WIDTH, WORLD_HEIGHT)) {
         race.laps[userId] = (race.laps[userId] || 0) + 1;
         race.checkpoints[userId] = 0;
-        if (race.laps[userId] === RACE_LAPS_PER_LEVEL) p.intent = { x: 0, y: 0 };
+        if (race.laps[userId] === RACE_LAPS_PER_LEVEL) {
+          p.intent = { x: 0, y: 0 };
+          recordFinish(race, userId, nameOfPlayer(userId), now, RACE_COUNTDOWN_MS);
+        }
         changedRaceRooms.add(room);
       }
       race.previousPositions.set(userId, { x: p.x, y: p.y });
@@ -1243,9 +1314,13 @@ function tick() {
       (room.race.laps[userId] || 0) >= RACE_LAPS_PER_LEVEL
     );
     if (everyoneFinished) {
+      const totals = closeLevel(room.race, room.members);
       if (room.race.level < RaceTracks.tracks.length) {
+        room.race.totals = totals;
         startRaceLevel(room, room.race.level + 1, now);
       } else {
+        room.race.totals = totals;
+        room.race.standings = buildStandings(room.members, totals, nameOfPlayer);
         room.race.phase = 'finished';
         room.race.serverTime = now;
       }
@@ -1884,7 +1959,7 @@ wss.on('connection', (ws, payload) => {
           members: new Set([userId]),
           status: 'waiting',
           owner: COORDINATOR_ID,
-          race: { level: 1, phase: 'waiting', countdownStartedAt: null, serverTime: Date.now(), laps: {}, checkpoints: {}, previousPositions: new Map() }
+          race: { level: 1, phase: 'waiting', countdownStartedAt: null, serverTime: Date.now(), laps: {}, checkpoints: {}, startedAt: null, results: [], totals: {}, standings: [], previousPositions: new Map() }
         };
         rooms.set(roomId, room);
         entry.roomId = roomId;

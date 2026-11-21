@@ -33,7 +33,8 @@ async function waitUntil(check, description, timeoutMs = 15_000) {
 }
 
 // Devuelve { port, stop() }. stop() apaga el coordinador y el auth falso.
-async function startCoordinator(id = 'coord-prueba') {
+// extraEnv permite, por ejemplo, RACE_LAPS_PER_LEVEL=1 para carreras cortas.
+async function startCoordinator(id = 'coord-prueba', extraEnv = {}) {
   const authServer = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(req.url.startsWith('/peers') ? { peers: [] } : { ok: true }));
@@ -56,7 +57,8 @@ async function startCoordinator(id = 'coord-prueba') {
       PUBLIC_URL: `ws://127.0.0.1:${port}`,
       PEER_URL: `ws://127.0.0.1:${peerPort}`,
       AUTH_URLS: authUrl,
-      CLIENT_ORIGINS: 'http://localhost:3000'
+      CLIENT_ORIGINS: 'http://localhost:3000',
+      ...extraEnv
     },
     stdio: 'ignore'
   });
@@ -107,4 +109,42 @@ async function startRace(players) {
   return host.last('state');
 }
 
-module.exports = { startCoordinator, connectPlayer, startRace, waitUntil };
+// ── "Piloto automático" para las pruebas de carrera ─────────────────────────────
+const RaceTracks = require('../../shared/tracks');
+const sign = (value) => (Math.abs(value) < 4 ? 0 : value > 0 ? 1 : -1);
+
+// Punto de la pista a "distance" de la meta, corrido "offset" px hacia un costado, con la
+// misma convención de carriles que la parrilla (puestos pares en -24, impares en +24).
+// Sirve para que dos pilotos no choquen entre sí.
+function laneAt(track, distance, offset = -28) {
+  const point = RaceTracks.pointAtDistance(track, distance);
+  return { x: point.x - point.tangent.y * offset, y: point.y + point.tangent.x * offset };
+}
+
+function positionOf(player) {
+  return player.last('state')?.players.find((p) => p.userId === player.userId);
+}
+
+async function driveTo(player, target, timeoutMs = 4000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const me = positionOf(player);
+    if (me && Math.hypot(target.x - me.x, target.y - me.y) < 8) break;
+    if (me) player.send({ type: 'intent', intent: { dir: { x: sign(target.x - me.x), y: sign(target.y - me.y) } } });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  player.send({ type: 'intent', intent: { dir: { x: 0, y: 0 } } });
+}
+
+// Da una vuelta completa siguiendo la pista por su carril y cruza la meta.
+// onStep se llama en cada tramo (para mirar el estado mientras avanza).
+async function driveLap(player, track, offset = -28, onStep = () => {}) {
+  const length = RaceTracks.trackLength(track);
+  for (let distance = 60; distance < length; distance += 40) {
+    await driveTo(player, laneAt(track, distance, offset), 2500);
+    onStep();
+  }
+  await driveTo(player, laneAt(track, length + 60, offset), 2500);
+}
+
+module.exports = { startCoordinator, connectPlayer, startRace, waitUntil, laneAt, driveTo, driveLap, positionOf };

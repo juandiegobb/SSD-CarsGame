@@ -1135,7 +1135,7 @@ El juego es una **carrera de 4 niveles** (§12) con salas, semáforo y 3 vueltas
 |---|---|---|
 | **Choques entre carros** | Dos carros **no se superponen** (centros a `2 × PLAYER_RADIUS` = 40 px como mínimo). Al moverse, se quita la parte del movimiento que va hacia el otro carro (puede deslizarse por el costado, no atravesarlo); si aun así quedan encimados, se separan mitad y mitad sin salirse de la pista. La parrilla de salida deja 48 px entre puestos para que nadie arranque encima de otro | Cada coordinador simula a **todos** los carros de la sala (locales y remotos, con sus intents replicados) con la misma regla (`coordinator/collisions.js`); el `player_sync` del coordinador **home** de cada jugador corrige cualquier diferencia |
 | **Checkpoints** | Cada pista tiene 4 checkpoints a lo largo del circuito (fracciones 0,15 · 0,4 · 0,6 · 0,85 del largo; la pista de rocas usa 0,8 en vez de 0,85 y en el "ocho" quedan lejos del cruce), en `shared/tracks.js`. Un checkpoint se pasa al entrar a su franja (todo el ancho de la pista) y solo cuenta el **siguiente** que falta. Una vuelta cuenta solo si se pasaron los 4 y luego se cruza la meta; ahí el contador vuelve a 0. Ir y venir sobre la meta no suma, y cruzar la meta al arrancar (la parrilla está detrás) tampoco: son 3 vueltas completas. `race.checkpoints` = `{ userId: checkpoints pasados en esta vuelta }`. El cliente dibuja las franjas: la siguiente en amarillo, las pasadas en verde | Coordinador **propietario** de la sala |
-| **Orden de llegada y tiempos** | Al completar las 3 vueltas, el jugador entra en `race.results` con su posición y su tiempo del nivel. Al final del nivel 4 hay clasificación general (menor tiempo total) y un ganador | Coordinador propietario |
+| **Orden de llegada y tiempos** | El cronómetro del nivel arranca con el verde (`race.startedAt`). Al completar las 3 vueltas, el jugador entra en `race.results` con su puesto y su tiempo. Al terminar el nivel, los tiempos se suman en `race.totals` y el orden de llegada queda en `race.previousResults` para mostrarlo durante el semáforo del nivel siguiente. Al final del nivel 4, `race.standings` ordena por tiempo total (empates: por `userId`, igual en todos los coordinadores) y el primero es el **ganador**. Quien se va de la sala no suma. Lógica en `coordinator/race-results.js` | Coordinador propietario |
 | **Objetos en la pista** | **Turbo** (más velocidad por 2 s) y **aceite** (menos velocidad por 1,5 s). Aparecen en puntos de la pista, se recogen al pasar encima y reaparecen a los 5 s | Propietario: aparición y recogida. Home del jugador: aplica el efecto a la velocidad |
 | **Fin de partida** | `phase: "finished"` con podio (1.º, 2.º, 3.º) y tiempos | Propietario |
 
@@ -1144,10 +1144,13 @@ El juego es una **carrera de 4 niveles** (§12) con salas, semáforo y 3 vueltas
 {
   "level": 2, "phase": "racing", "laps": { "7": 1 },
   "checkpoints": { "7": 3 },
-  "results": [ { "userId": "7", "position": 1, "timeMs": 41230 } ],
+  "startedAt": 1732139958000,
+  "results": [ { "userId": "7", "username": "ana", "position": 1, "timeMs": 41230 } ],
+  "previousResults": { "level": 1, "results": [ { "userId": "7", "username": "ana", "position": 1, "timeMs": 39870 } ] },
+  "totals": { "7": 81100 },
   "items": [ { "id": "t1", "type": "turbo", "x": 400, "y": 90, "active": true } ],
   "effects": { "7": { "type": "turbo", "until": 1732140000000 } },
-  "standings": [ { "userId": "7", "totalMs": 120400 } ]
+  "standings": [ { "userId": "7", "username": "ana", "position": 1, "totalMs": 120400 } ]
 }
 ```
 El cliente **solo dibuja** este estado: carros, objetos, podio y tiempos. No calcula choques, vueltas ni efectos.
@@ -1213,7 +1216,7 @@ Secciones mínimas: resumen y diagrama de arquitectura; componentes y puertos; c
 | 1 | Paula | Integración (§14.3) y juego (§14.4): choques, checkpoints, resultados, objetos, podio | Arranque local/túnel y el juego autoritativo |
 | 2 | Camilo | 2.2 parte A: `/metrics` en auth y coordinador, desfase de relojes y latencia de replicación (§14.5.1–14.5.2) | Qué se mide y cómo se corrige el desfase |
 | 3 | Mery | 2.2 parte B: `traceId`, `/traces` y dashboard (§14.5.3–14.5.4) | Dashboard en vivo y una traza completa |
-| 4 | Juan Diego | 2.5 espectadores (§14.6) y README final (§14.7) | Espectadores y arquitectura general |
+| 4 | Juan Diego | 2.5 espectadores (§14.6), arreglo del login (§14.10) y README final (§14.7) | Espectadores y arquitectura general |
 
 ### 14.9 Guion de sustentación
 
@@ -1222,3 +1225,12 @@ Secciones mínimas: resumen y diagrama de arquitectura; componentes y puertos; c
 3. **Cada integrante explica su pieza (5 min)** (§14.8).
 4. **Preguntas técnicas (4 min).**
 5. **Cierre (3 min):** qué haríamos distinto y qué limitaciones quedaron.
+
+### 14.10 Arreglo pendiente de interfaz: el login se mueve
+
+**Problema:** en `login.html` (pantalla con el carro 3D), al hacer clic en un campo para escribir, el recuadro de "Iniciar sesión" se desplaza hacia abajo y no se queda quieto, así que cuesta seleccionar los campos y los botones.
+
+**Qué debe pasar:** el recuadro queda **fijo** mientras se escribe, en escritorio y en pantallas pequeñas; el fondo 3D puede moverse detrás, pero el formulario no. Revisar que el foco en un campo no cambie el alto del contenedor ni haga *scroll*, y que la animación del fondo no mueva el formulario.
+
+**Responsable:** Juan Diego (turno 4), junto con las interfaces. Commit sugerido: `fix(client): el recuadro de inicio de sesión queda fijo al escribir`.
+

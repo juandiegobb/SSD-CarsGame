@@ -424,16 +424,101 @@
             ctx.restore();
         }
 
+        // Tiempo en formato m:ss.d (ej. 1:05.3)
+        function formatRaceTime(ms) {
+            const total = Math.max(0, Math.floor(ms / 100));
+            const minutes = Math.floor(total / 600);
+            const seconds = Math.floor((total % 600) / 10);
+            return `${minutes}:${String(seconds).padStart(2, "0")}.${total % 10}`;
+        }
+
+        function shortName(name) {
+            const text = String(name || "");
+            return text.length > 14 ? `${text.slice(0, 13)}…` : text;
+        }
+
+        // Durante la carrera: cronómetro del nivel y quiénes ya llegaron (orden y tiempo).
+        // Todo viene del servidor (race.startedAt y race.results); el cliente solo lo dibuja.
+        // Durante el semáforo del nivel siguiente: cómo quedó el nivel anterior.
+        function drawPreviousResults() {
+            const previous = raceState.previousResults;
+            if (raceState.phase !== "countdown" || !previous || !previous.results.length) return;
+            const lines = [`Nivel ${previous.level}`];
+            for (const result of previous.results.slice(0, 5)) {
+                lines.push(`${result.position}. ${shortName(result.username)}  ${formatRaceTime(result.timeMs)}`);
+            }
+            ctx.save();
+            ctx.font = "700 14px system-ui, sans-serif";
+            const width = Math.max(...lines.map((line) => ctx.measureText(line).width)) + 24;
+            ctx.fillStyle = "rgba(12, 18, 28, .72)";
+            roundRect(10, 10, width, 12 + lines.length * 20, 10);
+            ctx.fill();
+            ctx.textAlign = "left";
+            ctx.textBaseline = "top";
+            lines.forEach((line, index) => {
+                ctx.fillStyle = index === 0 ? "#ffe16a" : "#fff";
+                ctx.fillText(line, 22, 16 + index * 20);
+            });
+            ctx.restore();
+        }
+
+        function drawRaceHud() {
+            drawPreviousResults();
+            if (raceState.phase !== "racing" || !Number.isFinite(raceState.startedAt)) return;
+            const mine = raceState.results.find((result) => result.userId === meId);
+            const elapsed = mine ? mine.timeMs : Date.now() + raceClockOffset - raceState.startedAt;
+            const lines = [`⏱ ${formatRaceTime(elapsed)}`];
+            for (const result of raceState.results.slice(0, 5)) {
+                lines.push(`${result.position}. ${shortName(result.username)}  ${formatRaceTime(result.timeMs)}`);
+            }
+            ctx.save();
+            ctx.font = "700 14px system-ui, sans-serif";
+            const width = Math.max(...lines.map((line) => ctx.measureText(line).width)) + 24;
+            ctx.fillStyle = "rgba(12, 18, 28, .72)";
+            roundRect(10, 10, width, 12 + lines.length * 20, 10);
+            ctx.fill();
+            ctx.textAlign = "left";
+            ctx.textBaseline = "top";
+            lines.forEach((line, index) => {
+                ctx.fillStyle = index === 0 ? "#ffe16a" : "#fff";
+                ctx.fillText(line, 22, 16 + index * 20);
+            });
+            ctx.restore();
+        }
+
+        // Fin de la carrera (4 niveles): podio con el tiempo total de cada uno.
         function drawRaceFinished() {
             if (raceState.phase !== "finished") return;
+            const standings = raceState.standings;
+            const centerX = world.width / 2;
+            const centerY = world.height / 2;
+            const rows = Math.min(standings.length, 3);
+            const panelHeight = 110 + rows * 34;
+            const top = centerY - panelHeight / 2;
             ctx.save();
-            ctx.fillStyle = "rgba(12, 18, 28, .82)";
-            ctx.fillRect(0, world.height / 2 - 54, world.width, 108);
-            ctx.fillStyle = "#ffe16a";
-            ctx.font = "700 34px system-ui, sans-serif";
+            ctx.fillStyle = "rgba(12, 18, 28, .88)";
+            roundRect(centerX - 210, top, 420, panelHeight, 18);
+            ctx.fill();
             ctx.textAlign = "center";
             ctx.textBaseline = "middle";
-            ctx.fillText("¡CARRERA COMPLETADA!", world.width / 2, world.height / 2);
+            ctx.fillStyle = "#ffe16a";
+            ctx.font = "700 30px system-ui, sans-serif";
+            ctx.fillText("¡CARRERA COMPLETADA!", centerX, top + 34);
+            if (standings.length) {
+                ctx.fillStyle = "#fff";
+                ctx.font = "600 17px system-ui, sans-serif";
+                ctx.fillText(`🏆 Ganador: ${shortName(standings[0].username)}`, centerX, top + 70);
+                const medals = ["🥇", "🥈", "🥉"];
+                standings.slice(0, 3).forEach((standing, index) => {
+                    ctx.fillStyle = standing.userId === meId ? "#35e64b" : "#fff";
+                    ctx.font = "600 16px system-ui, sans-serif";
+                    ctx.fillText(
+                        `${medals[index]} ${shortName(standing.username)} · ${formatRaceTime(standing.totalMs)}`,
+                        centerX,
+                        top + 104 + index * 34
+                    );
+                });
+            }
             ctx.restore();
         }
 
@@ -528,6 +613,7 @@
                     }
                 }
                 drawRaceOverlay();
+                drawRaceHud();
                 drawRaceFinished();
             }
             requestAnimationFrame(frame);
@@ -550,7 +636,11 @@
                 countdownStartedAt: Number.isFinite(next.countdownStartedAt) ? next.countdownStartedAt : null,
                 serverTime: Number.isFinite(next.serverTime) ? next.serverTime : Date.now(),
                 laps: next.laps && typeof next.laps === "object" ? next.laps : {},
-                checkpoints: next.checkpoints && typeof next.checkpoints === "object" ? next.checkpoints : {}
+                checkpoints: next.checkpoints && typeof next.checkpoints === "object" ? next.checkpoints : {},
+                startedAt: Number.isFinite(next.startedAt) ? next.startedAt : null,
+                results: Array.isArray(next.results) ? next.results : [],
+                standings: Array.isArray(next.standings) ? next.standings : [],
+                previousResults: next.previousResults && Array.isArray(next.previousResults.results) ? next.previousResults : null
             };
             updateDisplayWorld();
             if (changed && (raceState.phase !== "racing" || previousPhase === "countdown")) {
