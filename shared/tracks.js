@@ -116,6 +116,8 @@
                 };
             }, 400),
             roadWidth: ROAD_WIDTH,
+            // Objetos (turbo/aceite) lejos del cruce, que pasa cerca de la parrilla de salida
+            itemFractions: [0.06, 0.14, 0.36, 0.44, 0.52, 0.6],
             obstacles: []
         },
         {

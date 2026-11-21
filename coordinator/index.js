@@ -20,6 +20,7 @@ const RaceTracks = require('../shared/tracks');
 const { planRebalance } = require('./rebalance');
 const { limitMove, separateOverlaps } = require('./collisions');
 const { recordFinish, closeLevel, buildStandings } = require('./race-results');
+const { createItems, pickupItems, refreshItems, speedFactor, EFFECTS: ITEM_EFFECTS } = require('./race-items');
 const { createAuthClient, parseAuthUrls } = require('./auth-client');
 
 // ── Verificación de configuración crítica ────────────────────────────────────
@@ -648,7 +649,9 @@ function raceSnapshot(room) {
     standings: (race.standings || []).map((standing) => ({ ...standing })),
     previousResults: race.previousResults
       ? { level: race.previousResults.level, results: race.previousResults.results.map((result) => ({ ...result })) }
-      : null
+      : null,
+    items: (race.items || []).map(({ id, type, x, y, active, respawnAt }) => ({ id, type, x, y, active, respawnAt })),
+    effects: Object.fromEntries(Object.entries(race.effects || {}).map(([userId, effect]) => [userId, { ...effect }]))
   };
 }
 
@@ -718,6 +721,8 @@ function startRaceLevel(room, level, now) {
     totals: { ...(room.race?.totals || {}) }, // los tiempos de los niveles anteriores se conservan
     standings: [],
     // Orden de llegada del nivel que acaba de terminar, para mostrarlo durante el semáforo
+    items: createItems(RaceTracks, RaceTracks.tracks[level - 1]), // turbo y aceite (race-items.js)
+    effects: {},
     previousResults: room.race?.results?.length
       ? { level: room.race.level, results: room.race.results.map((result) => ({ ...result })) }
       : null,
@@ -847,6 +852,23 @@ function applyRemoteRoom(peerId, message) {
         !Number.isInteger(standing.position) || standing.position < 1 || !validMs(standing.totalMs)) return;
     standings.push({ userId: standing.userId, username: standing.username, position: standing.position, totalMs: standing.totalMs });
   }
+  // Objetos y efectos (opcionales para compatibilidad)
+  const itemsData = raceData.items || [];
+  const effectsData = raceData.effects || {};
+  if (!Array.isArray(itemsData) || itemsData.length > 20 ||
+      typeof effectsData !== 'object' || Array.isArray(effectsData)) return;
+  const items = [];
+  for (const item of itemsData) {
+    if (!item || typeof item.id !== 'string' || item.id.length > 32 || !ITEM_EFFECTS[item.type] ||
+        !Number.isFinite(item.x) || !Number.isFinite(item.y) || typeof item.active !== 'boolean' ||
+        (item.respawnAt !== null && item.respawnAt !== undefined && !Number.isFinite(item.respawnAt))) return;
+    items.push({ id: item.id, type: item.type, x: item.x, y: item.y, active: item.active, respawnAt: item.respawnAt ?? null });
+  }
+  const effects = {};
+  for (const [memberId, effect] of Object.entries(effectsData)) {
+    if (!effect || !ITEM_EFFECTS[effect.type] || !Number.isFinite(effect.until)) return;
+    if (members.has(memberId)) effects[memberId] = { type: effect.type, until: effect.until };
+  }
   let previousResults = null;
   if (raceData.previousResults) {
     const previous = raceData.previousResults;
@@ -934,6 +956,8 @@ function applyRemoteRoom(peerId, message) {
       totals: preserveLocalRace ? (previousRoom.race.totals || {}) : totals,
       standings: preserveLocalRace ? (previousRoom.race.standings || []) : standings,
       previousResults: preserveLocalRace ? (previousRoom.race.previousResults || null) : previousResults,
+      items: preserveLocalRace ? (previousRoom.race.items || []) : items,
+      effects: preserveLocalRace ? (previousRoom.race.effects || {}) : effects,
       previousPositions: preserveLocalRace
         ? previousRoom.race.previousPositions
         : new Map()
@@ -1208,8 +1232,10 @@ function tick() {
       const iy = p.intent.y;
       const mag = Math.hypot(ix, iy);
       if (mag > 0) {
-        const dx = (ix / mag) * PLAYER_SPEED * dt;
-        const dy = (iy / mag) * PLAYER_SPEED * dt;
+        // Turbo o aceite cambian la velocidad un rato (race.effects, replicado con la carrera)
+        const speed = PLAYER_SPEED * (race?.phase === 'racing' ? speedFactor(race, userId, now) : 1);
+        const dx = (ix / mag) * speed * dt;
+        const dy = (iy / mag) * speed * dt;
         const track = room ? RaceTracks.tracks[race.level - 1] : null;
         const candidate = {
           x: Math.max(PLAYER_RADIUS, Math.min(WORLD_WIDTH - PLAYER_RADIUS, p.x + dx)),
@@ -1299,6 +1325,15 @@ function tick() {
         car.player.y = car.y;
       }
     }
+  }
+
+  // Objetos en la pista: solo el coordinador propietario de la sala los recoge y los repone
+  for (const [roomId, roomCars] of carsByRoom) {
+    const room = rooms.get(roomId);
+    if (room?.owner !== COORDINATOR_ID || room.race?.phase !== 'racing') continue;
+    const cars = roomCars.map(({ userId, player }) => ({ userId, x: player.x, y: player.y }));
+    const picked = pickupItems(room.race, cars, PLAYER_RADIUS, now);
+    if (picked.length > 0 || refreshItems(room.race, now)) changedRaceRooms.add(room);
   }
 
   for (const room of rooms.values()) {
@@ -1959,7 +1994,7 @@ wss.on('connection', (ws, payload) => {
           members: new Set([userId]),
           status: 'waiting',
           owner: COORDINATOR_ID,
-          race: { level: 1, phase: 'waiting', countdownStartedAt: null, serverTime: Date.now(), laps: {}, checkpoints: {}, startedAt: null, results: [], totals: {}, standings: [], previousPositions: new Map() }
+          race: { level: 1, phase: 'waiting', countdownStartedAt: null, serverTime: Date.now(), laps: {}, checkpoints: {}, startedAt: null, results: [], totals: {}, standings: [], items: [], effects: {}, previousPositions: new Map() }
         };
         rooms.set(roomId, room);
         entry.roomId = roomId;

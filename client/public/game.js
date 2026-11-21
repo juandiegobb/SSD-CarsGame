@@ -221,6 +221,50 @@
             ctx.setLineDash([]);
             drawTrackDecorations(track, points, scale);
             drawCheckpoints(track, scale);
+            drawItems(scale);
+        }
+
+        // Objetos de la pista (SPEC §14.4). El servidor dice dónde están y si están activos;
+        // al recogerlos desaparecen 5 s. Turbo = rayo amarillo; aceite = mancha oscura.
+        function drawItems(scale) {
+            if (raceState.phase === "waiting") return;
+            for (const item of raceState.items) {
+                if (!item.active) continue;
+                const x = item.x * world.width / RaceTracks.WORLD_WIDTH;
+                const y = item.y * world.height / RaceTracks.WORLD_HEIGHT;
+                ctx.save();
+                ctx.translate(x, y);
+                if (item.type === "turbo") {
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 12 * scale, 0, Math.PI * 2);
+                    ctx.fillStyle = "#ffcf24";
+                    ctx.fill();
+                    ctx.strokeStyle = "#8a5a00";
+                    ctx.lineWidth = 2 * scale;
+                    ctx.stroke();
+                    ctx.beginPath(); // rayo
+                    ctx.moveTo(2 * scale, -8 * scale);
+                    ctx.lineTo(-4 * scale, 1 * scale);
+                    ctx.lineTo(1 * scale, 1 * scale);
+                    ctx.lineTo(-2 * scale, 8 * scale);
+                    ctx.lineTo(5 * scale, -2 * scale);
+                    ctx.lineTo(0, -2 * scale);
+                    ctx.closePath();
+                    ctx.fillStyle = "#8a5a00";
+                    ctx.fill();
+                } else {
+                    ctx.fillStyle = "rgba(20, 20, 24, .85)";
+                    ctx.beginPath();
+                    ctx.ellipse(0, 0, 14 * scale, 9 * scale, 0.4, 0, Math.PI * 2);
+                    ctx.ellipse(6 * scale, 4 * scale, 7 * scale, 5 * scale, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = "rgba(120, 140, 255, .45)"; // brillo del aceite
+                    ctx.beginPath();
+                    ctx.ellipse(-4 * scale, -2 * scale, 4 * scale, 2 * scale, 0.4, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
         }
 
         // Checkpoints (SPEC §14.4): el servidor dice cuántos pasó cada jugador en esta vuelta.
@@ -468,6 +512,10 @@
             const mine = raceState.results.find((result) => result.userId === meId);
             const elapsed = mine ? mine.timeMs : Date.now() + raceClockOffset - raceState.startedAt;
             const lines = [`⏱ ${formatRaceTime(elapsed)}`];
+            const effect = raceState.effects[meId];
+            if (effect && effect.until > Date.now() + raceClockOffset) {
+                lines.push(effect.type === "turbo" ? "⚡ TURBO" : "🛢 ACEITE: más lento");
+            }
             for (const result of raceState.results.slice(0, 5)) {
                 lines.push(`${result.position}. ${shortName(result.username)}  ${formatRaceTime(result.timeMs)}`);
             }
@@ -640,7 +688,9 @@
                 startedAt: Number.isFinite(next.startedAt) ? next.startedAt : null,
                 results: Array.isArray(next.results) ? next.results : [],
                 standings: Array.isArray(next.standings) ? next.standings : [],
-                previousResults: next.previousResults && Array.isArray(next.previousResults.results) ? next.previousResults : null
+                previousResults: next.previousResults && Array.isArray(next.previousResults.results) ? next.previousResults : null,
+                items: Array.isArray(next.items) ? next.items : [],
+                effects: next.effects && typeof next.effects === "object" ? next.effects : {}
             };
             updateDisplayWorld();
             if (changed && (raceState.phase !== "racing" || previousPhase === "countdown")) {
