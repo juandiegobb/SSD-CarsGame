@@ -1173,6 +1173,13 @@ JSON, ventana deslizante de los **últimos 60 s**. Mínimo:
 | `replication.clockOffsetMs` | — | ✅ por peer | Ver §14.5.2 |
 | `cluster.role/term/lastAppliedSeq/leaderSeq/lag` | ✅ | — | De `cluster-state.js` |
 
+Los percentiles usan nearest-rank: se ordenan las muestras ascendentemente y se toma el
+índice `ceil(p × n) - 1` (p = 0.50, 0.95 o 0.99). Si la ventana no tiene muestras, el
+percentil es `null`. Auth incluye `cluster.replicas[]` con `authId`, `role`, `connected`,
+`lastAppliedSeq` y `lag` (secuencias que le faltan frente a `leaderSeq`; `null` si aún
+no se conoce el avance del peer). El coordinador reporta `spectators: 0` hasta implementar
+los espectadores de §14.6.
+
 #### 14.5.2 Latencia de replicación y relojes desfasados
 
 - Cada `intent_replicate` lleva `sentAt` (reloj del emisor).
