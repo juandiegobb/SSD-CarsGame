@@ -1059,6 +1059,32 @@ A continuación se registra la bitácora paso a paso de las pruebas de sustentac
 | **Prueba Extra: Consistencia y Timeout (Opción B)** | Apagar `auth-a` y `auth-c`; registrar `charlie` en `auth-b` | Sin réplicas disponibles, el líder espera 2000 ms (`REPLICATION_ACK_TIMEOUT_MS`) y responde `503 replication_timeout`: `"La escritura se aplicó en el líder pero ninguna réplica la confirmó a tiempo."` Evita falsas confirmaciones cuando no hay quórum de replicación. | ✅ SUPERADO |
 | **Pruebas Automatizadas del Proyecto** | `node --test` en los 3 componentes | **Auth Service:** 28/28 tests en verde.<br>**Cliente Web:** 13/13 tests en verde.<br>**Coordinador:** 15/15 tests en verde.<br>**Total:** 56/56 pruebas superadas (100% de la suite). | ✅ SUPERADO |
 
+### 14.5. Métricas y latencia de replicación (Track 2.2, parte A)
+
+Consulta `GET http://localhost:4000/metrics` en cada Auth y
+`GET http://localhost:5000/metrics` en cada Coordinador. La respuesta mantiene el
+envoltorio `{ ok, message, ... }` y resume una ventana deslizante de 60 segundos:
+
+- `http.rps` es el número de peticiones HTTP completadas en la ventana dividido por 60.
+  `http.latencyMs.p50/p95/p99` son los percentiles de duración medidos por middleware.
+- El percentil **nearest-rank** ordena las duraciones y selecciona la posición
+  `ceil(p × n)` (índice `ceil(p × n) - 1`, empezando en cero). Si no hay muestras,
+  devuelve `null`.
+- En Auth, `ws.connections` cuenta peers del mesh; `cluster` informa rol, term,
+  secuencias y atraso local. `cluster.replicas` muestra para cada peer la última
+  secuencia conocida, conexión y diferencia respecto al `leaderSeq`.
+- En el Coordinador, `ws.connections` suma sockets de juego abiertos y peers de mesh;
+  `players.local` y `players.remote` salen del `Map`; `tick.effectiveHz` cuenta los
+  ticks ocurridos en el último segundo, no la frecuencia configurada.
+- `replication.intentLagMs` estima la demora de `intent_replicate` y
+  `replication.clockOffsetMs` expone el desfase estimado por peer. Cada cinco segundos
+  el ping-pong mide `t0` (envío), `t1` (recepción remota), `t2` (respuesta) y `t3`
+  (recepción local): `offset = ((t1 - t0) + (t2 - t3)) / 2`, `rtt = (t3 - t0) -
+  (t2 - t1)`. Se conserva la estimación de menor RTT de los últimos 60 segundos.
+  Así no se cambian los relojes de las máquinas: un `sentAt` remoto se convierte al
+  reloj local restando ese offset, y la latencia es `recibidoEn - (sentAt - offset)`.
+  Muestras negativas se descartan; el error de la estimación es aproximadamente RTT/2.
+
 ---
 
 ## 15. Equipo y Reparto de Fases
