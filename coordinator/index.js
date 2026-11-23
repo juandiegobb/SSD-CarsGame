@@ -4,6 +4,7 @@
 // El JWT se intercambia por un ticket de un solo uso antes del handshake WS.
 
 const { randomBytes } = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 const readline = require('node:readline/promises');
 const fs = require('node:fs');
 const path = require('path');
@@ -22,6 +23,8 @@ const { limitMove, separateOverlaps } = require('./collisions');
 const { recordFinish, closeLevel, buildStandings } = require('./race-results');
 const { createItems, pickupItems, refreshItems, speedFactor, EFFECTS: ITEM_EFFECTS } = require('./race-items');
 const { createAuthClient, parseAuthUrls } = require('./auth-client');
+const { createRollingSamples, percentile } = require('../shared/rolling-samples');
+const { calculateClockEstimate, correctedIntentLatency } = require('../shared/clock-metrics');
 
 // ── Verificación de configuración crítica ────────────────────────────────────
 if (!process.env.JWT_SECRET) {
@@ -131,6 +134,7 @@ const PEER_HELLO_TIMEOUT_MS = 5000;
 const PEER_SYNC_INTERVAL_MS = 1000;
 const PEER_REBALANCE_INTERVAL_MS = 3000;
 const PLAYER_REBALANCE_TIMEOUT_MS = 15_000;
+const PEER_CLOCK_SYNC_INTERVAL_MS = 5000;
 
 // ── Taller 5: parámetros del mundo y del game loop (desde .env) ─────────────
 const WORLD_WIDTH = Number(process.env.WORLD_WIDTH) || 800;
@@ -170,9 +174,22 @@ let gameLoopTimer = null;
 let peerSyncTimer = null;
 let peerRebalanceTimer = null;
 const rebalanceInFlight = new Map();
+const httpLatencies = createRollingSamples();
+const tickSamples = createRollingSamples(1000);
+const intentLagSamples = createRollingSamples();
+const peerClockEstimates = new Map();
 function normalizeUsername(username) {
   return typeof username === 'string' ? username.trim().toLowerCase() : username;
 }
+
+function bestPeerClockEstimate(peerId, now = Date.now()) {
+  const recent = (peerClockEstimates.get(peerId) || [])
+    .filter((sample) => sample.at >= now - 60_000);
+  if (recent.length === 0) return null;
+  peerClockEstimates.set(peerId, recent);
+  return recent.reduce((best, sample) => sample.rttMs < best.rttMs ? sample : best);
+}
+
 const rooms = new Map();
 let nextRoomId = 1;
 
@@ -1100,6 +1117,14 @@ function acceptRemoteIntent(peerId, message) {
   if (!player || player.local || player.home !== peerId ||
       !dir || typeof dir.x !== 'number' || typeof dir.y !== 'number' ||
       !Number.isFinite(dir.x) || !Number.isFinite(dir.y)) return;
+
+  const sentAt = message.sentAt;
+  const receivedAt = Date.now();
+  const clockEstimate = bestPeerClockEstimate(peerId, receivedAt);
+  if (Number.isFinite(sentAt) && clockEstimate) {
+    const latencyMs = correctedIntentLatency(sentAt, receivedAt, clockEstimate.offsetMs);
+    if (latencyMs !== null) intentLagSamples.record(latencyMs);
+  }
   player.intent = { x: Math.sign(dir.x), y: Math.sign(dir.y) };
 }
 
@@ -1190,6 +1215,7 @@ function broadcast(payload) {
 let lastTick = Date.now();
 
 function tick() {
+  tickSamples.record(1);
   const now = Date.now();
   const dt = (now - lastTick) / 1000; // segundos reales desde el tick anterior
   lastTick = now;
@@ -1379,6 +1405,11 @@ gameLoopTimer = setInterval(tick, TICK_MS);
 
 // ── Express — endpoints HTTP ─────────────────────────────────────────────────
 const app = express();
+app.use((req, res, next) => {
+  const startedAt = performance.now();
+  res.once('finish', () => httpLatencies.record(performance.now() - startedAt));
+  next();
+});
 app.use(express.json());
 
 function isAllowedClientOrigin(origin) {
@@ -1481,6 +1512,58 @@ app.options('/players', (req, res) => {
   return res.status(204).end();
 });
 
+app.options('/metrics', (req, res) => {
+  if (!allowPlayersOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+  return res.status(204).end();
+});
+
+app.get('/metrics', (req, res) => {
+  if (!allowPlayersOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+  const latencies = httpLatencies.values();
+  const intentLatencies = intentLagSamples.values();
+  const clockOffsetMs = {};
+  for (const [peerId, ws] of peerConnections) {
+    if (!isOpenSocket(ws)) continue;
+    clockOffsetMs[peerId] = bestPeerClockEstimate(peerId)?.offsetMs ?? null;
+  }
+  let localPlayers = 0;
+  let remotePlayers = 0;
+  for (const player of players.values()) {
+    if (player.local && isOpenSocket(player.socket)) localPlayers += 1;
+    else if (!player.local) remotePlayers += 1;
+  }
+  const meshConnections = [...peerConnections.values()].filter(isOpenSocket).length;
+  const clientConnections = [...wss.clients].filter(isOpenSocket).length;
+  return sendOk(res, 200, 'Métricas de los últimos 60 segundos.', {
+    http: {
+      rps: latencies.length / 60,
+      latencyMs: {
+        p50: percentile(latencies, 0.50),
+        p95: percentile(latencies, 0.95),
+        p99: percentile(latencies, 0.99)
+      }
+    },
+    ws: { connections: clientConnections + meshConnections },
+    tick: {
+      configuredHz: TICK_RATE,
+      effectiveHz: tickSamples.values().length
+    },
+    players: { local: localPlayers, remote: remotePlayers },
+    spectators: 0,
+    replication: {
+      intentLagMs: {
+        p50: percentile(intentLatencies, 0.50),
+        p95: percentile(intentLatencies, 0.95)
+      },
+      clockOffsetMs
+    }
+  });
+});
+
 // GET /health
 app.get('/health', (req, res) => {
   sendOk(res, 200, 'Coordinador operativo.', {
@@ -1523,7 +1606,7 @@ app.use((req, res) => {
     res, 404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas HTTP disponibles: GET /health, GET /players y POST /ws-ticket. Solicita un ticket antes de conectar al WebSocket.'
+    'Rutas HTTP disponibles: GET /health, GET /metrics, GET /players y POST /ws-ticket. Solicita un ticket antes de conectar al WebSocket.'
   );
 });
 
@@ -1558,6 +1641,18 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
   const helloTimer = setTimeout(() => ws.close(4000, 'hello timeout'), PEER_HELLO_TIMEOUT_MS);
   helloTimer.unref();
   let peerId = null;
+  let clockSyncTimer = null;
+  let pendingClockPingAt = null;
+
+  function sendClockPing() {
+    if (!peerId || !isOpenSocket(ws)) return;
+    pendingClockPingAt = Date.now();
+    ws.send(JSON.stringify({
+      type: 'clock_ping',
+      origin: COORDINATOR_ID,
+      t0: pendingClockPingAt
+    }));
+  }
 
   const sendHello = () => {
     if (isOpenSocket(ws)) {
@@ -1600,11 +1695,41 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       peerConnections.set(peerId, ws);
       pendingPeerConnections.delete(peerId);
       console.log(`[coordinator] Mesh conectado con ${peerId}.`);
+      sendClockPing();
+      clockSyncTimer = setInterval(sendClockPing, PEER_CLOCK_SYNC_INTERVAL_MS);
+      clockSyncTimer.unref();
       sendLocalPlayersToPeer(ws);
       sendLocalRoomsToPeer(ws);
       // Esperar a que lleguen los player_joined del peer antes de rebalancear.
       // 1.5 s es suficiente para que los mensajes de sincronización inicial lleguen.
       setTimeout(runPeerRebalance, 1500);
+      return;
+    }
+
+    if (msg.type === 'clock_ping') {
+      if (msg.origin !== peerId || !Number.isFinite(msg.t0)) return;
+      const t1 = Date.now();
+      const t2 = Date.now();
+      ws.send(JSON.stringify({
+        type: 'clock_pong',
+        origin: COORDINATOR_ID,
+        t0: msg.t0,
+        t1,
+        t2
+      }));
+      return;
+    }
+    if (msg.type === 'clock_pong') {
+      if (msg.origin !== peerId || msg.t0 !== pendingClockPingAt ||
+          !Number.isFinite(msg.t1) || !Number.isFinite(msg.t2)) return;
+      pendingClockPingAt = null;
+      const t3 = Date.now();
+      const estimate = calculateClockEstimate(msg.t0, msg.t1, msg.t2, t3);
+      if (!estimate) return;
+      const samples = (peerClockEstimates.get(peerId) || [])
+        .filter((sample) => sample.at >= t3 - 60_000);
+      samples.push({ at: t3, ...estimate });
+      peerClockEstimates.set(peerId, samples);
       return;
     }
 
@@ -1631,6 +1756,7 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
 
   ws.on('close', (code) => {
     clearTimeout(helloTimer);
+    if (clockSyncTimer) clearInterval(clockSyncTimer);
     if (expectedPeerId && pendingPeerConnections.get(expectedPeerId) === ws) {
       pendingPeerConnections.delete(expectedPeerId);
     }
@@ -1961,6 +2087,7 @@ wss.on('connection', (ws, payload) => {
         entry.intent = movementLocked ? { x: 0, y: 0 } : { x: Math.sign(dir.x), y: Math.sign(dir.y) };
         broadcastPeer({
           type: 'intent_replicate',
+          sentAt: Date.now(),
           userId,
           intent: { dir: entry.intent }
         });
