@@ -12,9 +12,9 @@
 const ROLES = new Set(['leader', 'replica', 'candidate']);
 
 function createClusterState({ config, replicationLog }) {
-  const peers = new Map(); // authId → { authId, peerUrl, publicUrl, role, connected }
+  const peers = new Map(); // authId → { authId, peerUrl, publicUrl, role, connected, lastAppliedSeq }
   for (const peer of config.peers) {
-    peers.set(peer.authId, { ...peer, role: null, connected: false });
+    peers.set(peer.authId, { ...peer, role: null, connected: false, lastAppliedSeq: null });
   }
 
   let role = 'replica';
@@ -131,6 +131,9 @@ function createClusterState({ config, replicationLog }) {
     if (typeof info.publicUrl === 'string') next.publicUrl = info.publicUrl;
     if (info.role === null || ROLES.has(info.role)) next.role = info.role;
     if (typeof info.connected === 'boolean') next.connected = info.connected;
+    if (Number.isSafeInteger(info.lastAppliedSeq) && info.lastAppliedSeq >= 0) {
+      next.lastAppliedSeq = info.lastAppliedSeq;
+    }
     peers.set(authId, next);
   }
 

@@ -76,11 +76,17 @@ test('un term mayor hace que un líder vuelva a réplica', () => {
 
 test('el mesh puede actualizar lo que se sabe de cada peer', () => {
   const { state } = setup('auth-a', 4001);
-  state.updatePeer('auth-b', { role: 'replica', connected: true, publicUrl: 'https://b.ngrok.app' });
+  state.updatePeer('auth-b', {
+    role: 'replica',
+    connected: true,
+    publicUrl: 'https://b.ngrok.app',
+    lastAppliedSeq: 7
+  });
   const b = state.listPeers().find((peer) => peer.authId === 'auth-b');
   assert.equal(b.connected, true);
   assert.equal(b.role, 'replica');
   assert.equal(b.publicUrl, 'https://b.ngrok.app');
+  assert.equal(b.lastAppliedSeq, 7);
 });
 
 test('lecturas: el líder siempre; una réplica solo si no va más de la tolerancia detrás', () => {

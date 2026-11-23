@@ -111,6 +111,7 @@ function createReplication({
   mesh.on('write_ack', (msg, from) => {
     if (!clusterState.isLeader() || !isInt(msg.seq) || msg.authId !== from) return;
     if (msg.seq > lastSeq()) return; // no puede confirmar algo que el líder no tiene
+    clusterState.updatePeer(from, { lastAppliedSeq: msg.seq });
     ackedSeq.set(from, Math.max(ackedSeq.get(from) || 0, msg.seq));
     resolveWaiters();
   });
@@ -169,6 +170,7 @@ function createReplication({
 
   mesh.on('heartbeat', (msg, from) => {
     if (msg.authId !== from || !isInt(msg.lastSeq)) return;
+    clusterState.updatePeer(from, { lastAppliedSeq: msg.lastSeq });
     if (!acceptLeader(from, msg.term)) return;
     clusterState.noteLeaderContact(from, msg.lastSeq);
     checkAgainstLeader(from, msg.lastSeq, msg.lastTerm);
@@ -237,7 +239,8 @@ function createReplication({
       publicUrl: typeof msg.publicUrl === 'string' ? msg.publicUrl : undefined,
       peerUrl: typeof msg.peerUrl === 'string' ? msg.peerUrl : undefined,
       role: ['leader', 'replica', 'candidate'].includes(msg.role) ? msg.role : null,
-      connected: true
+      connected: true,
+      lastAppliedSeq: isInt(msg.lastSeq) ? msg.lastSeq : undefined
     });
     if (!isInt(msg.term)) return;
 
