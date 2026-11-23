@@ -6,6 +6,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { timingSafeEqual } = require('node:crypto');
+const { performance } = require('node:perf_hooks');
 // SKIP_DOTENV=1 (lo ponen las pruebas y npm test de la raíz): no leer el .env local,
 // así las pruebas no dependen de la configuración de quien las corre.
 if (process.env.SKIP_DOTENV !== '1') require('dotenv').config({ path: path.join(__dirname, '.env') });
@@ -40,6 +41,7 @@ const { createClusterState } = require('./cluster-state');
 const { createAuthMesh } = require('./auth-mesh');
 const { createReplication } = require('./replication');
 const { createElection } = require('./election');
+const { createRollingSamples, percentile } = require('../shared/rolling-samples');
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
@@ -428,6 +430,7 @@ function tokenLifetimeSeconds(token) {
 
 // 4. Configuración de Express y Middlewares
 const app = express();
+const httpLatencies = createRollingSamples();
 
 // CORS: orígenes permitidos desde .env, con soporte para el header de ngrok y preflight OPTIONS
 const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000')
@@ -450,6 +453,11 @@ if (allowedOrigins.includes(origin) || allowedOrigins.includes('*') || origin.in
 }));
 
 // Parser de cuerpo JSON
+app.use((req, res, next) => {
+  const startedAt = performance.now();
+  res.once('finish', () => httpLatencies.record(performance.now() - startedAt));
+  next();
+});
 app.use(express.json({ limit: '4kb' }));
 
 // 5. Endpoints de la API
@@ -503,6 +511,39 @@ app.get('/health', (req, res) => {
     service: 'auth-service',
     uptime: Math.floor(process.uptime()),
     jwtExpiresIn: String(activeExpiresIn)
+  });
+});
+
+app.get('/metrics', (req, res) => {
+  const latencies = httpLatencies.values();
+  const state = clusterState.describe();
+  const replicas = clusterState.listPeers().map((peer) => ({
+    authId: peer.authId,
+    role: peer.role,
+    connected: peer.connected,
+    lastAppliedSeq: peer.lastAppliedSeq,
+    lag: Number.isSafeInteger(peer.lastAppliedSeq)
+      ? Math.max(0, state.leaderSeq - peer.lastAppliedSeq)
+      : null
+  }));
+  return sendOk(res, 200, 'Métricas de los últimos 60 segundos.', {
+    http: {
+      rps: latencies.length / 60,
+      latencyMs: {
+        p50: percentile(latencies, 0.50),
+        p95: percentile(latencies, 0.95),
+        p99: percentile(latencies, 0.99)
+      }
+    },
+    ws: { connections: authMesh.connectedPeers().length },
+    cluster: {
+      role: state.role,
+      term: state.term,
+      lastAppliedSeq: state.lastAppliedSeq,
+      leaderSeq: state.leaderSeq,
+      lag: clusterState.lagBehindLeader(),
+      replicas
+    }
   });
 });
 
@@ -1081,7 +1122,7 @@ app.use((req, res) => {
     404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas disponibles: GET /health, GET /status, GET /peers, GET /peers?coordinatorId=<ID>, POST /heartbeat, GET /coordinator, GET /coordinators, POST /register, POST /login, POST /auth/google.'
+    'Rutas disponibles: GET /health, GET /metrics, GET /status, GET /peers, GET /peers?coordinatorId=<ID>, POST /heartbeat, GET /coordinator, GET /coordinators, POST /register, POST /login, POST /auth/google.'
   );
 });
 

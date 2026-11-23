@@ -78,6 +78,18 @@ test('rechaza heartbeats de otro proceso que reutiliza ID con endpoints distinto
   assert.equal(conflict.status, 409);
   assert.equal((await conflict.json()).code, 'COORDINATOR_ID_CONFLICT');
 
+  const metricsResponse = await fetch(`http://127.0.0.1:${port}/metrics`);
+  assert.equal(metricsResponse.status, 200);
+  const metrics = await metricsResponse.json();
+  assert.equal(metrics.ok, true);
+  assert.equal(typeof metrics.http.rps, 'number');
+  assert.equal(typeof metrics.http.latencyMs.p50, 'number');
+  assert.equal(typeof metrics.http.latencyMs.p95, 'number');
+  assert.equal(typeof metrics.http.latencyMs.p99, 'number');
+  assert.equal(typeof metrics.cluster.role, 'string');
+  assert.ok(Array.isArray(metrics.cluster.replicas));
+  assert.equal(typeof metrics.ws.connections, 'number');
+
   const directoryResponse = await fetch(`http://127.0.0.1:${port}/coordinators`);
   const directory = await directoryResponse.json();
   assert.equal(directory.coordinators.length, 1);
