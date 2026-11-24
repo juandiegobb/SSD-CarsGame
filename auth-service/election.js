@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
 // Taller 7: elección de líder entre auths (SPEC §13.9).
 //
 // 1. Detección: una réplica que lleva 6 s sin heartbeat del líder espera además un
@@ -19,6 +21,7 @@ function createElection({
   mesh,
   clusterState,
   replicationLog,
+  traceBuffer = null,
   log = console,
   leaderTimeoutMs = 6000,
   jitterMs = 1500,
@@ -46,11 +49,23 @@ function createElection({
     return Math.min(clusterState.msSinceLeaderContact(), sinceStart, sinceVote);
   }
 
-  function becomeLeader(term) {
+  function becomeLeader(term, traceId = null) {
     clusterState.becomeLeader(term);
     votes = new Set();
+    const leadTraceId = traceId || crypto.randomUUID();
+    if (traceBuffer && leadTraceId) {
+      traceBuffer.record({
+        traceId: leadTraceId,
+        service: 'auth',
+        id: me(),
+        event: 'new_leader',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `líder electo term ${term}`
+      });
+    }
     log.info(`[election] ${me()} ganó la elección del term ${term}: ahora es LÍDER.`);
-    mesh.broadcast({ type: 'new_leader', leader: me(), term });
+    mesh.broadcast({ type: 'new_leader', leader: me(), term, traceId: leadTraceId });
   }
 
   function startElection() {
@@ -76,9 +91,21 @@ function createElection({
     votes = new Set([me()]);
     electionStartedAt = Date.now();
     jitter = random() * jitterMs;
+    const traceId = crypto.randomUUID();
+    if (traceBuffer && traceId) {
+      traceBuffer.record({
+        traceId,
+        service: 'auth',
+        id: me(),
+        event: 'election',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `postulación candidato term ${term}`
+      });
+    }
     log.info(`[election] ${me()} se postula en el term ${term} (lastSeq ${lastSeq()}).`);
-    if (votes.size >= config.majority) return becomeLeader(term);
-    mesh.broadcast({ type: 'election', candidate: me(), term, lastSeq: lastSeq() });
+    if (votes.size >= config.majority) return becomeLeader(term, traceId);
+    mesh.broadcast({ type: 'election', candidate: me(), term, lastSeq: lastSeq(), traceId });
   }
 
   function tick() {
@@ -105,27 +132,71 @@ function createElection({
 
   mesh.on('election', (msg, from) => {
     if (msg.candidate !== from || !isInt(msg.term) || !isInt(msg.lastSeq)) return;
+    if (traceBuffer && msg.traceId) {
+      traceBuffer.record({
+        traceId: msg.traceId,
+        service: 'auth',
+        id: me(),
+        event: 'election',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `candidatura de ${from} term ${msg.term}`
+      });
+    }
     if (msg.term > myTerm()) clusterState.observeTerm(msg.term); // vuelve a réplica sin líder
     const upToDate = msg.lastSeq >= lastSeq();
     const granted = msg.term === myTerm() && upToDate && clusterState.grantVote(msg.term, from);
     if (granted) lastVoteGrantedAt = Date.now();
     log.info(`[election] Voto ${granted ? 'A FAVOR' : 'en contra'} de ${from} (term ${msg.term}, su lastSeq ${msg.lastSeq}, el mío ${lastSeq()}).`);
-    mesh.send(from, { type: 'vote', voter: me(), term: msg.term, voteGranted: granted });
+    if (traceBuffer && msg.traceId) {
+      traceBuffer.record({
+        traceId: msg.traceId,
+        service: 'auth',
+        id: me(),
+        event: 'vote',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `voto ${granted ? 'concedido' : 'rechazado'} a ${from} term ${msg.term}`
+      });
+    }
+    mesh.send(from, { type: 'vote', voter: me(), term: msg.term, voteGranted: granted, ...(msg.traceId ? { traceId: msg.traceId } : {}) });
   });
 
   mesh.on('vote', (msg, from) => {
     if (msg.voter !== from || !isInt(msg.term)) return;
+    if (traceBuffer && msg.traceId) {
+      traceBuffer.record({
+        traceId: msg.traceId,
+        service: 'auth',
+        id: me(),
+        event: 'vote',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `voto recibido de ${from}: ${msg.voteGranted ? 'concedido' : 'rechazado'}`
+      });
+    }
     if (msg.term > myTerm()) {
       clusterState.observeTerm(msg.term);
       return;
     }
     if (clusterState.getRole() !== 'candidate' || msg.term !== myTerm() || msg.voteGranted !== true) return;
     votes.add(from);
-    if (votes.size >= config.majority) becomeLeader(msg.term);
+    if (votes.size >= config.majority) becomeLeader(msg.term, msg.traceId);
   });
 
   mesh.on('new_leader', (msg, from) => {
     if (msg.leader !== from || !isInt(msg.term) || msg.term < myTerm()) return;
+    if (traceBuffer && msg.traceId) {
+      traceBuffer.record({
+        traceId: msg.traceId,
+        service: 'auth',
+        id: me(),
+        event: 'new_leader',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `nuevo líder ${from} term ${msg.term}`
+      });
+    }
     if (clusterState.isLeader() && msg.term === myTerm() && me() < from) return;
     clusterState.becomeReplica(from, msg.term);
     clusterState.noteLeaderContact(from);

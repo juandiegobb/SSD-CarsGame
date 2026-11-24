@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
 // Taller 7: replicación single-writer sobre el mesh de auths.
 //
 //   LÍDER                                  RÉPLICA
@@ -21,6 +23,7 @@ function createReplication({
   mesh,
   clusterState,
   replicationLog,
+  traceBuffer = null,
   log = console,
   heartbeatIntervalMs = 2000,
   syncRetryMs = 1000
@@ -57,7 +60,10 @@ function createReplication({
 
   // ---------------------------------------------------------------- líder
   function sendHeartbeats() {
-    if (clusterState.isLeader()) mesh.broadcast(heartbeatMessage());
+    if (clusterState.isLeader()) {
+      const traceId = crypto.randomUUID();
+      mesh.broadcast({ ...heartbeatMessage(), traceId });
+    }
   }
 
   function startHeartbeats() {
@@ -69,7 +75,26 @@ function createReplication({
   // Cada escritura local del líder se manda a todas las réplicas conectadas
   replicationLog.onLocalWrite((entry) => {
     if (!clusterState.isLeader()) return;
-    mesh.broadcast({ type: 'write_propagate', term: entry.term, seq: entry.seq, op: entry.op, data: entry.data });
+    const traceId = entry.traceId || crypto.randomUUID();
+    if (traceBuffer && traceId) {
+      traceBuffer.record({
+        traceId,
+        service: 'auth',
+        id: me(),
+        event: 'write_propagate_send',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `seq ${entry.seq} (${entry.op})`
+      });
+    }
+    mesh.broadcast({
+      type: 'write_propagate',
+      term: entry.term,
+      seq: entry.seq,
+      op: entry.op,
+      data: entry.data,
+      traceId
+    });
   });
 
   function resolveWaiters() {
@@ -111,6 +136,17 @@ function createReplication({
   mesh.on('write_ack', (msg, from) => {
     if (!clusterState.isLeader() || !isInt(msg.seq) || msg.authId !== from) return;
     if (msg.seq > lastSeq()) return; // no puede confirmar algo que el líder no tiene
+    if (traceBuffer && msg.traceId) {
+      traceBuffer.record({
+        traceId: msg.traceId,
+        service: 'auth',
+        id: me(),
+        event: 'write_ack_recv',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `confirmado por ${from} (seq ${msg.seq})`
+      });
+    }
     clusterState.updatePeer(from, { lastAppliedSeq: msg.seq });
     ackedSeq.set(from, Math.max(ackedSeq.get(from) || 0, msg.seq));
     resolveWaiters();
@@ -118,32 +154,66 @@ function createReplication({
 
   mesh.on('request_sync', (msg, from) => {
     if (!clusterState.isLeader() || !isInt(msg.fromSeq)) return;
+    if (traceBuffer && msg.traceId) {
+      traceBuffer.record({
+        traceId: msg.traceId,
+        service: 'auth',
+        id: me(),
+        event: 'request_sync_recv',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `solicitado por ${from} desde seq ${msg.fromSeq}`
+      });
+    }
     const mine = lastSeq();
     // La réplica tiene escrituras que el líder no tiene, o una entrada distinta en fromSeq
     if (msg.fromSeq > mine) {
-      mesh.send(from, { type: 'sync_response', entries: [], truncateTo: mine });
+      mesh.send(from, { type: 'sync_response', entries: [], truncateTo: mine, ...(msg.traceId ? { traceId: msg.traceId } : {}) });
       return;
     }
     if (msg.fromSeq > 0 && msg.fromTerm !== undefined && replicationLog.termAt(msg.fromSeq) !== msg.fromTerm) {
-      mesh.send(from, { type: 'sync_response', entries: [], truncateTo: msg.fromSeq - 1 });
+      mesh.send(from, { type: 'sync_response', entries: [], truncateTo: msg.fromSeq - 1, ...(msg.traceId ? { traceId: msg.traceId } : {}) });
       return;
     }
     const entries = replicationLog.entriesSince(msg.fromSeq, SYNC_BATCH);
-    mesh.send(from, { type: 'sync_response', entries, lastSeq: mine });
+    mesh.send(from, { type: 'sync_response', entries, lastSeq: mine, ...(msg.traceId ? { traceId: msg.traceId } : {}) });
     if (entries.length) log.info(`[replication] sync_response a ${from}: ${entries.length} entrada(s) desde seq ${msg.fromSeq + 1}.`);
   });
 
   // ---------------------------------------------------------------- réplica
-  function requestSync(to, force = false) {
+  function requestSync(to, force = false, traceId = null) {
     const now = Date.now();
     if (!force && now - lastSyncRequestAt < syncRetryMs) return;
     lastSyncRequestAt = now;
     const fromSeq = lastSeq();
-    mesh.send(to, { type: 'request_sync', fromSeq, fromTerm: replicationLog.termAt(fromSeq) });
+    const reqTraceId = traceId || crypto.randomUUID();
+    if (traceBuffer && reqTraceId) {
+      traceBuffer.record({
+        traceId: reqTraceId,
+        service: 'auth',
+        id: me(),
+        event: 'request_sync_send',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `desde seq ${fromSeq} a ${to}`
+      });
+    }
+    mesh.send(to, { type: 'request_sync', fromSeq, fromTerm: replicationLog.termAt(fromSeq), traceId: reqTraceId });
   }
 
-  function ack(to) {
-    mesh.send(to, { type: 'write_ack', authId: me(), seq: lastSeq() });
+  function ack(to, traceId = null) {
+    if (traceBuffer && traceId) {
+      traceBuffer.record({
+        traceId,
+        service: 'auth',
+        id: me(),
+        event: 'write_ack_send',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `seq ${lastSeq()} a ${to}`
+      });
+    }
+    mesh.send(to, { type: 'write_ack', authId: me(), seq: lastSeq(), ...(traceId ? { traceId } : {}) });
   }
 
   // ¿Este mensaje viene del líder que reconocemos? Si trae un term mayor, lo adoptamos.
@@ -179,6 +249,17 @@ function createReplication({
   mesh.on('write_propagate', (msg, from) => {
     if (!isInt(msg.seq) || msg.seq === 0 || typeof msg.op !== 'string' ||
         !msg.data || typeof msg.data !== 'object' || Array.isArray(msg.data)) return;
+    if (traceBuffer && msg.traceId) {
+      traceBuffer.record({
+        traceId: msg.traceId,
+        service: 'auth',
+        id: me(),
+        event: 'write_propagate_recv',
+        at: new Date().toISOString(),
+        durationMs: null,
+        detail: `seq ${msg.seq} (${msg.op}) de ${from}`
+      });
+    }
     if (!acceptLeader(from, msg.term)) return;
     clusterState.noteLeaderContact(from, Math.max(clusterState.describe().leaderSeq, msg.seq));
 
@@ -187,17 +268,17 @@ function createReplication({
       result = replicationLog.applyEntry({ seq: msg.seq, term: msg.term, op: msg.op, data: msg.data });
     } catch (err) {
       log.error(`[replication] No se pudo aplicar seq ${msg.seq} de ${from}: ${err.message}. Se pide sync.`);
-      return requestSync(from, true);
+      return requestSync(from, true, msg.traceId);
     }
     if (result === 'gap') {
       log.info(`[replication] Hueco: llegó seq ${msg.seq} y voy en ${lastSeq()}. Pido request_sync.`);
-      return requestSync(from, true);
+      return requestSync(from, true, msg.traceId);
     }
     if (result === 'duplicate' && replicationLog.termAt(msg.seq) !== msg.term) {
-      return requestSync(from, true); // tengo otra entrada en ese seq: hay que corregir
+      return requestSync(from, true, msg.traceId); // tengo otra entrada en ese seq: hay que corregir
     }
     if (result === 'applied') log.info(`[replication] Aplicado seq ${msg.seq} (${msg.op}) de ${from}.`);
-    ack(from);
+    ack(from, msg.traceId);
   });
 
   mesh.on('sync_response', (msg, from) => {

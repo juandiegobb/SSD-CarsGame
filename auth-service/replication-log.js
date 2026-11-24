@@ -130,14 +130,17 @@ function createReplicationLog(db) {
   // LÍDER: hace la escritura local y la anota en el log en la MISMA transacción.
   // writeFn modifica users y devuelve los datos de la entrada (o null si no hubo cambio).
   // Si la escritura falla (p. ej. UNIQUE), no queda nada anotado y el error sigue su camino.
-  function recordLocalWrite(op, writeFn) {
+  function recordLocalWrite(op, writeFn, traceId = null) {
     if (!OPS.has(op)) throw new Error(`Operación de replicación desconocida: ${op}`);
     const entry = runInTransaction(db, () => {
       const data = writeFn();
       if (!data) return null;
       return appendEntry(currentTerm(), op, data);
     });
-    if (entry) for (const listener of listeners) listener(entry);
+    if (entry) {
+      if (traceId) entry.traceId = traceId;
+      for (const listener of listeners) listener(entry);
+    }
     return entry;
   }
 
