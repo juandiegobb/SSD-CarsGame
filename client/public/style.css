@@ -855,3 +855,25 @@ button.primary { background: linear-gradient(135deg, var(--accent-strong), var(-
         max-height: calc(100dvh - 110px);
     }
 }
+
+/* Pantalla completa nativa */
+:fullscreen .game-stage,
+:-webkit-full-screen .game-stage {
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    background: #000;
+}
+:fullscreen .game-stage canvas,
+:-webkit-full-screen .game-stage canvas {
+    max-height: 100vh;
+    max-height: 100dvh;
+    max-width: 100vw;
+    width: auto;
+    height: auto;
+    aspect-ratio: 4 / 3;
+    object-fit: contain;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+}

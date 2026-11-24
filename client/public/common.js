@@ -547,3 +547,48 @@ function friendlyFeedback(payload, fallbackMessage = "No se pudo completar la ac
     }
     return { message: fallbackMessage, hint: "" };
 }
+
+function setupFullscreenToggle(buttonId, targetElement) {
+    if (typeof document === "undefined") return;
+    const btn = typeof buttonId === "string" ? document.getElementById(buttonId) : buttonId;
+    if (!btn) return;
+    const target = targetElement || document.documentElement;
+
+    function isFullscreen() {
+        return Boolean(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement);
+    }
+
+    function updateLabel() {
+        const active = isFullscreen();
+        btn.textContent = active ? "🗗 Salir de pantalla completa" : "⛶ Pantalla completa";
+        btn.setAttribute("aria-pressed", String(active));
+    }
+
+    btn.addEventListener("click", async () => {
+        try {
+            if (!isFullscreen()) {
+                if (target.requestFullscreen) {
+                    await target.requestFullscreen();
+                } else if (target.webkitRequestFullscreen) {
+                    await target.webkitRequestFullscreen();
+                } else if (target.msRequestFullscreen) {
+                    await target.msRequestFullscreen();
+                }
+            } else {
+                if (document.exitFullscreen) {
+                    await document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) {
+                    await document.webkitExitFullscreen();
+                } else if (document.msExitFullscreen) {
+                    await document.msExitFullscreen();
+                }
+            }
+        } catch (err) {
+            console.warn("[fullscreen] Error:", err);
+        }
+    });
+
+    document.addEventListener("fullscreenchange", updateLabel);
+    document.addEventListener("webkitfullscreenchange", updateLabel);
+    updateLabel();
+}

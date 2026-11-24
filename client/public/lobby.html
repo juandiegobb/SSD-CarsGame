@@ -82,6 +82,7 @@
                     <p id="room-member-count" class="muted"></p>
                 </div>
                 <div class="button-row">
+                    <button id="fullscreen-button" type="button" class="button" aria-label="Pantalla completa">⛶ Pantalla completa</button>
                     <button id="start-game-button" class="primary" type="button" hidden>Iniciar partida</button>
                     <button id="leave-room-button" type="button">Salir de la sala</button>
                 </div>
@@ -752,6 +753,7 @@
                 socket.send(JSON.stringify({ type: "room_leave" }));
             });
             startGameButton.addEventListener("click", () => socket.send(JSON.stringify({ type: "game_start" })));
+            setupFullscreenToggle("fullscreen-button");
 
             // Taller 6: la conexión vive en una función para poder reconectar a otro
             // coordinador sin recargar la página. `ws` es el socket de ESTA conexión.
