@@ -146,6 +146,10 @@ const PLAYER_SPEED = Number(process.env.PLAYER_SPEED) || 200; // px/seg
 const TICK_RATE = Number(process.env.TICK_RATE) || 20;        // Hz
 const TICK_MS = 1000 / TICK_RATE;
 const MAX_EXTRAS_BYTES = 1024; // límite anti-abuso para extras_update
+const MAX_SPECTATORS = Number.isInteger(Number(process.env.MAX_SPECTATORS))
+  && Number(process.env.MAX_SPECTATORS) >= 0
+  ? Number(process.env.MAX_SPECTATORS)
+  : 50;
 const ROOM_COLORS = ['#2f6fed', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#ffffff'];
 // Vueltas por nivel (3 en el juego). Se puede bajar con RACE_LAPS_PER_LEVEL solo para pruebas.
 const RACE_LAPS_PER_LEVEL = (() => {
@@ -159,6 +163,8 @@ const RACE_COUNTDOWN_COLOR_MS = 2000;
 // Map: userId (string) → { username, provider, socket, connectedAt, expirationTimer,
 //                          x, y, intent: { x, y }, extras }
 const players = new Map();
+const spectators = new Set();
+let rejectedSpectatorMessages = 0;
 const wsTickets = new Map();
 let heartbeatTimer = null;
 let heartbeatInFlight = false;
@@ -1131,14 +1137,26 @@ function broadcastToLobby(payload) {
       sendWs(player.socket, payload);
     }
   }
+  for (const spectator of spectators) {
+    if ((!spectator.roomId || !rooms.has(spectator.roomId)) && isOpenSocket(spectator.socket)) {
+      spectator.roomId = null;
+      sendWs(spectator.socket, payload);
+    }
+  }
 }
 
 function broadcastRoom(roomId, payload) {
   const room = rooms.get(roomId);
   if (!room) return;
+  const message = JSON.stringify(payload);
   for (const memberId of room.members) {
     const player = players.get(memberId);
-    if (player && isOpenSocket(player.socket)) sendWs(player.socket, payload);
+    if (player && isOpenSocket(player.socket)) player.socket.send(message);
+  }
+  for (const spectator of spectators) {
+    if (spectator.roomId === roomId && isOpenSocket(spectator.socket)) {
+      spectator.socket.send(message);
+    }
   }
 }
 
@@ -1700,6 +1718,10 @@ app.get('/metrics', (req, res) => {
   }
   const meshConnections = [...peerConnections.values()].filter(isOpenSocket).length;
   const clientConnections = [...wss.clients].filter(isOpenSocket).length;
+  let openSpectators = 0;
+  for (const spectator of spectators) {
+    if (isOpenSocket(spectator.socket)) openSpectators += 1;
+  }
   return sendOk(res, 200, 'Métricas de los últimos 60 segundos.', {
     http: {
       rps: latencies.length / 60,
@@ -1709,13 +1731,14 @@ app.get('/metrics', (req, res) => {
         p99: percentile(latencies, 0.99)
       }
     },
-    ws: { connections: clientConnections + meshConnections },
+    ws: { connections: clientConnections + meshConnections + openSpectators },
     tick: {
       configuredHz: TICK_RATE,
       effectiveHz: tickSamples.values().length
     },
     players: { local: localPlayers, remote: remotePlayers },
-    spectators: 0,
+    spectators: openSpectators,
+    spectatorMessagesRejected: rejectedSpectatorMessages,
     replication: {
       intentLagMs: {
         p50: percentile(intentLatencies, 0.50),
@@ -1728,12 +1751,14 @@ app.get('/metrics', (req, res) => {
 
 // GET /health
 app.get('/health', (req, res) => {
+  const openSpectators = [...spectators].filter((spectator) => isOpenSocket(spectator.socket)).length;
   sendOk(res, 200, 'Coordinador operativo.', {
     service: 'coordinator',
     coordinatorId: COORDINATOR_ID,
     coordinatorName: COORDINATOR_NAME,
     uptime: Math.floor(process.uptime()),
     onlineCount: players.size,
+    spectatorCount: openSpectators,
     mesh: {
       discoveredPeerIds: peers.map((peer) => peer.coordinatorId).sort(),
       connectedPeerIds: [...peerConnections.keys()].sort(),
@@ -2039,6 +2064,7 @@ const wss = new WebSocketServer({
     return protocols.has(APP_WS_PROTOCOL) ? APP_WS_PROTOCOL : false;
   }
 });
+const spectatorWss = new WebSocketServer({ noServer: true });
 
 // ── Evento upgrade: consumir el ticket antes de aceptar la conexión WS ───────
 server.on('upgrade', (req, socket, head) => {
@@ -2055,6 +2081,25 @@ server.on('upgrade', (req, socket, head) => {
   if (parsedUrl.pathname === '/mesh') {
     peerWss.handleUpgrade(req, socket, head, (ws) => {
       peerWss.emit('connection', ws, req);
+    });
+    return;
+  }
+
+  if (parsedUrl.pathname === '/spectate') {
+    if (parsedUrl.search) {
+      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    if ([...spectators].filter((spectator) => isOpenSocket(spectator.socket)).length >= MAX_SPECTATORS) {
+      spectatorWss.handleUpgrade(req, socket, head, (ws) => {
+        sendWs(ws, { type: 'spectate_full', ok: false, message: 'Se alcanzó el límite de espectadores.', hint: 'Intenta conectarte nuevamente más tarde.' });
+        ws.close(4503, 'spectator limit');
+      });
+      return;
+    }
+    spectatorWss.handleUpgrade(req, socket, head, (ws) => {
+      spectatorWss.emit('connection', ws);
     });
     return;
   }
@@ -2118,6 +2163,69 @@ server.on('upgrade', (req, socket, head) => {
   // Ticket válido y consumido → completar el handshake con el payload ya verificado.
   wss.handleUpgrade(req, socket, head, (ws) => {
     wss.emit('connection', ws, payload);
+  });
+});
+
+// ── Conexiones espectadoras: sin ticket, sin identidad y sin capacidad de juego ──
+spectatorWss.on('connection', (ws) => {
+  const spectator = { socket: ws, roomId: null };
+  spectators.add(spectator);
+  sendWs(ws, {
+    type: 'connected',
+    ok: true,
+    message: 'Conexión espectadora establecida.',
+    spectating: true
+  });
+  sendWs(ws, { type: 'room_list', rooms: [...rooms.values()].map(roomSummary) });
+  void sendHeartbeat();
+
+  ws.on('message', (raw) => {
+    let msg;
+    try {
+      msg = JSON.parse(raw.toString());
+    } catch {
+      rejectedSpectatorMessages += 1;
+      sendWs(ws, {
+        type: 'error',
+        ok: false,
+        code: 'INVALID_JSON',
+        message: 'El mensaje recibido no es JSON válido.',
+        hint: 'Envía JSON, por ejemplo {"type":"ping"}.'
+      });
+      return;
+    }
+
+    if (msg?.type === 'ping') {
+      sendWs(ws, { type: 'pong', ok: true, message: 'Conexión viva.', serverTime: new Date().toISOString() });
+      return;
+    }
+    if (msg?.type === 'watch') {
+      const roomId = typeof msg.roomId === 'string' && msg.roomId.length <= 128
+        ? msg.roomId
+        : (typeof msg.roomId === 'number' ? String(msg.roomId) : null);
+      const room = roomId !== null ? rooms.get(roomId) : null;
+      spectator.roomId = room ? roomId : null;
+      sendWs(ws, { type: 'room_list', rooms: [...rooms.values()].map(roomSummary) });
+      if (room) {
+        sendWs(ws, roomUpdateMessage(room));
+        sendWs(ws, { type: 'state', t: Date.now(), players: snapshot(roomId), race: raceSnapshot(room) });
+        if (room.status === 'playing') {
+          sendWs(ws, { type: 'race_update', roomId, race: raceSnapshot(room) });
+        }
+      }
+      return;
+    }
+
+    rejectedSpectatorMessages += 1;
+  });
+
+  ws.on('close', () => {
+    spectators.delete(spectator);
+    void sendHeartbeat();
+  });
+
+  ws.on('error', () => {
+    spectators.delete(spectator);
   });
 });
 

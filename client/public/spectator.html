@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Modo espectador | SSD-CarsGame</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/config.js"></script>
+    <script src="/common.js"></script>
+    <script src="/tracks.js"></script>
+    <script src="/game.js"></script>
+    <style>
+        .spectator-page main { max-width: 1100px; }
+        .spectator-status { display: inline-flex; align-items: center; gap: 8px; }
+        .spectator-status::before { content: "●"; color: #f59e0b; }
+        .spectator-status.connected::before { color: #39d98a; }
+        .spectator-status.rejected::before, .spectator-status.disconnected::before { color: #ff7a59; }
+        .spectator-rooms { display: flex; flex-wrap: wrap; gap: 8px; }
+        .spectator-rooms button { justify-self: auto; }
+        .spectator-page .touch-controls { display: none !important; }
+    </style>
+</head>
+<body class="racing-page spectator-page">
+    <main>
+        <header class="lobby-header">
+            <span class="hero-kicker">MODO ESPECTADOR</span>
+            <h1>MODO ESPECTADOR</h1>
+            <p id="spectator-status" class="status spectator-status" aria-live="polite">Conectando…</p>
+        </header>
+
+        <section>
+            <h2>Salas disponibles</h2>
+            <div id="spectator-rooms" class="spectator-rooms"></div>
+        </section>
+
+        <section id="game-section" class="track-panel" aria-label="Vista visual de la carrera">
+            <h2 id="spectator-room-name">Lobby</h2>
+            <div class="game-stage">
+                <canvas id="game-canvas" width="800" height="600" aria-label="Estado visual del juego"></canvas>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        const statusElement = document.getElementById("spectator-status");
+        const roomsElement = document.getElementById("spectator-rooms");
+        const roomNameElement = document.getElementById("spectator-room-name");
+        const canvas = document.getElementById("game-canvas");
+        let socket = null;
+        let reconnectTimer = null;
+        let reconnectAttempts = 0;
+        let selectedRoomId = null;
+        let intentionallyClosed = false;
+
+        function setStatus(text, state) {
+            statusElement.textContent = text;
+            statusElement.className = `status spectator-status ${state || ""}`;
+        }
+
+        const game = createGame({
+            canvas,
+            send: () => {},
+            myUserId: null,
+            controls: null
+        });
+
+        function spectatorSocketUrl() {
+            const base = getAppConfig().COORDINATOR_WS_URL;
+            const url = new URL(base);
+            url.pathname = "/spectate";
+            url.search = "";
+            url.hash = "";
+            return url.toString();
+        }
+
+        function renderRooms(rooms) {
+            roomsElement.replaceChildren();
+            if (!Array.isArray(rooms) || rooms.length === 0) {
+                const empty = document.createElement("span");
+                empty.className = "muted";
+                empty.textContent = "No hay salas activas.";
+                roomsElement.append(empty);
+                return;
+            }
+            for (const room of rooms) {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.textContent = `${room.name} (${room.playerCount || 0})`;
+                button.addEventListener("click", () => {
+                    selectedRoomId = room.roomId;
+                    roomNameElement.textContent = room.name;
+                    if (socket?.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({ type: "watch", roomId: selectedRoomId }));
+                    }
+                });
+                roomsElement.append(button);
+            }
+        }
+
+        function connect() {
+            if (intentionallyClosed) return;
+            setStatus("Conectando…", "connecting");
+            socket = new WebSocket(spectatorSocketUrl());
+
+            socket.addEventListener("open", () => {
+                reconnectAttempts = 0;
+                setStatus("Conexión establecida", "connected");
+                if (selectedRoomId !== null) {
+                    socket.send(JSON.stringify({ type: "watch", roomId: selectedRoomId }));
+                }
+            });
+
+            socket.addEventListener("message", (event) => {
+                let message;
+                try {
+                    message = JSON.parse(event.data);
+                } catch {
+                    setStatus("El servidor envió datos no válidos.", "disconnected");
+                    return;
+                }
+                if (message.type === "room_list") renderRooms(message.rooms);
+                if (message.type === "state" || message.type === "race_update" || message.type === "game_started") {
+                    if (message.type === "race_update") {
+                        game.onRaceUpdate(message.race);
+                    } else if (message.type === "state") {
+                        game.onState(message);
+                    } else {
+                        game.onState({ t: Date.now(), players: message.players || [], race: message.race });
+                    }
+                }
+                if (message.type === "spectate_full") {
+                    setStatus("Conexión rechazada: límite de 50 espectadores.", "rejected");
+                    intentionallyClosed = true;
+                }
+            });
+
+            socket.addEventListener("close", (event) => {
+                socket = null;
+                if (intentionallyClosed || event.code === 4503) {
+                    setStatus("Conexión rechazada por el servidor.", "rejected");
+                    return;
+                }
+                setStatus("Se perdió la conexión. Reconectando…", "disconnected");
+                reconnectAttempts += 1;
+                if (reconnectAttempts <= 15) {
+                    reconnectTimer = setTimeout(connect, Math.min(5000, 1000 * reconnectAttempts));
+                } else {
+                    setStatus("No fue posible reconectar.", "disconnected");
+                }
+            });
+        }
+
+        connect();
+    </script>
+</body>
+</html>

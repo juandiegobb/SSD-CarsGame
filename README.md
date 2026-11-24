@@ -1,4 +1,4 @@
-# Talleres 4, 5 y 6: Sistemas Distribuidos — Proyecto Final (Partes I–III)
+# Talleres 4–7: Sistemas Distribuidos — Proyecto Final
 
 > **Universidad de Boyacá — Facultad de Ciencias e Ingeniería**  
 > **Asignatura:** Sistemas Distribuidos  
@@ -6,11 +6,16 @@
 
 Este repositorio contiene el videojuego web multijugador **SSD-CarsGame**:
 
-* **Parte I (Taller 4) — Identidad:** registro, login con JWT, persistencia en SQLite, presencia de jugadores en vivo por WebSocket y despliegue con ngrok.
-* **Parte II (Taller 5) — Juego en vivo + Google:** cada jugador maneja un carro en un canvas, con el **servidor como autoridad** (game loop a 20 Hz), **login con Google** que convive con el login local en una sola tabla `users`, y un **feature extra replicado** (color del carro e insignia de provider). Ver la [sección 11](#11-taller-5--parte-ii-juego-en-vivo-y-login-con-google).
-* **Parte III (Taller 6) — Coordinadores distribuidos:** varios coordinadores mantienen presencia, movimiento, salas, colores y fotos sincronizados por un mesh WebSocket. El Auth selecciona el menos cargado y el cliente vuelve a consultarlo cuando pierde la conexión. La demo usa tres, pero se pueden agregar más y ejecutarlos en equipos distintos. Ver la [sección 12](#12-taller-6--coordinadores-distribuidos-y-mesh).
+* **Taller 4 — Identidad:** registro, login local con JWT, SQLite y presencia por WebSocket.
+* **Taller 5 — Juego en vivo y Google:** juego autoritativo en canvas a 20 Hz e inicio de sesión Google junto al local.
+* **Taller 6 — Coordinadores distribuidos:** coordinadores conectados por mesh WebSocket que replican jugadores, movimiento y salas.
+* **Taller 7 — Auth replicado:** tres nodos Auth con líder, elección y replicación single-writer.
+* **Track 2.2 — Observabilidad:** métricas de los servicios, trazas `traceId` y dashboard.
+* **Track 2.5 — Espectadores:** conexión de solo lectura al estado de una sala, sin login ni controles.
 
-> ℹ️ **Nota de alcance:** el estado distribuido vive en memoria. Si cae un coordinador, sus jugadores remotos se eliminan; no se persiste ni se recupera el estado de ese proceso.
+El despliegue integrado por defecto ejecuta tres Auth (`4001`–`4003`), tres coordinadores (`5001`–`5003`) y un cliente web (`3000`). También se pueden ejecutar procesos individuales con los puertos definidos en sus `.env`.
+
+> ℹ️ **Límite:** el estado del juego y las salas vive en memoria. El mesh replica estado entre coordinadores activos, pero no es almacenamiento durable; perder el proceso que tiene la sesión puede perder su progreso.
 
 ---
 
@@ -25,67 +30,57 @@ Este repositorio contiene el videojuego web multijugador **SSD-CarsGame**:
 8. [Decisiones de Diseño Justificadas](#8-decisiones-de-diseño-justificadas)
 9. [Despliegue Público con ngrok](#9-despliegue-público-con-ngrok)
 10. [Errores Típicos y Cómo Evitarlos](#10-errores-típicos-y-cómo-evitarlos)
-11. [Taller 5 — Parte II: Juego en Vivo y Login con Google](#11-taller-5--parte-ii-juego-en-vivo-y-login-con-google)
-12. [Taller 6 — Coordinadores Distribuidos y Mesh](#12-taller-6--coordinadores-distribuidos-y-mesh)
-13. [Equipo y Reparto de Fases](#13-equipo-y-reparto-de-fases)
+11. [Taller 5 — Parte II: Juego en Vivo y Login con Google](#11-taller-5-parte-ii-juego-en-vivo-y-login-con-google)
+12. [Taller 6 — Coordinadores Distribuidos y Mesh](#12-taller-6-coordinadores-distribuidos-y-mesh)
+14. [Proyecto final: auth replicado, observabilidad y espectadores](#14-proyecto-final-auth-replicado-observabilidad-y-espectadores)
+    - [Métricas y trazas](#148-métricas-y-trazas-track-22)
+    - [Modo espectador](#146-modo-espectador-track-25)
+    - [Ejecución integrada](#1410-ejecución-integrada)
+    - [Fallas, limitaciones y mejoras futuras](#1411-modos-de-falla-limitaciones-y-trabajo-futuro)
+    - [Responsabilidades del equipo](#responsabilidades-del-trabajo-final)
+15. [Equipo y Reparto de Fases](#15-equipo-y-reparto-de-fases)
 
 ---
 
 ## 1. Arquitectura del Sistema
 
-El sistema separa Auth, Client y los procesos Coordinator. En el Taller 6 se
-levantan varios coordinadores independientes (tres en el diagrama), cada uno con un puerto para
-clientes y otro para el mesh (ver la [sección 12](#12-taller-6--coordinadores-distribuidos-y-mesh)).
+El cliente web solicita autenticación y configuración al clúster Auth; los tres
+coordinadores se comunican por mesh y aceptan conexiones de juego autenticadas.
+Los espectadores llegan directamente a `/spectate` y no se incorporan al mapa de
+jugadores. Los coordinadores mantienen el estado en memoria.
 
 ```mermaid
-flowchart TD
-    subgraph Clientes ["Clientes Web (Navegadores)"]
-        BrowserA["Cliente A (Pestaña / Móvil)"]
-        BrowserB["Cliente B (Pestaña / PC)"]
-    end
-
-    subgraph NgrokTunnels ["Túneles ngrok (Fase 4)"]
-        TunnelClient["Túnel Cliente :3000 (HTTPS)"]
-        TunnelAuth["Túnel Auth :4000 (HTTPS)"]
-        TunnelCoord["Túnel Coordinador :5000 (WSS)"]
-    end
-
-    subgraph Backend ["Servicios Distribuidos (Node.js)"]
-        ClientApp["Cliente Web (:3000)<br>Express estático + /config.js"]
-        AuthService["Auth Service (:4000)<br>Express + bcryptjs + JWT<br>+ /auth/google"]
-        Google["Google Identity Services<br>(ID Token)"]
-        Coordinator["Coordinador (:5000)<br>HTTP + WebSocket Server<br>+ game loop 20 Hz"]
-        DB[("users.db<br>node:sqlite / WAL<br>tabla única users")]
-        MemoryMap[["players Map<br>(x, y, intent, extras)"]]
-    end
-
-    %% Conexiones Clientes -> Túneles
-    BrowserA -->|HTTPS| TunnelClient
-    BrowserB -->|HTTPS| TunnelClient
-    BrowserA -->|HTTPS POST| TunnelAuth
-    BrowserB -->|HTTPS POST| TunnelAuth
-    BrowserA -->|WSS /connect + ticket efímero| TunnelCoord
-    BrowserB -->|WSS /connect + ticket efímero| TunnelCoord
-
-    %% Túneles -> Backend
-    TunnelClient --> ClientApp
-    TunnelAuth --> AuthService
-    TunnelCoord --> Coordinator
-
-    %% Backend interno
-    AuthService <-->|CRUD seguro| DB
-    Coordinator <-->|Gestión de sockets| MemoryMap
-    AuthService -.->|"Firma JWT HS256<br>Misma JWT_SECRET"| Coordinator
-    BrowserA -.->|Sign in with Google| Google
-    AuthService -.->|verifyIdToken| Google
+flowchart LR
+    Browser["Navegadores<br>jugador / espectador"] -->|HTTP| Client["Cliente :3000<br>Express + HTML/JS"]
+    Client -->|login / register / Google| AuthA
+    Client -->|login / register / Google| AuthB
+    Client -->|login / register / Google| AuthC
+    Client -->|POST /ws-ticket + WSS /connect| Coord1
+    Client -->|POST /ws-ticket + WSS /connect| Coord2
+    Browser -->|WSS /spectate, sin token| Coord1
+    Browser -->|WSS /spectate, sin token| Coord2
+    AuthA["auth-a :4001"] <-->|replicación y elecciones| AuthB["auth-b :4002"]
+    AuthB <-->|replicación y elecciones| AuthC["auth-c :4003"]
+    AuthC <-->|replicación y elecciones| AuthA
+    AuthA --> DBa[("SQLite propia")]
+    AuthB --> DBb[("SQLite propia")]
+    AuthC --> DBc[("SQLite propia")]
+    Coord1["coord-1 :5001"] <-->|mesh WS| Coord2["coord-2 :5002"]
+    Coord2 <-->|mesh WS| Coord3["coord-3 :5003"]
+    Coord3 <-->|mesh WS| Coord1
+    Coord1 --> State1["Estado local<br>jugadores + salas"]
+    Coord2 --> State2["Estado local<br>jugadores + salas"]
+    Coord3 --> State3["Estado local<br>jugadores + salas"]
+    Google["Google Identity Services"] -. ID token .-> AuthA
 ```
 
 ### Flujo de Vida de una Sesión:
-1. **Registro:** El cliente envía `POST /register` con `{ username, password }` al Auth Service. El password se hashea con `bcrypt` (10 rounds) y se guarda en SQLite.
-2. **Login:** El cliente envía `POST /login`. El Auth Service valida las credenciales y genera un **JWT** firmado (algoritmo `HS256`, vigencia configurable).
+1. **Registro:** El cliente envía `POST /register` con `{ username, password }` al líder Auth. La contraseña se hashea y se almacena en la SQLite de cada nodo por medio de replicación.
+2. **Login:** El cliente envía `POST /login` a un Auth. El servicio valida las credenciales y genera un **JWT** firmado (algoritmo `HS256`, vigencia configurable).
 3. **Handshake WebSocket:** El cliente envía el JWT al coordinador por `POST /ws-ticket` en el header `Authorization` y recibe un ticket aleatorio de un solo uso, válido por 15 segundos. El ticket viaja en un subprotocolo del handshake `ws://` (o `wss://`); el JWT no aparece en la URL ni en mensajes WebSocket.
-4. **Presencia en Vivo:** El Coordinador registra al jugador en un `Map` en memoria (`userId -> { username, socket, ... }`) y emite un broadcast `players_update` a todos los clientes conectados.
-5. **Juego (Taller 5):** El cliente envía `intent` con la dirección de las teclas; el game loop del Coordinador mueve a cada jugador y difunde un `state` 20 veces por segundo. Con Google, el paso 2 se reemplaza por `POST /auth/google` y el resto es idéntico (mismo JWT).
+4. **Presencia y juego:** el Coordinador registra al jugador en `players`, acepta sus intents y difunde estados de juego por sala a 20 Hz. Los coordinadores replican jugadores y salas mediante mesh.
+5. **Espectador:** el navegador puede conectarse a `/spectate` sin login. El Coordinador entrega el estado de sala, pero ignora los mensajes de juego del espectador.
+6. **Google:** el paso de login puede usar `POST /auth/google`; el Auth verifica el ID token de Google y emite el mismo tipo de JWT propio.
 
 **Riesgo residual del cliente:** el JWT de login se guarda en `localStorage` para que la aplicación web pueda recuperarlo al recargar. Cualquier JavaScript ejecutado en el origen del cliente podría leerlo; por ello se evita insertar datos del servidor con `innerHTML` y no se deben agregar scripts de terceros sin revisión. Cambiar a una sesión `HttpOnly` exigiría una arquitectura de sesión/proxy distinta y queda fuera de este cambio.
 
@@ -95,13 +90,13 @@ flowchart TD
 
 ```text
 SSD-CarsGame/
-├── auth-service/              # Servicio de Autenticación (Puerto 4000)
-│   ├── index.js               # API REST Express, SQLite, emisor de JWT y /auth/google
-│   ├── package.json           # Dependencias: express, bcryptjs, jsonwebtoken, dotenv, cors, google-auth-library (+ node:sqlite)
-│   ├── .env.example           # Plantilla de variables de entorno del Auth
-│   └── users.db               # Base de datos SQLite (ignorado en .gitignore)
-├── coordinator/               # Coordinador de Sesiones WebSocket (Puerto 5000)
-│   ├── index.js               # Verificación en upgrade, Map de jugadores, game loop y broadcast
+├── auth-service/              # Servicio Auth; 3 procesos integrados en 4001–4003
+│   ├── index.js               # HTTP, SQLite, JWT, Google, elecciones y replicación
+│   ├── package.json           # Dependencias propias del servicio
+│   ├── .env.example           # Plantilla sanitizada; las DB no se versionan
+│   └── start-auths.ps1        # Arranque local de auth-a, auth-b y auth-c
+├── coordinator/               # Coordinadores; 3 procesos integrados en 5001–5003
+│   ├── index.js               # HTTP, WebSockets, salas, juego, mesh y espectadores
 │   ├── package.json           # Dependencias: express, ws, jsonwebtoken, dotenv
 │   ├── .env.example           # Plantilla de variables de entorno del Coordinador
 │   ├── start-coordinators.ps1 # Arranque local de una cantidad configurable de instancias
@@ -113,14 +108,18 @@ SSD-CarsGame/
 │   └── public/                # Archivos estáticos del frontend
 │       ├── login.html         # Registro, Iniciar Sesión y botón Sign in with Google
 │       ├── lobby.html         # Pista del juego, color del carro, jugadores conectados y logout
+│       ├── spectator.html     # Vista de solo lectura y sin login
+│       ├── dashboard.html     # Métricas y búsqueda de trazas
 │       ├── game.js            # Canvas: teclado → intent y dibujo de cada state
 │       ├── common.js          # Utilidades compartidas (API, localStorage, headers)
 │       └── style.css          # Estilos visuales del cliente
 ├── docs/                      # Documentación técnica adicional
 │   └── ngrok.md               # Guía completa de despliegue con ngrok
-├── worker/                    # Componente reservado para futuras fases (física/movimiento)
-│                              # (No se utiliza en este Taller 4 - Parte I)
-├── ngrok.example.yml          # Plantilla v3 para los 5 endpoints locales
+├── shared/tracks.js           # Pistas y geometría compartidas por cliente y coordinador
+├── scripts/test-all.js        # Ejecutor de las pruebas por servicio
+├── start-all.ps1              # Arranque integrado local o con túneles
+├── deploy.env.example         # Plantilla sanitizada de URLs públicas (7 servicios)
+├── ngrok.example.yml          # Plantilla ngrok v3 para los 7 servicios
 ├── .env.example               # Referencia global de variables
 ├── .gitignore                 # Reglas de exclusión (ignora .env, *.db, node_modules)
 ├── SPEC.md                    # Especificación formal y contratos del taller
@@ -238,6 +237,66 @@ npm start --prefix client
 ```
 
 Abre en tu navegador: [http://localhost:3000](http://localhost:3000) (redirige automáticamente a `/login.html`).
+
+### 4.5. Arranque integrado con `start-all.ps1`
+
+Para levantar el conjunto integrado en Windows, crea los `.env` locales desde
+los `.env.example` de cada servicio, configura los secretos y ejecuta desde la
+raíz:
+
+```powershell
+.\start-all.ps1
+```
+
+El script verifica Node, dependencias, `.env` y puertos; abre los tres auths,
+espera la elección de líder, inicia coordinadores y cliente. Usa Auth en
+`4001`–`4003` con sus meshes `4101`–`4103`, coordinadores en `5001`–`5003` con
+peers `6001`–`6003` y cliente en `3000`.
+
+Para instalar dependencias durante el arranque:
+
+```powershell
+.\start-all.ps1 -Install
+```
+
+En equipos separados o para iniciar solo una parte, el argumento `-Only`
+selecciona instancias (todas las PCs deben usar configuración compatible):
+
+```powershell
+.\start-all.ps1 -Mode Tunnel -Only auth-a,coord-1,client
+.\start-all.ps1 -Mode Tunnel -Only auth-b,coord-2
+.\start-all.ps1 -Mode Tunnel -Only auth-c,coord-3
+```
+
+El modo túnel lee `deploy.env` desde la raíz. Cópialo de
+[`deploy.env.example`](deploy.env.example) y completa únicamente las URLs
+HTTPS reales; no incluyas secretos ni el token de ngrok. Las rutas `/mesh` y
+`/auth-mesh` usan el túnel HTTP correspondiente. La descripción de endpoints,
+certificados y seguridad está en [la guía ngrok](docs/ngrok.md).
+
+Para detener los servicios de la ejecución local, usa `Ctrl+C` en sus ventanas.
+El script permite `-NoClient`, `-Coordinators` y `-DeployFile`; consulta
+`.\start-all.ps1 -?` para la sintaxis disponible.
+
+### 4.6. Ejecutar las pruebas
+
+Desde la raíz, ejecuta la suite de todos los servicios:
+
+```powershell
+npm test
+```
+
+También se puede ejecutar por paquete:
+
+```powershell
+npm test --prefix auth-service
+npm test --prefix coordinator
+npm test --prefix client
+```
+
+El modo espectador tiene pruebas de integración dentro de
+`coordinator/test/spectators.integration.test.js`; el runner del coordinador
+las incluye con `npm test --prefix coordinator`.
 
 ---
 
@@ -485,11 +544,14 @@ Esta sección sustenta los requerimientos clave exigidos en el taller:
 
 ## 9. Despliegue Público con ngrok
 
-La demo base configura **cinco endpoints públicos independientes**: Auth (`4000`),
-Client (`3000`) y tres coordinadores (`5001`–`5003`). La guía completa,
-incluidas configuración v3, dominios, variables, arranque y diagnóstico está
+La configuración integrada documentada usa **siete endpoints públicos**: los
+tres Auth (`4001`–`4003`), Client (`3000`) y tres coordinadores (`5001`–`5003`).
+El mesh Auth (`/auth-mesh`) y el mesh de coordinadores (`/mesh`) viajan por el
+túnel HTTP del servicio correspondiente; no son puertos/túneles extra en esta
+configuración. La guía completa, incluidas configuración v3, dominios,
+variables, arranque y diagnóstico está
 en [`docs/ngrok.md`](docs/ngrok.md). La plantilla [`ngrok.example.yml`](ngrok.example.yml)
-define los cinco upstreams; crea `ngrok.local.yml` y asigna a cada endpoint
+define los siete upstreams; crea `ngrok.local.yml` y asigna a cada endpoint
 una URL real y distinta de tu cuenta antes de ejecutar:
 
 ```powershell
@@ -498,20 +560,19 @@ ngrok config check --config .\ngrok.local.yml
 ngrok start --all --config .\ngrok.local.yml
 ```
 
-Free y Hobbyist permiten hasta tres endpoints online en la tabla de precios
-actual de ngrok; publicar los cinco a la vez requiere un plan/cuenta que permita
-cinco endpoints y dominios distintos. Revisa las condiciones y cargos por uso
-vigentes en [ngrok.com/pricing](https://ngrok.com/pricing).
+La cantidad de endpoints simultáneos depende del plan actual de ngrok y de la
+configuración de la cuenta. Revisa las condiciones vigentes en
+[ngrok.com/pricing](https://ngrok.com/pricing). Si la cuenta no admite los
+siete endpoints, la configuración de ejemplo distribuye los servicios entre
+tres PCs/cuentas con `start-all.ps1 -Mode Tunnel -Only ...`.
 
-En los `.env` locales configura la URL HTTPS pública de Auth en `client/.env` y
-`coordinator/.env`, el origen público de Client en `auth-service/.env` y
-`coordinator/.env`, y pasa las tres URLs `wss://` de coordinador a
-`start-coordinators.ps1 -PublicUrls`. No publiques el authtoken, secretos ni valores
-reales de `.env`. Para la demo con los tres coordinadores en el mismo equipo,
-las conexiones peer usan `ws://localhost:6001`–`:6003` y no requieren túneles
-adicionales. Si están en equipos distintos, cada `PEER_URL` también debe ser
-alcanzable por los demás coordinadores; se necesita una red privada o un endpoint
-WSS/túnel adicional por coordinador para su puerto `PEER_PORT`.
+En `deploy.env` configura las siete URLs `https://` de los ejemplos y ejecuta
+`.\start-all.ps1 -Mode Tunnel`. El script arma los `AUTH_URLS`, `AUTH_PEERS`,
+`PUBLIC_URL`, `PEER_URL` y orígenes permitidos para cada proceso. No publiques
+`deploy.env`, el authtoken, secretos ni valores reales de `.env`. En varios
+equipos, el mesh entre coordinadores requiere que las URLs peer sean alcanzables;
+para una red distinta de la configuración túnel integrada, prepara una red
+privada o túneles WSS adicionales según [`docs/ngrok.md`](docs/ngrok.md).
 
 ---
 
@@ -953,7 +1014,9 @@ progreso y las posiciones iniciales a los otros coordinadores.
 
 ---
 
-## 14. Taller 7 — Auth Replicado con Líder y Single-Writer Replication
+## 14. Proyecto final: Auth replicado, observabilidad y espectadores
+
+### Taller 7 — Auth Replicado con Líder y Single-Writer Replication
 
 En este taller se implementa alta disponibilidad y tolerancia a fallos para el servicio de autenticación mediante un clúster de tres nodos (`auth-a`, `auth-b`, `auth-c`) coordinados por un mesh WebSocket (`/auth-mesh`) y replicación de datos con elección de líder tipo Raft simplificado. Para la especificación formal y el diseño detallado, consulta la [Sección 13 de SPEC.md](SPEC.md#13-taller-7--proyecto-final-parte-iv-auth-replicado-con-líder).
 
@@ -1057,7 +1120,7 @@ A continuación se registra la bitácora paso a paso de las pruebas de sustentac
 | **Paso 4: Escritura con Nuevo Líder** | Registrar usuario `bob` (`POST /register`) | La petición es recibida por `auth-b` (o redirigida con `503 not_leader` y reintentada automáticamente por el cliente contra `auth-b`). `auth-b` asigna `seq: 2`, replica a `auth-c`, recibe `write_ack` y responde `201 OK`. Nodos vivos muestran `users: 4` y `lastAppliedSeq: 2`. | ✅ SUPERADO |
 | **Paso 5: Recuperación y Resincronización (Catch-up)** | Reiniciar `auth-a` | `auth-a` arranca como `replica`, conecta al mesh con `auth-b`, detecta atraso (`lastAppliedSeq: 1 < 2`) y envía `request_sync`. `auth-b` responde con `sync_response` y `auth-a` aplica la entrada faltante (`Sync con auth-b: 1 entrada(s) aplicadas`). Los 3 nodos igualan `users: 4` y `lastAppliedSeq: 2`. `auth-a` permanece como réplica disciplinada. | ✅ SUPERADO |
 | **Prueba Extra: Consistencia y Timeout (Opción B)** | Apagar `auth-a` y `auth-c`; registrar `charlie` en `auth-b` | Sin réplicas disponibles, el líder espera 2000 ms (`REPLICATION_ACK_TIMEOUT_MS`) y responde `503 replication_timeout`: `"La escritura se aplicó en el líder pero ninguna réplica la confirmó a tiempo."` Evita falsas confirmaciones cuando no hay quórum de replicación. | ✅ SUPERADO |
-| **Pruebas Automatizadas del Proyecto** | `node --test` en los 3 componentes | **Auth Service:** 28/28 tests en verde.<br>**Cliente Web:** 13/13 tests en verde.<br>**Coordinador:** 15/15 tests en verde.<br>**Total:** 56/56 pruebas superadas (100% de la suite). | ✅ SUPERADO |
+| **Suite automatizada actual** | `npm test` desde la raíz (24 de noviembre de 2026) | **Auth Service:** 42/42.<br>**Coordinador:** 47/47, incluidas las pruebas de espectadores y 50 conexiones simultáneas.<br>**Cliente:** 14/14.<br>**Total:** 103/103 pruebas exitosas. | ✅ SUPERADO |
 
 ### 14.5. Métricas y latencia de replicación (Track 2.2, parte A)
 
@@ -1073,9 +1136,14 @@ envoltorio `{ ok, message, ... }` y resume una ventana deslizante de 60 segundos
 - En Auth, `ws.connections` cuenta peers del mesh; `cluster` informa rol, term,
   secuencias y atraso local. `cluster.replicas` muestra para cada peer la última
   secuencia conocida, conexión y diferencia respecto al `leaderSeq`.
-- En el Coordinador, `ws.connections` suma sockets de juego abiertos y peers de mesh;
-  `players.local` y `players.remote` salen del `Map`; `tick.effectiveHz` cuenta los
-  ticks ocurridos en el último segundo, no la frecuencia configurada.
+- En el Coordinador, `ws.connections` suma sockets de jugadores, espectadores y
+  peers de mesh; `players.local` y `players.remote` salen del `Map` de jugadores,
+  `spectators` cuenta espectadores abiertos y `spectatorMessagesRejected` cuenta
+  mensajes prohibidos o malformados. `tick.effectiveHz` cuenta los ticks
+  ocurridos en el último segundo, no la frecuencia configurada.
+- `spectators` cuenta únicamente sockets `/spectate` abiertos. Los espectadores no
+  aparecen en `players.local`, `players.remote` ni en el `load` de heartbeat usado
+  para balancear coordinadores.
 - `replication.intentLagMs` estima la demora de `intent_replicate` y
   `replication.clockOffsetMs` expone el desfase estimado por peer. Cada cinco segundos
   el ping-pong mide `t0` (envío), `t1` (recepción remota), `t2` (respuesta) y `t3`
@@ -1084,6 +1152,93 @@ envoltorio `{ ok, message, ... }` y resume una ventana deslizante de 60 segundos
   Así no se cambian los relojes de las máquinas: un `sentAt` remoto se convierte al
   reloj local restando ese offset, y la latencia es `recibidoEn - (sentAt - offset)`.
   Muestras negativas se descartan; el error de la estimación es aproximadamente RTT/2.
+
+### 14.6. Modo espectador (Track 2.5)
+
+El Coordinador expone `WebSocket ws://localhost:5000/spectate` (o `wss://.../spectate`
+mediante ngrok) sin requerir ticket, JWT ni inicio de sesión.
+
+- Al conectar, el espectador recibe `connected`, `room_list` y puede enviar
+  `{"type":"watch","roomId":<id>}` para seguir una sala existente.
+- Sin `roomId`, o al enviar `watch` sin una sala válida, observa el lobby.
+- Recibe `room_list`, `state` y `race_update` con el mismo texto serializado que
+  también reciben los jugadores de la sala. No recibe ni ejecuta intents.
+- Los mensajes `intent`, `extras_update`, `create_room`, `join_room`,
+  `room_*`, `game_start` y cualquier otro tipo distinto de `watch`/`ping` son
+  ignorados y cuentan como rechazados en `spectatorMessagesRejected`.
+- Los textos no JSON generan una respuesta `error` con código `INVALID_JSON`, pero
+  no cierran ni derriban la conexión. Los fallos de socket tienen manejo `close`
+  y `error` independiente del flujo de jugadores.
+- El límite predeterminado es 50 por proceso y se configura con
+  `MAX_SPECTATORS` en `coordinator/.env`. Al alcanzar el límite, una nueva conexión
+  recibe `spectate_full` y se cierra con código `4503`.
+- Los espectadores viven en un `Set` separado de `players` y se excluyen de
+  `/players`, el balanceo, migraciones, heartbeats de carga y cálculo de capacidad.
+  Sus desconexiones liberan automáticamente su entrada.
+
+Abre `http://localhost:3000/spectator.html` para la interfaz sin login. La página
+no muestra controles de conducción y reconecta hasta 15 veces si pierde el socket.
+
+### 14.7. Corrección de estabilidad del formulario de login
+
+Los mensajes de error/aviso se insertan antes de la tarjeta. Si esos mensajes hacen
+crecer el layout, el centrado vertical puede cambiar la coordenada del formulario.
+La hoja de estilos reserva un espacio para los mensajes y fija la altura de la
+columna en escritorio; en móvil vuelve a permitir el flujo natural y scroll cuando
+el contenido no cabe. También se retiró la traslación `:hover` de las secciones
+interiores de autenticación para evitar movimiento visual al interactuar.
+
+La comprobación en navegador con viewports de escritorio (1440×900) y móvil
+(390×844) mantuvo la tarjeta en la misma coordenada al escribir usuario,
+contraseña y mostrar un mensaje de error. Con un viewport excepcionalmente bajo
+(700×291), el navegador desplaza la página al enfocar un campo que queda fuera de
+pantalla; ese scroll de accesibilidad no altera el layout y permite alcanzar el
+campo. Login local, registro y Google conservan los mismos formularios.
+
+### 14.8. Métricas y trazas (Track 2.2)
+
+Los endpoints `GET /metrics` y `GET /traces/:traceId` están disponibles en Auth
+y Coordinador. Las métricas usan muestras de una ventana móvil de 60 s; el
+Coordinador reporta ticks, jugadores, espectadores, conexiones WebSocket y
+replicación. Las trazas conservan en memoria las últimas 500 entradas por proceso;
+los mensajes/eventos relevantes propagan un `traceId` para reconstruir el flujo.
+
+### 14.9. Dashboard
+
+[`client/public/dashboard.html`](client/public/dashboard.html), accesible en
+`http://localhost:3000/dashboard.html`, consulta métricas de los Auth y
+coordinadores activos y reúne las trazas asociadas a un `traceId`. La página
+muestra el estado del clúster Auth, jugadores y datos de observabilidad; depende
+de que los servicios y los orígenes/CORS estén disponibles. El dashboard visualiza
+los valores existentes, pero no es un sistema de almacenamiento ni alertas.
+
+### 14.10. Ejecución integrada
+
+Para el arranque en local y el modo túnel con las variables de `deploy.env`,
+consulta [4.5](#45-arranque-integrado-con-start-allps1). La ejecución manual de
+`npm start --prefix ...` permite levantar los servicios por separado. El acceso
+de espectadores no requiere que el usuario inicie sesión; los jugadores sí usan
+Auth, ticket temporal y `/connect`.
+
+### 14.11. Modos de falla, limitaciones y trabajo futuro
+
+| Falla o límite | Comportamiento implementado / consecuencia |
+|---|---|
+| Auth líder se desconecta | Las réplicas pueden elegir un nuevo líder si tienen comunicación y mayoría suficiente; las escrituras sin confirmación de réplica terminan con `replication_timeout`. |
+| No hay Auth disponible | No se pueden autenticar nuevos jugadores ni registrar; la conexión de juego existente no depende de consultas HTTP continuas al Auth. |
+| Un coordinador cae | El mesh pierde ese peer y elimina sus jugadores remotos de las copias activas; las salas/estado son volátiles y el progreso del proceso caído no es durable. El cliente jugador intenta reconectar según su flujo. |
+| Se interrumpe el mesh | Las copias de estado pueden quedar desactualizadas; no existe consenso distribuido del estado del juego ni recuperación durable de la partición. |
+| Se pierde el WebSocket de un jugador | El coordinador limpia la sesión al detectar `close`; el cliente intenta recuperar la sesión mientras su token sea válido. |
+| Se pierde el WebSocket espectador | La interfaz reintenta la conexión hasta 15 veces; si se agotan, muestra el estado de desconexión. |
+| Se reinicia un servicio | Los buffers de métricas/trazas y el estado del juego en memoria se pierden; las bases Auth son SQLite locales y separadas. |
+| Límite de espectadores | Cada coordinador acepta hasta 50 espectadores por defecto; no hay balanceador ni proceso dedicado para repartirlos. |
+| Exposición pública | `/spectate` no autentica porque el estado es público/de solo lectura; el límite no sustituye rate limiting ni protección de red ante abuso volumétrico. |
+
+Mejoras posibles: persistencia/recuperación del estado de las partidas, coordinación
+con consenso para decisiones globales del juego, límites de tasa por IP en
+`/spectate`, observabilidad durable, pruebas visuales automatizadas y una topología
+de mesh más escalable que la conexión completa entre pares. Estas capacidades no
+se presentan como implementadas.
 
 ---
 
@@ -1098,3 +1253,12 @@ envoltorio `{ ok, message, ... }` y resume una ventana deslizante de 60 segundos
 | **Fase 4** | Despliegue con ngrok (Túneles, HTTPS/WSS, CORS) | Camilo Alarcón |
 | **Fase 5** | Documentación técnica integral (README.md) | Juan Diego Castillo |
 | **Fase 6** | Verificación cruzada, pruebas de integración y sustentación | Juan Diego Castillo / Camilo Alarcón / paula becerra / Mery Ortiz |
+
+### Responsabilidades del trabajo final
+
+| Persona | Responsabilidad integrada |
+|---|---|
+| Persona 1 — Paula | Integración, configuración, ejecución, túneles y juego: carreras, colisiones, checkpoints, vueltas, turbo, aceite y estado autoritativo/replicado. |
+| Persona 2 — Camilo | Métricas y medición de rendimiento, incluidas latencia de replicación y desfase de relojes. |
+| Persona 3 — Mery | Propagación de `traceId`, endpoints de trazas y dashboard de observabilidad. |
+| Persona 4 — Juan Diego | Modo espectador, corrección visual del login y documentación técnica final. |
