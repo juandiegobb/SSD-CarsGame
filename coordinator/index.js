@@ -1408,6 +1408,20 @@ function tick() {
     const room = p.roomId ? rooms.get(p.roomId) : null;
     const race = room?.race;
     const completedLaps = race?.laps?.[userId] || 0;
+    // Ya terminó el nivel: se estaciona pasando la meta, en su puesto de llegada, para no
+    // quedarse parado en medio de la meta. race.results viaja replicado, así que todos los
+    // coordinadores lo estacionan en el mismo lugar.
+    if (isFinishedCar(room, userId)) {
+      const arrival = (race.results || []).findIndex((result) => result.userId === userId);
+      if (arrival >= 0) {
+        const spot = RaceTracks.parkingSpot(RaceTracks.tracks[race.level - 1], arrival, WORLD_WIDTH, WORLD_HEIGHT);
+        p.x = spot.x;
+        p.y = spot.y;
+        p.intent = { x: 0, y: 0 };
+        race.previousPositions?.set(userId, { x: p.x, y: p.y });
+        continue;
+      }
+    }
     const canMove = !room || room.status !== 'playing' ||
       (race?.phase === 'racing' && completedLaps < RACE_LAPS_PER_LEVEL);
     const previousPosition = { x: p.x, y: p.y };

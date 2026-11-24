@@ -203,6 +203,44 @@
         };
     }
 
+    // Estacionamiento de los que ya terminaron el nivel (SPEC §14.4): pasando la meta, contra
+    // los bordes de la pista (carriles a ±34 px), en el orden de llegada. Así la meta queda
+    // libre para los que faltan (además esos carros ya no chocan: son fantasmas).
+    // Se avanza desde 60 px después de la meta y se toma cada punto que esté en el asfalto y
+    // a 44 px o más de los ya elegidos (en las curvas cerradas el carril de adentro se junta).
+    const PARKING_SPOTS = 8;
+    const parkingCache = new Map();
+
+    function parkingSpots(track, width, height) {
+        const key = `${track.id}:${width}x${height}`;
+        if (parkingCache.has(key)) return parkingCache.get(key);
+        const scale = Math.min(width / WORLD_WIDTH, height / WORLD_HEIGHT);
+        const spots = [];
+        for (let distance = 60 * scale; spots.length < PARKING_SPOTS && distance < trackLength(track, width, height); distance += 4 * scale) {
+            const position = pointAtDistance(track, distance, width, height);
+            for (const lane of [-34 * scale, 34 * scale]) {
+                if (spots.length >= PARKING_SPOTS) break;
+                const spot = {
+                    x: position.x - position.tangent.y * lane,
+                    y: position.y + position.tangent.x * lane
+                };
+                if (isOnRoad(track, spot.x, spot.y, 20 * scale, width, height) &&
+                    spots.every((other) => Math.hypot(other.x - spot.x, other.y - spot.y) >= 44 * scale)) {
+                    spots.push(spot);
+                }
+            }
+        }
+        parkingCache.set(key, spots);
+        return spots;
+    }
+
+    // Más de 8 llegadas (no pasa: la sala es de 8) repiten el último puesto.
+    function parkingSpot(track, index, width = WORLD_WIDTH, height = WORLD_HEIGHT) {
+        const spots = parkingSpots(track, width, height);
+        const spot = spots[Math.min(index, spots.length - 1)];
+        return { x: spot.x, y: spot.y };
+    }
+
     // Checkpoints (SPEC §14.4): puntos del circuito por los que hay que pasar EN ORDEN para
     // que la vuelta cuente al cruzar la meta. Se dan como fracción del largo de la pista
     // (0 = meta). Están lejos del cruce del "ocho" para que no se activen desde el otro tramo.
@@ -284,6 +322,7 @@
         scaledPoints,
         pointAtDistance,
         spawnAtStart,
+        parkingSpot,
         distanceToTrack,
         isOnRoad,
         crossesFinish,

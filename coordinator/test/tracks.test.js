@@ -43,6 +43,27 @@ test('todos los puestos de salida están sobre el asfalto y detrás de la meta',
   }
 });
 
+test('los 8 puestos de estacionamiento están sobre el asfalto, pasando la meta y sin tocarse', () => {
+  for (const track of RaceTracks.tracks) {
+    const finish = RaceTracks.pointAtDistance(track, 0);
+    const spots = [];
+    for (let index = 0; index < 8; index += 1) {
+      const spot = RaceTracks.parkingSpot(track, index);
+      assert.ok(RaceTracks.isOnRoad(track, spot.x, spot.y), `${track.name}: estacionamiento ${index + 1}`);
+      // Pasando la meta (hacia adelante) y no en medio de ella
+      const ahead = (spot.x - finish.x) * finish.tangent.x + (spot.y - finish.y) * finish.tangent.y;
+      assert.ok(ahead > 0, `${track.name}: estacionamiento ${index + 1} está después de la meta`);
+      assert.ok(distanceBetween(spot, finish) > 40, `${track.name}: estacionamiento ${index + 1} no tapa la meta`);
+      spots.push(spot);
+    }
+    for (let a = 0; a < spots.length; a += 1) {
+      for (let b = a + 1; b < spots.length; b += 1) {
+        assert.ok(distanceBetween(spots[a], spots[b]) >= 44, `${track.name}: estacionamientos ${a + 1} y ${b + 1}`);
+      }
+    }
+  }
+});
+
 test('cada circuito registra una sola meta por vuelta completa', () => {
   for (const track of RaceTracks.tracks) {
     const length = trackLength(track);

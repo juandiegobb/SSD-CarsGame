@@ -1,8 +1,8 @@
 'use strict';
 
-// Carros que ya terminaron (SPEC §14.4): el que completa las vueltas queda quieto justo
-// después de la meta. Si siguiera chocando, taparía la meta y los demás no podrían
-// terminar el nivel. Desde que termina pasa a ser "fantasma": no choca con nadie.
+// Carros que ya terminaron (SPEC §14.4): el que completa las vueltas se estaciona pasando
+// la meta, contra el borde (en su orden de llegada), y pasa a ser "fantasma": no choca con
+// nadie. Así no tapa la meta y los demás pueden terminar el nivel.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -11,7 +11,7 @@ const { startCoordinator, connectPlayer, startRace, waitUntil, driveLap, positio
 
 const PLAYER_RADIUS = 20;
 
-test('un carro que ya terminó no bloquea la meta: el siguiente pasa por encima y termina', async (t) => {
+test('un carro que ya terminó se estaciona fuera de la meta y no bloquea a nadie', async (t) => {
   const coordinator = await startCoordinator('coord-fantasma', { RACE_LAPS_PER_LEVEL: '1' });
   const first = await connectPlayer(coordinator.port, '1');
   const second = await connectPlayer(coordinator.port, '2');
@@ -25,16 +25,22 @@ test('un carro que ya terminó no bloquea la meta: el siguiente pasa por encima 
   const raceOf = () => first.last('state').race;
   const length = RaceTracks.trackLength(track);
 
-  // El 1 termina y se queda parado justo pasando la meta, en el centro de la pista
+  // El 1 termina y se estaciona pasando la meta (puesto 1 → carril izquierdo), no en medio
   await driveLap(first, track, 0);
   await waitUntil(() => raceOf().results.some((result) => result.userId === '1'), 'que el 1 termine');
-  const stopped = positionOf(first);
+  const spot = RaceTracks.parkingSpot(track, 0);
+  await waitUntil(() => {
+    const me = positionOf(first);
+    return me && Math.hypot(me.x - spot.x, me.y - spot.y) < 1;
+  }, 'que el 1 se estacione pasando la meta');
   const finishLine = RaceTracks.pointAtDistance(track, 0);
-  assert.ok(Math.hypot(stopped.x - finishLine.x, stopped.y - finishLine.y) < 4 * PLAYER_RADIUS,
-    'el 1 quedó parado encima de la meta');
+  const parked = positionOf(first);
+  assert.ok(Math.hypot(parked.x - finishLine.x, parked.y - finishLine.y) > 2 * PLAYER_RADIUS,
+    'el carro que terminó ya no está en medio de la meta');
 
-  // El 2 hace la vuelta por el MISMO carril: tiene que cruzar la meta justo donde está el 1
-  await driveLap(second, track, 0);
+  // El 2 va por el carril del estacionamiento: su última meta es justo donde está el 1.
+  // Como el 1 es fantasma, lo atraviesa y termina.
+  await driveLap(second, track, -34);
   await waitUntil(() => raceOf().level === 2, 'que el 2 también termine y empiece el nivel 2', 5000);
   const previous = raceOf().previousResults;
   assert.deepEqual(previous.results.map((result) => result.userId), ['1', '2']);

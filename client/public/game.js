@@ -219,6 +219,7 @@
             ctx.lineWidth = 2 * scale;
             ctx.stroke();
             ctx.setLineDash([]);
+            drawDirectionArrows(track, scale);
             drawTrackDecorations(track, points, scale);
             drawCheckpoints(track, scale);
             drawItems(scale);
@@ -270,6 +271,100 @@
         // Checkpoints (SPEC §14.4): el servidor dice cuántos pasó cada jugador en esta vuelta.
         // Se dibuja una franja por checkpoint: el siguiente que me falta brilla, los que ya
         // pasé quedan en verde. El cliente no decide nada: solo muestra lo que manda el servidor.
+        // Sentido de la carrera: muestras de la pista cada 8 px con su dirección (se calculan una
+        // vez por pista y tamaño). Sirven para las flechas y para avisar "sentido contrario".
+        const trackSampleCache = new Map();
+        function trackSamples(track) {
+            const key = `${track.id}:${world.width}x${world.height}`;
+            if (trackSampleCache.has(key)) return trackSampleCache.get(key);
+            const length = RaceTracks.trackLength(track, world.width, world.height);
+            const samples = [];
+            for (let distance = 0; distance < length; distance += 8) {
+                const point = RaceTracks.pointAtDistance(track, distance, world.width, world.height);
+                samples.push({ x: point.x, y: point.y, tangent: point.tangent, distance });
+            }
+            trackSampleCache.set(key, { length, samples });
+            return trackSampleCache.get(key);
+        }
+
+        // Flechas ">>" pintadas en el asfalto cada ~140 px, apuntando hacia donde se corre.
+        // No se pintan cerca de la meta, de los checkpoints ni en el cruce del "ocho" (ahí
+        // se mezclarían las flechas de los dos tramos).
+        function drawDirectionArrows(track, scale) {
+            const { length, samples } = trackSamples(track);
+            const half = track.roadWidth * scale / 2;
+            const gates = (track.checkpoints || [0.15, 0.4, 0.6, 0.85]).map((fraction) => fraction * length);
+            const near = (a, b, gap) => {
+                const delta = Math.abs(a - b) % length;
+                return Math.min(delta, length - delta) < gap;
+            };
+            ctx.save();
+            ctx.strokeStyle = "rgba(255, 248, 233, .55)";
+            ctx.lineWidth = 4 * scale;
+            ctx.lineCap = "round";
+            ctx.lineJoin = "round";
+            for (let distance = 90 * scale; distance < length - 60 * scale; distance += 140 * scale) {
+                if (gates.some((gate) => near(distance, gate, 40 * scale))) continue;
+                const point = RaceTracks.pointAtDistance(track, distance, world.width, world.height);
+                const crossing = samples.some((sample) =>
+                    !near(sample.distance, distance, track.roadWidth * scale * 1.5) &&
+                    Math.hypot(sample.x - point.x, sample.y - point.y) < half);
+                if (crossing) continue;
+                const angle = Math.atan2(point.tangent.y, point.tangent.x);
+                ctx.save();
+                ctx.translate(point.x, point.y);
+                ctx.rotate(angle);
+                for (const offset of [-7, 7]) {
+                    ctx.beginPath();
+                    ctx.moveTo((offset - 6) * scale, -9 * scale);
+                    ctx.lineTo((offset + 4) * scale, 0);
+                    ctx.lineTo((offset - 6) * scale, 9 * scale);
+                    ctx.stroke();
+                }
+                ctx.restore();
+            }
+            ctx.restore();
+        }
+
+        // Aviso de "sentido contrario": si mi carro lleva ~0,7 s avanzando en contra de la
+        // dirección de la pista (comparado con el tramo más cercano), se muestra un cartel.
+        let wrongWaySince = null;
+        function updateWrongWay(me, dx, dy) {
+            if (raceState.phase !== "racing" || !me) {
+                wrongWaySince = null;
+                return;
+            }
+            if (Math.hypot(dx, dy) <= 0.5) return; // quieto: se conserva el estado hasta que se mueva
+            const track = RaceTracks.tracks.find((item) => item.id === raceState.level) || RaceTracks.tracks[0];
+            let nearest = null;
+            let best = Infinity;
+            for (const sample of trackSamples(track).samples) {
+                const gap = Math.hypot(sample.x - me.x, sample.y - me.y);
+                if (gap < best) { best = gap; nearest = sample; }
+            }
+            const along = (dx * nearest.tangent.x + dy * nearest.tangent.y) / Math.hypot(dx, dy);
+            if (along < -0.5) {
+                if (wrongWaySince === null) wrongWaySince = performance.now();
+            } else {
+                wrongWaySince = null;
+            }
+        }
+
+        function drawWrongWay() {
+            if (raceState.phase !== "racing" || wrongWaySince === null || performance.now() - wrongWaySince < 700) return;
+            if (raceState.results.some((result) => result.userId === meId)) return;
+            ctx.save();
+            ctx.fillStyle = "rgba(185, 44, 36, .9)";
+            roundRect(world.width / 2 - 170, 14, 340, 44, 12);
+            ctx.fill();
+            ctx.fillStyle = "#fff";
+            ctx.font = "700 20px system-ui, sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText("↩ ¡Vas en sentido contrario!", world.width / 2, 36);
+            ctx.restore();
+        }
+
         function drawCheckpoints(track, scale) {
             if (!RaceTracks.checkpointPositions || raceState.phase === "waiting") return;
             const gates = RaceTracks.checkpointPositions(track, world.width, world.height);
@@ -661,12 +756,14 @@
                         const dx = p.x - old.x;
                         const dy = p.y - old.y;
                         if (Math.hypot(dx, dy) > 0.5) headings.set(p.userId, Math.atan2(dy, dx));
+                        if (p.userId === meId) updateWrongWay(p, dx, dy);
                         drawCar({ ...p, color: carColor(p) }, x, y, headings.get(p.userId) || 0, p.userId === meId);
                     }
                     ctx.globalAlpha = 1;
                 }
                 drawRaceOverlay();
                 drawRaceHud();
+                drawWrongWay();
                 drawRaceFinished();
             }
             requestAnimationFrame(frame);
