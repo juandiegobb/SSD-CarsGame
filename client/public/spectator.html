@@ -22,19 +22,28 @@
 </head>
 <body class="racing-page spectator-page">
     <main>
-        <header class="lobby-header">
-            <span class="hero-kicker">MODO ESPECTADOR</span>
-            <h1>MODO ESPECTADOR</h1>
-            <p id="spectator-status" class="status spectator-status" aria-live="polite">Conectando…</p>
+        <header class="actions lobby-header">
+            <div>
+                <span class="hero-kicker">Transmisión en vivo</span>
+                <h1>👁️ MODO ESPECTADOR</h1>
+                <p id="spectator-status" class="status spectator-status" aria-live="polite">Conectando…</p>
+            </div>
+            <div class="button-row">
+                <a href="/dashboard.html" class="button" style="text-decoration:none; padding:8px 14px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text);">📊 Dashboard</a>
+                <button id="exit-spectator-button" type="button" class="primary">🏁 Salir del modo espectador</button>
+            </div>
         </header>
 
         <section>
-            <h2>Salas disponibles</h2>
+            <div class="actions" style="margin-bottom: 8px;">
+                <h2 style="margin: 0;">Salas disponibles</h2>
+                <button id="unwatch-button" type="button" style="display: none; font-size: 13px; padding: 4px 10px;">Dejar de ver sala</button>
+            </div>
             <div id="spectator-rooms" class="spectator-rooms"></div>
         </section>
 
         <section id="game-section" class="track-panel" aria-label="Vista visual de la carrera">
-            <h2 id="spectator-room-name">Lobby</h2>
+            <h2 id="spectator-room-name">Lobby general</h2>
             <div class="game-stage">
                 <canvas id="game-canvas" width="800" height="600" aria-label="Estado visual del juego"></canvas>
             </div>
@@ -45,12 +54,43 @@
         const statusElement = document.getElementById("spectator-status");
         const roomsElement = document.getElementById("spectator-rooms");
         const roomNameElement = document.getElementById("spectator-room-name");
+        const exitButton = document.getElementById("exit-spectator-button");
+        const unwatchButton = document.getElementById("unwatch-button");
         const canvas = document.getElementById("game-canvas");
         let socket = null;
         let reconnectTimer = null;
         let reconnectAttempts = 0;
         let selectedRoomId = null;
         let intentionallyClosed = false;
+
+        function exitSpectator() {
+            intentionallyClosed = true;
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+                socket.close(1000, "leave_spectator");
+                socket = null;
+            }
+            const token = getToken();
+            window.location.href = token ? "/lobby.html" : "/login.html";
+        }
+
+        if (exitButton) {
+            exitButton.addEventListener("click", exitSpectator);
+        }
+
+        if (unwatchButton) {
+            unwatchButton.addEventListener("click", () => {
+                selectedRoomId = null;
+                roomNameElement.textContent = "Lobby general";
+                unwatchButton.style.display = "none";
+                if (socket?.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify({ type: "watch", roomId: null }));
+                }
+            });
+        }
 
         function setStatus(text, state) {
             statusElement.textContent = text;
@@ -80,7 +120,17 @@
                 empty.className = "muted";
                 empty.textContent = "No hay salas activas.";
                 roomsElement.append(empty);
+                if (selectedRoomId !== null) {
+                    selectedRoomId = null;
+                    roomNameElement.textContent = "Lobby general";
+                    if (unwatchButton) unwatchButton.style.display = "none";
+                }
                 return;
+            }
+            if (selectedRoomId !== null && !rooms.some((r) => r.roomId === selectedRoomId)) {
+                selectedRoomId = null;
+                roomNameElement.textContent = "Lobby general";
+                if (unwatchButton) unwatchButton.style.display = "none";
             }
             for (const room of rooms) {
                 const button = document.createElement("button");
@@ -89,6 +139,7 @@
                 button.addEventListener("click", () => {
                     selectedRoomId = room.roomId;
                     roomNameElement.textContent = room.name;
+                    if (unwatchButton) unwatchButton.style.display = "inline-block";
                     if (socket?.readyState === WebSocket.OPEN) {
                         socket.send(JSON.stringify({ type: "watch", roomId: selectedRoomId }));
                     }
@@ -106,7 +157,10 @@
                 reconnectAttempts = 0;
                 setStatus("Conexión establecida", "connected");
                 if (selectedRoomId !== null) {
+                    if (unwatchButton) unwatchButton.style.display = "inline-block";
                     socket.send(JSON.stringify({ type: "watch", roomId: selectedRoomId }));
+                } else {
+                    if (unwatchButton) unwatchButton.style.display = "none";
                 }
             });
 
