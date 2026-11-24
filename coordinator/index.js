@@ -1359,6 +1359,13 @@ function broadcast(payload) {
   }
 }
 
+// Un carro ya terminó el nivel actual si completó todas sus vueltas (race.laps viaja en
+// room_replicate, así que todos los coordinadores de la sala opinan lo mismo).
+function isFinishedCar(room, userId) {
+  const race = room?.race;
+  return race?.phase === 'racing' && (race.laps?.[userId] || 0) >= RACE_LAPS_PER_LEVEL;
+}
+
 // ── Game loop (20 Hz): el servidor es la autoridad ───────────────────────────
 // El handler de mensajes SOLO guarda la intención; quien mueve es este loop.
 // Así la velocidad no depende de cuántos mensajes mande el cliente.
@@ -1388,6 +1395,9 @@ function tick() {
   for (const [userId, p] of players) {
     const room = p.roomId ? rooms.get(p.roomId) : null;
     if (!room || room.status !== 'playing') continue;
+    // El que ya completó las vueltas del nivel queda quieto sobre la meta: pasa a ser
+    // "fantasma" (no choca ni recoge objetos) para no tapar la meta a los que faltan.
+    if (isFinishedCar(room, userId)) continue;
     if (!carsByRoom.has(room.roomId)) carsByRoom.set(room.roomId, []);
     carsByRoom.get(room.roomId).push({ userId, player: p });
   }

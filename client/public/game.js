@@ -650,7 +650,11 @@
                     const alpha = Math.min(1, (performance.now() - currAt) / tickMs);
                     const before = new Map((prev ? prev.players : []).map((p) => [p.userId, p]));
                     const list = [...curr.players].sort((a, b) => (a.userId === meId) - (b.userId === meId)); // el tuyo encima
+                    // Los que ya terminaron el nivel son "fantasmas" en el servidor (no chocan):
+                    // se dibujan semitransparentes para que se entienda que se les puede pasar por encima
+                    const finished = new Set(raceState.phase === "racing" ? (raceState.results || []).map((result) => result.userId) : []);
                     for (const p of list) {
+                        ctx.globalAlpha = finished.has(p.userId) ? 0.4 : 1;
                         const old = before.get(p.userId) || p;
                         const x = old.x + (p.x - old.x) * alpha;
                         const y = old.y + (p.y - old.y) * alpha;
@@ -659,6 +663,7 @@
                         if (Math.hypot(dx, dy) > 0.5) headings.set(p.userId, Math.atan2(dy, dx));
                         drawCar({ ...p, color: carColor(p) }, x, y, headings.get(p.userId) || 0, p.userId === meId);
                     }
+                    ctx.globalAlpha = 1;
                 }
                 drawRaceOverlay();
                 drawRaceHud();
