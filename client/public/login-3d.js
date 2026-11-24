@@ -412,23 +412,32 @@
     const particles = new THREE.Points(particleGeo, particleMat);
     scene.add(particles);
 
-    // ── Redimensionamiento Responsivo Automático ────────────────────────────
+    // ── Redimensionamiento Responsivo Automático (Protegido contra bucles) ──
+    let resizeFrameId = null;
     function onContainerResize() {
         if (!container) return;
         const w = container.clientWidth;
         const h = container.clientHeight;
         if (w <= 0 || h <= 0) return;
+        // Evitar bucles de reajuste si no hay un cambio dimensional significativo
+        if (Math.abs(w - width) < 2 && Math.abs(h - height) < 2) return;
         width = w;
         height = h;
         camera.aspect = width / height;
         camera.updateProjectionMatrix();
-        renderer.setSize(width, height);
+        // El tercer parámetro 'false' evita que Three.js inyecte estilos inline 'width/height',
+        // previniendo bucles de retroalimentación dimensional con ResizeObserver.
+        renderer.setSize(width, height, false);
     }
 
+    function scheduleContainerResize() {
+        if (resizeFrameId) cancelAnimationFrame(resizeFrameId);
+        resizeFrameId = requestAnimationFrame(onContainerResize);
+    }
+
+    window.addEventListener('resize', scheduleContainerResize);
     if (window.ResizeObserver) {
-        new ResizeObserver(() => onContainerResize()).observe(container);
-    } else {
-        window.addEventListener('resize', onContainerResize);
+        new ResizeObserver(() => scheduleContainerResize()).observe(container);
     }
 
     // ── Interactividad: Parallax y Arrastre 360° con Mouse ───────────────────
