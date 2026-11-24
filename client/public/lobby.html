@@ -105,6 +105,14 @@
             </div>
             <div class="game-stage">
                 <canvas id="game-canvas" width="800" height="600" aria-label="Zona de espera y pista con los carros de la sala"></canvas>
+                <div id="virtual-joystick" class="virtual-joystick" aria-label="Joystick de movimiento táctil">
+                    <div class="joystick-base">
+                        <div class="joystick-stick"></div>
+                    </div>
+                </div>
+                <div id="orientation-hint" class="orientation-hint" aria-hidden="true">
+                    <span>🔄 Gira tu pantalla para mayor inmersión</span>
+                </div>
             </div>
             <div class="touch-controls" aria-label="Controles táctiles del carro">
                 <button type="button" data-direction="up" aria-label="Mover arriba">▲</button>
@@ -254,6 +262,7 @@
 
             function showRoomView(room) {
                 document.body.classList.add("room-active");
+                window.scrollTo({ top: 0, behavior: "instant" });
                 currentRoomId = room.roomId;
                 currentRoomHostId = room.hostUserId;
                 currentRoomStatus = room.status;
@@ -410,6 +419,7 @@
             const game = createGame({
                 canvas: document.getElementById("game-canvas"),
                 controls: document.querySelector(".touch-controls"),
+                joystick: document.getElementById("virtual-joystick"),
                 send: (payload) => {
                     if (socket && socket.readyState === WebSocket.OPEN) {
                         socket.send(JSON.stringify(payload));

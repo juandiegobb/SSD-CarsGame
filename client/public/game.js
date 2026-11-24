@@ -65,7 +65,7 @@
         ctx.restore();
     }
 
-    function createGame({ canvas, send, myUserId, controls }) {
+    function createGame({ canvas, send, myUserId, controls, joystick }) {
         const ctx = canvas.getContext("2d");
         let serverWorld = { width: 800, height: 600, playerRadius: 20, tickRate: 20 };
         let world = { ...serverWorld };
@@ -75,6 +75,7 @@
         let currAt = 0;            // momento (local) en que llegó curr
         const headings = new Map(); // userId → ángulo del carro (solo visual)
         const pressed = new Set();
+        let joystickDir = { x: 0, y: 0 };
         let lastDir = { x: 0, y: 0 };
         let running = true;
         const stage = canvas.parentElement;
@@ -111,8 +112,11 @@
         resize();
         window.addEventListener("resize", resize);
 
-        // ── Entrada: teclado → intent ───────────────────────────────────────
+        // ── Entrada: teclado y joystick → intent ─────────────────────────────
         function currentDir() {
+            if (joystickDir.x !== 0 || joystickDir.y !== 0) {
+                return joystickDir;
+            }
             const x = (pressed.has("right") ? 1 : 0) - (pressed.has("left") ? 1 : 0);
             const y = (pressed.has("down") ? 1 : 0) - (pressed.has("up") ? 1 : 0);
             return { x, y };
@@ -155,6 +159,7 @@
         function onBlur() {
             pressed.clear();
             pointerDirections.clear();
+            resetJoystick();
             sendIntentIfChanged();
         }
 
@@ -186,6 +191,79 @@
                 sendIntentIfChanged();
             });
             button.addEventListener("contextmenu", (event) => event.preventDefault());
+        }
+
+        // ── Joystick táctil virtual (círculo con bolita) ──────────────────────
+        const joystickEl = joystick || (stage?.querySelector?.("#virtual-joystick") || (typeof document !== "undefined" && typeof document.getElementById === "function" ? document.getElementById("virtual-joystick") : null));
+        const joystickStick = joystickEl ? joystickEl.querySelector?.(".joystick-stick") : null;
+        let activeJoystickPointerId = null;
+        let joystickCenter = { x: 0, y: 0 };
+
+        function resetJoystick() {
+            activeJoystickPointerId = null;
+            if (joystickEl) joystickEl.classList.remove("active");
+            if (joystickStick) joystickStick.style.transform = "translate(0px, 0px)";
+            joystickDir = { x: 0, y: 0 };
+        }
+
+        if (joystickEl && joystickStick) {
+            function updateJoystickPosition(clientX, clientY) {
+                const dx = clientX - joystickCenter.x;
+                const dy = clientY - joystickCenter.y;
+                const dist = Math.hypot(dx, dy);
+                const maxRadius = 36;
+                const clampedDist = Math.min(dist, maxRadius);
+                const angle = Math.atan2(dy, dx);
+                const stickX = Math.cos(angle) * clampedDist;
+                const stickY = Math.sin(angle) * clampedDist;
+
+                joystickStick.style.transform = `translate(${stickX}px, ${stickY}px)`;
+
+                if (dist < 8) {
+                    joystickDir = { x: 0, y: 0 };
+                } else {
+                    const absX = Math.abs(dx);
+                    const absY = Math.abs(dy);
+                    const dirX = absX > 0.38 * dist ? Math.sign(dx) : 0;
+                    const dirY = absY > 0.38 * dist ? Math.sign(dy) : 0;
+                    joystickDir = { x: dirX, y: dirY };
+                }
+                sendIntentIfChanged();
+            }
+
+            joystickEl.addEventListener("pointerdown", (event) => {
+                event.preventDefault();
+                if (!running || !canDrive()) return;
+                activeJoystickPointerId = event.pointerId;
+                joystickEl.classList.add("active");
+                joystickEl.setPointerCapture?.(event.pointerId);
+                const rect = joystickEl.getBoundingClientRect();
+                joystickCenter = {
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2
+                };
+                updateJoystickPosition(event.clientX, event.clientY);
+            });
+
+            joystickEl.addEventListener("pointermove", (event) => {
+                if (event.pointerId !== activeJoystickPointerId) return;
+                event.preventDefault();
+                updateJoystickPosition(event.clientX, event.clientY);
+            });
+
+            joystickEl.addEventListener("pointerup", (event) => {
+                if (event.pointerId !== activeJoystickPointerId) return;
+                resetJoystick();
+                sendIntentIfChanged();
+            });
+
+            joystickEl.addEventListener("pointercancel", (event) => {
+                if (event.pointerId !== activeJoystickPointerId) return;
+                resetJoystick();
+                sendIntentIfChanged();
+            });
+
+            joystickEl.addEventListener("contextmenu", (event) => event.preventDefault());
         }
 
         // ── Dibujo ────────────────────────────────────────────────────────────
@@ -798,6 +876,7 @@
             if (changed && (raceState.phase !== "racing" || previousPhase === "countdown")) {
                 pressed.clear();
                 pointerDirections.clear();
+                resetJoystick();
                 lastDir = { x: 0, y: 0 };
                 send({ type: "intent", intent: { dir: lastDir } });
             }
@@ -835,6 +914,7 @@
                 headings.clear();
                 pressed.clear();
                 pointerDirections.clear();
+                resetJoystick();
                 lastDir = { x: 0, y: 0 };
                 send({ type: "intent", intent: { dir: lastDir } });
                 if (running) return;

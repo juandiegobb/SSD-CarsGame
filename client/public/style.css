@@ -506,168 +506,193 @@ button.primary { background: linear-gradient(135deg, var(--accent-strong), var(-
     .game-hero::after { display: none; }
 }
 
-/* Sala activa: layout espacioso, pista destacada y diseño moderno */
+/* Sala activa: layout de alta precisión, centrado sin scroll (100dvh) y modo teatro */
 .racing-page.room-active {
-    min-height: 100vh;
-    min-height: 100dvh;
-    overflow-x: hidden;
-    overflow-y: auto;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
+    overflow: hidden !important;
+    display: flex;
+    flex-direction: column;
 }
 .racing-page.room-active main {
     width: 100%;
-    max-width: 1200px;
+    max-width: 1400px;
+    height: 100%;
+    max-height: 100dvh;
     margin: 0 auto;
-    padding: clamp(14px, 2vh, 24px) clamp(14px, 2.5vw, 28px) 48px;
+    padding: 8px 16px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 8px;
+    box-sizing: border-box;
+    overflow: hidden;
 }
 
-.room-active .lobby-header {
-    padding: 14px 22px;
-    border-radius: 16px;
-    background: var(--surface-dark);
-    border: 1px solid rgba(255, 207, 63, 0.25);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-}
-.room-active .lobby-header h1 {
-    font-size: clamp(20px, 3.5vw, 28px);
-}
-.room-active #connection-status {
-    margin: -4px 0 0;
-    font-size: 13px;
-    font-weight: 500;
-}
-.room-active #server-info {
-    margin: -8px 0 0;
-    font-size: 13px;
-    color: var(--muted);
-    display: flex;
-    gap: 18px;
+/* Ocultar elementos secundarios del lobby al estar compitiendo en sala */
+.room-active .lobby-header,
+.room-active #connection-status,
+.room-active #server-info,
+.room-active #notice:empty {
+    display: none !important;
 }
 
-/* Panel de la sala actual: estilizado como barra de estado y jugadores */
+/* Barra superior HUD compacta para la sala actual */
 .room-active #current-room {
-    padding: 16px 22px;
-    border-radius: 16px;
-    background: var(--surface-dark);
-    border: 1px solid rgba(255, 207, 63, 0.22);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.26);
+    padding: 6px 14px;
+    border-radius: 12px;
+    background: rgba(18, 24, 38, 0.9);
+    border: 1px solid rgba(255, 207, 63, 0.28);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(10px);
+    flex-shrink: 0;
 }
 .room-active #current-room .room-header-actions {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 12px;
 }
+.room-active #current-room .hero-kicker {
+    display: none;
+}
 .room-active #current-room h2 {
-    font-size: 22px;
-    margin: 2px 0 4px;
+    font-size: 16px;
+    margin: 0;
     color: #fff;
     font-weight: 800;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.room-active #current-room h2::before {
+    content: "🏁";
+    font-size: 18px;
+}
+.room-active #current-room .room-members-heading {
+    display: none;
 }
 .room-active #current-room .players {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
-    gap: 10px;
-    margin-top: 12px;
+    gap: 8px;
+    margin: 4px 0 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+}
+.room-active #current-room .players::-webkit-scrollbar {
+    display: none;
 }
 .room-active #current-room .players li {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
-    padding: 6px 14px;
-    background: rgba(255, 255, 255, 0.05);
+    gap: 6px;
+    padding: 3px 10px;
+    background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 999px;
-    font-size: 13px;
-    transition: transform 0.15s ease, border-color 0.15s ease;
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
 }
-.room-active #current-room .players li:hover {
-    transform: translateY(-1px);
-    border-color: rgba(255, 207, 63, 0.4);
+.room-active #current-room .players li .coordinator-tag {
+    display: none;
 }
 
-/* Sección de la pista: El elemento protagonista del juego */
+/* Sección de la pista: Ocupa todo el espacio visible disponible (Flex 1) */
 .room-active #game-section {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    padding: 20px 24px;
-    border-radius: 20px;
-    background: var(--surface-dark);
-    border: 1px solid rgba(255, 207, 63, 0.32);
-    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+    gap: 6px;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    min-height: 0;
+    overflow: hidden;
 }
 .room-active .track-heading {
-    margin: 0;
-    font-size: 22px;
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    color: #fff;
+    display: none;
 }
 .room-active .game-toolbar {
+    flex-shrink: 0;
     display: flex;
-    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
-    gap: 14px;
-    padding-bottom: 2px;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 4px 12px;
+    background: rgba(18, 24, 38, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    font-size: 12px;
 }
 .room-active .race-progress {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     margin: 0;
-    padding: 7px 16px;
-    font-size: 13px;
+    padding: 4px 12px;
+    font-size: 12px;
     font-weight: 800;
     letter-spacing: 0.03em;
     text-transform: uppercase;
     color: #111827;
     background: linear-gradient(135deg, var(--accent), var(--accent-strong));
     border-radius: 999px;
-    box-shadow: 0 4px 16px rgba(255, 122, 0, 0.35);
+    box-shadow: 0 4px 14px rgba(255, 122, 0, 0.35);
     border: none;
 }
 .room-active .color-picker {
     display: inline-flex;
     align-items: center;
-    gap: 12px;
-    font-size: 13px;
+    gap: 8px;
+    font-size: 12px;
     font-weight: 600;
     color: #f7f9fc;
 }
 .room-active .controls-hint {
     display: block;
     margin: 0;
-    font-size: 12px;
+    font-size: 11px;
     color: var(--muted);
-    line-height: 1.4;
+    line-height: 1.3;
 }
 
-/* Escenario y Canvas grande, inmersivo y de alta calidad */
+/* Escenario y Canvas: centrado perfecto y ajuste de proporción 4/3 */
 .room-active .game-stage {
+    flex: 1;
     width: 100%;
+    height: 100%;
+    min-height: 0;
     display: flex;
     justify-content: center;
     align-items: center;
-    padding: clamp(14px, 2.5vw, 28px);
-    border-radius: 18px;
-    background: radial-gradient(ellipse at center, rgba(30, 42, 60, 0.9) 0%, rgba(13, 19, 29, 0.98) 100%);
+    padding: 4px;
+    margin: 0;
+    position: relative;
+    border-radius: 16px;
+    background: radial-gradient(ellipse at center, rgba(30, 42, 60, 0.85) 0%, rgba(13, 19, 29, 0.98) 100%);
     border: 1px solid rgba(255, 207, 63, 0.22);
     box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.65), 0 16px 42px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
 }
 .room-active .game-stage canvas {
     display: block;
-    width: 100%;
-    max-width: 980px;
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
     height: auto;
     aspect-ratio: 4 / 3;
-    border-radius: 14px;
+    object-fit: contain;
+    border-radius: 12px;
     border: 2px solid rgba(255, 207, 63, 0.55);
     box-shadow: 0 14px 44px rgba(0, 0, 0, 0.75), 0 0 35px rgba(255, 122, 0, 0.25);
     touch-action: none;
@@ -677,34 +702,151 @@ button.primary { background: linear-gradient(135deg, var(--accent-strong), var(-
     border-color: rgba(255, 207, 63, 0.9);
     box-shadow: 0 18px 52px rgba(0, 0, 0, 0.8), 0 0 45px rgba(255, 122, 0, 0.4);
 }
-.room-active #game-section.race-waiting .touch-controls {
+
+/* Joystick virtual flotante para dispositivos móviles */
+.virtual-joystick {
+    display: none;
+    position: absolute;
+    bottom: 24px;
+    left: 24px;
+    width: 110px;
+    height: 110px;
+    z-index: 50;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+@media (pointer: coarse), (max-width: 900px) {
+    .room-active .virtual-joystick {
+        display: block;
+    }
+    .room-active .touch-controls {
+        display: none !important;
+    }
+}
+.joystick-base {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 207, 63, 0.14) 0%, rgba(18, 24, 38, 0.72) 70%);
+    border: 2px solid rgba(255, 207, 63, 0.5);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55), inset 0 0 18px rgba(255, 207, 63, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    backdrop-filter: blur(5px);
+}
+.virtual-joystick.active .joystick-base {
+    border-color: rgba(255, 207, 63, 0.9);
+    box-shadow: 0 4px 25px rgba(255, 122, 0, 0.45), inset 0 0 22px rgba(255, 207, 63, 0.4);
+}
+.joystick-stick {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #ffd54f, #ff9800 65%, #e65100 100%);
+    border: 2px solid rgba(255, 255, 255, 0.85);
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.65), 0 0 14px rgba(255, 152, 0, 0.55);
+    position: absolute;
+    pointer-events: none;
+    transform: translate(0px, 0px);
+    will-change: transform;
+    transition: transform 0.08s ease-out;
+}
+.virtual-joystick.active .joystick-stick {
+    transition: none;
+}
+
+/* Aviso sutil de giro en móviles vertical (Portrait) */
+.orientation-hint {
     display: none;
 }
-
-.room-active .touch-controls {
-    margin-top: 10px;
-}
-
-@media (min-width: 1400px) {
-    .room-active .game-stage canvas {
-        max-width: 1040px;
+@media (max-width: 768px) and (orientation: portrait) {
+    .room-active .orientation-hint {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: absolute;
+        top: 14px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: rgba(18, 24, 38, 0.88);
+        border: 1px solid rgba(255, 207, 63, 0.45);
+        padding: 5px 14px;
+        border-radius: 20px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #ffcf3f;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+        backdrop-filter: blur(6px);
+        z-index: 40;
+        pointer-events: none;
+        white-space: nowrap;
+        animation: hintPulse 2.8s infinite;
+    }
+    @keyframes hintPulse {
+        0%, 100% { opacity: 0.95; transform: translateX(-50%) scale(1); }
+        50% { opacity: 0.55; transform: translateX(-50%) scale(0.97); }
     }
 }
 
-@media (max-width: 768px) {
-    .room-active #game-section {
-        padding: 14px 16px;
+/* Adaptación inmersiva en móviles horizontal (Landscape) */
+@media (max-height: 540px) and (orientation: landscape) {
+    .racing-page.room-active main {
+        padding: 4px 8px;
+        gap: 4px;
     }
-    .room-active .game-stage {
-        padding: 8px;
-        border-radius: 14px;
+    .room-active #current-room {
+        padding: 3px 10px;
     }
-    .room-active .game-stage canvas {
-        border-radius: 10px;
-        border-width: 1.5px;
+    .room-active #current-room h2 {
+        font-size: 13px;
     }
-    .room-active .color-picker {
-        width: 100%;
-        justify-content: space-between;
+    .room-active #current-room .players {
+        display: none;
+    }
+    .room-active .game-toolbar {
+        padding: 2px 8px;
+        font-size: 11px;
+    }
+    .room-active .controls-hint {
+        display: none;
+    }
+    .room-active .virtual-joystick {
+        bottom: 12px;
+        left: 12px;
+        width: 90px;
+        height: 90px;
+    }
+    .joystick-stick {
+        width: 40px;
+        height: 40px;
+    }
+}
+
+/* Optimización para el modo espectador (spectator.html) */
+.spectator-page main {
+    max-width: 1300px;
+}
+.spectator-page .game-stage canvas {
+    max-height: calc(100dvh - 200px);
+    width: auto;
+    aspect-ratio: 4 / 3;
+    max-width: 100%;
+}
+@media (max-height: 540px) and (orientation: landscape) {
+    .spectator-page main {
+        padding: 4px 8px;
+        gap: 4px;
+    }
+    .spectator-page .lobby-header {
+        padding: 4px 8px;
+    }
+    .spectator-page .lobby-header h1 {
+        font-size: 16px;
+    }
+    .spectator-page .game-stage canvas {
+        max-height: calc(100dvh - 110px);
     }
 }
