@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Observabilidad y Dashboard | SSD-CarsGame</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/config.js"></script>
+    <script src="/common.js"></script>
+    <style>
+        .dashboard-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; }
+        .dashboard-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin-bottom: 24px; }
+        .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; display: grid; gap: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+        .kpi-card .kpi-label { font-size: 12px; color: var(--muted); text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; }
+        .kpi-card .kpi-value { font-size: 24px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--accent); }
+        .kpi-card .kpi-sub { font-size: 12px; color: var(--muted); }
+
+        .service-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+        .service-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: grid; gap: 12px; transition: border-color 0.2s; }
+        .service-card.offline { border-color: var(--bad); opacity: 0.9; }
+        .service-card-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; border-bottom: 1px solid var(--border); padding-bottom: 10px; }
+        .service-title { margin: 0; font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+        .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+        .badge-leader { background: rgba(255, 207, 63, 0.15); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.4); }
+        .badge-replica { background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.4); }
+        .badge-online { background: rgba(34, 197, 94, 0.15); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.4); }
+        .badge-offline { background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.4); }
+        .badge-candidate { background: rgba(168, 85, 247, 0.15); color: #a855f7; border: 1px solid rgba(168, 85, 247, 0.4); }
+
+        .metrics-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 13px; margin: 0; padding: 0; list-style: none; }
+        .metric-item { display: flex; flex-direction: column; background: var(--code); padding: 8px 10px; border-radius: 6px; }
+        .metric-item .name { font-size: 11px; color: var(--muted); }
+        .metric-item .val { font-family: ui-monospace, monospace; font-weight: 600; color: var(--text); margin-top: 2px; }
+
+        .replicas-subtable { grid-column: span 2; margin-top: 6px; font-size: 12px; background: var(--code); padding: 8px 10px; border-radius: 6px; }
+        .replicas-subtable ul { margin: 4px 0 0; padding-left: 16px; }
+
+        .trace-search-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+        .trace-search-bar input { flex: 1; min-width: 260px; }
+        .recent-traces-container { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 16px; }
+        .trace-chip { font-size: 11px; font-family: ui-monospace, monospace; padding: 4px 8px; border-radius: 4px; background: var(--code); border: 1px solid var(--border); cursor: pointer; color: var(--accent); transition: background 0.15s; }
+        .trace-chip:hover { background: var(--border); }
+
+        .timeline { display: grid; gap: 10px; margin-top: 14px; position: relative; }
+        .timeline-step { display: grid; grid-template-columns: 40px 100px 120px 1fr auto; gap: 12px; align-items: center; padding: 10px 14px; background: var(--code); border-radius: 8px; border-left: 4px solid var(--accent); font-size: 13px; }
+        .timeline-step.service-auth { border-left-color: #3b82f6; }
+        .timeline-step.service-coordinator { border-left-color: #eab308; }
+        .step-index { font-weight: 700; color: var(--muted); font-family: ui-monospace, monospace; }
+        .step-time { font-family: ui-monospace, monospace; color: var(--muted); font-size: 12px; }
+        .step-service { font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+        .step-event { font-weight: 700; font-family: ui-monospace, monospace; }
+        .step-detail { color: var(--text); overflow-wrap: anywhere; }
+        .step-duration { font-family: ui-monospace, monospace; color: var(--muted); font-size: 12px; }
+
+        .pulse-live { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 6px #22c55e; animation: pulse-anim 1.5s infinite; }
+        @keyframes pulse-anim { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(1.3); } }
+        .refresh-pill { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+    </style>
+</head>
+<body class="racing-page">
+    <main style="max-width: 1100px;">
+        <header class="actions dashboard-header">
+            <div>
+                <span class="hero-kicker">Track 2.2 — Observabilidad en tiempo real</span>
+                <h1>📊 Panel de Control y Trazas Distribuidas</h1>
+                <p class="muted refresh-pill"><i class="pulse-live"></i> Muestreo continuo cada 1 segundo</p>
+            </div>
+            <div class="button-row">
+                <a href="/lobby.html" class="button" style="text-decoration: none; padding: 8px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text);">🏁 Ir al Lobby</a>
+                <a href="/login.html" class="button" style="text-decoration: none; padding: 8px 14px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text);">🔒 Login</a>
+            </div>
+        </header>
+
+        <!-- KPI Cards Summary -->
+        <div class="dashboard-kpi-grid">
+            <div class="kpi-card">
+                <span class="kpi-label">Líder Auth</span>
+                <span id="kpi-auth-leader" class="kpi-value">—</span>
+                <span id="kpi-auth-term" class="kpi-sub">Term: —</span>
+            </div>
+            <div class="kpi-card">
+                <span class="kpi-label">Jugadores en Malla</span>
+                <span id="kpi-players-total" class="kpi-value">0</span>
+                <span id="kpi-players-sub" class="kpi-sub">0 locales · 0 remotos</span>
+            </div>
+            <div class="kpi-card">
+                <span class="kpi-label">Conexiones WS</span>
+                <span id="kpi-ws-connections" class="kpi-value">0</span>
+                <span class="kpi-sub">Clientes + Peers mesh</span>
+            </div>
+            <div class="kpi-card">
+                <span class="kpi-label">Tick Rate Promedio</span>
+                <span id="kpi-tick-rate" class="kpi-value">— Hz</span>
+                <span class="kpi-sub">Objetivo: 20 Hz</span>
+            </div>
+        </div>
+
+        <!-- Section 1: Auth Service Cluster -->
+        <section aria-labelledby="auth-cluster-heading">
+            <div class="actions" style="margin-bottom: 12px;">
+                <div>
+                    <span class="hero-kicker">Replicación Raft &amp; Directorio</span>
+                    <h2 id="auth-cluster-heading" style="margin: 0;">🛡️ Clúster de Autenticación (Auth Service)</h2>
+                </div>
+                <span id="auth-summary-status" class="status">Consultando réplicas…</span>
+            </div>
+            <div id="auth-services-list" class="service-grid"></div>
+        </section>
+
+        <!-- Section 2: Coordinators Mesh -->
+        <section aria-labelledby="coord-cluster-heading">
+            <div class="actions" style="margin-bottom: 12px;">
+                <div>
+                    <span class="hero-kicker">Malla P2P de Carreras</span>
+                    <h2 id="coord-cluster-heading" style="margin: 0;">🏎️ Coordinadores de Juego en Malla</h2>
+                </div>
+                <span id="coord-summary-status" class="status">Consultando instancias…</span>
+            </div>
+            <div id="coord-services-list" class="service-grid"></div>
+        </section>
+
+        <!-- Section 3: Distributed Traces Explorer -->
+        <section aria-labelledby="traces-heading">
+            <span class="hero-kicker">Auditoría distribuida extremo a extremo</span>
+            <h2 id="traces-heading">🔍 Rastreador de Trazas (`traceId`)</h2>
+            <p class="muted">Inspecciona el recorrido exacto de una petición a través de cliente, balanceador, réplicas y coordinadores.</p>
+
+            <div class="trace-search-bar">
+                <input id="trace-input" type="text" placeholder="Pega un traceId (UUID) o haz clic en uno reciente…" autocomplete="off" spellcheck="false">
+                <button id="trace-search-btn" class="primary" type="button">Buscar Traza</button>
+            </div>
+
+            <div id="recent-traces-wrap">
+                <span class="muted" style="font-size: 12px; margin-right: 8px;">Trazas recientes detectadas:</span>
+                <div id="recent-traces-chips" class="recent-traces-container">
+                    <span class="muted" style="font-size: 12px;">Esperando peticiones…</span>
+                </div>
+            </div>
+
+            <div id="trace-result-container" hidden>
+                <div class="actions" style="background: var(--code); padding: 10px 14px; border-radius: 6px; margin-top: 14px;">
+                    <div>
+                        <strong id="trace-summary-id" style="font-family: ui-monospace, monospace;">—</strong>
+                        <p id="trace-summary-metrics" class="muted" style="margin: 0; font-size: 12px;">—</p>
+                    </div>
+                    <span id="trace-summary-count" class="badge badge-online">0 eventos</span>
+                </div>
+                <div id="trace-timeline" class="timeline"></div>
+            </div>
+            <p id="trace-empty-notice" class="muted" style="margin-top: 12px;" hidden>No se encontraron registros para ese traceId en ninguno de los servicios disponibles.</p>
+        </section>
+    </main>
+
+    <script>
+    (function () {
+        'use strict';
+
+        // 1. Obtener URLs de los servicios configurados
+        function getConfiguredAuthUrls() {
+            try {
+                if (typeof getAuthUrls === 'function') {
+                    return getAuthUrls();
+                }
+            } catch (_) {}
+            const cfg = window.APP_CONFIG || {};
+            const list = Array.isArray(cfg.AUTH_URLS) && cfg.AUTH_URLS.length > 0
+                ? cfg.AUTH_URLS
+                : (cfg.AUTH_URL ? [cfg.AUTH_URL] : []);
+            if (list.length > 0) return list;
+            return ['http://localhost:4001', 'http://localhost:4002', 'http://localhost:4003'];
+        }
+
+        const knownCoordinatorHttpUrls = new Set();
+        // Si estamos en localhost, inicializar con los puertos estándar
+        const isLocalHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+        if (isLocalHost) {
+            knownCoordinatorHttpUrls.add('http://localhost:5001');
+            knownCoordinatorHttpUrls.add('http://localhost:5002');
+            knownCoordinatorHttpUrls.add('http://localhost:5003');
+        }
+
+        function toHttpUrl(wsOrHttpUrl) {
+            if (!wsOrHttpUrl || typeof wsOrHttpUrl !== 'string') return null;
+            try {
+                const u = new URL(wsOrHttpUrl);
+                const isSecure = u.protocol === 'wss:' || window.location.protocol === 'https:';
+                u.protocol = isSecure ? 'https:' : 'http:';
+                return u.origin;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        // 2. Elementos DOM
+        const kpiAuthLeader = document.getElementById('kpi-auth-leader');
+        const kpiAuthTerm = document.getElementById('kpi-auth-term');
+        const kpiPlayersTotal = document.getElementById('kpi-players-total');
+        const kpiPlayersSub = document.getElementById('kpi-players-sub');
+        const kpiWsConnections = document.getElementById('kpi-ws-connections');
+        const kpiTickRate = document.getElementById('kpi-tick-rate');
+
+        const authServicesList = document.getElementById('auth-services-list');
+        const coordServicesList = document.getElementById('coord-services-list');
+        const authSummaryStatus = document.getElementById('auth-summary-status');
+        const coordSummaryStatus = document.getElementById('coord-summary-status');
+
+        const traceInput = document.getElementById('trace-input');
+        const traceSearchBtn = document.getElementById('trace-search-btn');
+        const recentTracesChips = document.getElementById('recent-traces-chips');
+        const traceResultContainer = document.getElementById('trace-result-container');
+        const traceSummaryId = document.getElementById('trace-summary-id');
+        const traceSummaryMetrics = document.getElementById('trace-summary-metrics');
+        const traceSummaryCount = document.getElementById('trace-summary-count');
+        const traceTimeline = document.getElementById('trace-timeline');
+        const traceEmptyNotice = document.getElementById('trace-empty-notice');
+
+        const knownRecentTraceIds = new Set();
+
+        // 3. Consultar Coordinadores desde el líder de Auth
+        async function discoverCoordinators(authUrls) {
+            for (const authUrl of authUrls) {
+                try {
+                    const res = await fetch(`${authUrl}/coordinators`, {
+                        headers: { 'ngrok-skip-browser-warning': 'true' }
+                    });
+                    if (!res.ok) continue;
+                    const data = await res.json().catch(() => null);
+                    if (data && data.ok === true && Array.isArray(data.coordinators)) {
+                        for (const coord of data.coordinators) {
+                            const httpUrl = toHttpUrl(coord.publicUrl);
+                            if (httpUrl) knownCoordinatorHttpUrls.add(httpUrl);
+                        }
+                        break;
+                    }
+                } catch (_) {}
+            }
+        }
+
+        // 4. Muestreo periódico de métricas
+        async function pollMetrics() {
+            const authUrls = getConfiguredAuthUrls();
+            await discoverCoordinators(authUrls);
+
+            // Muestreo paralelo de Auths
+            const authResults = await Promise.all(authUrls.map(async (url) => {
+                const start = performance.now();
+                try {
+                    const res = await fetch(`${url}/metrics`, {
+                        headers: { 'ngrok-skip-browser-warning': 'true' }
+                    });
+                    const rtt = Math.round(performance.now() - start);
+                    if (!res.ok) return { url, ok: false, status: res.status, rtt };
+                    const metrics = await res.json();
+                    return { url, ok: true, metrics, rtt };
+                } catch (err) {
+                    return { url, ok: false, error: err.message, rtt: null };
+                }
+            }));
+
+            // Muestreo paralelo de Coordinadores
+            const coordUrls = [...knownCoordinatorHttpUrls];
+            const coordResults = await Promise.all(coordUrls.map(async (url) => {
+                const start = performance.now();
+                try {
+                    const res = await fetch(`${url}/metrics`, {
+                        headers: { 'ngrok-skip-browser-warning': 'true' }
+                    });
+                    const rtt = Math.round(performance.now() - start);
+                    if (!res.ok) return { url, ok: false, status: res.status, rtt };
+                    const metrics = await res.json();
+                    return { url, ok: true, metrics, rtt };
+                } catch (err) {
+                    return { url, ok: false, error: err.message, rtt: null };
+                }
+            }));
+
+            // Recolectar trazas recientes de servicios activos
+            fetchRecentTraceIds([...authUrls, ...coordUrls]);
+
+            // Renderizar vistas
+            renderAuthCluster(authResults);
+            renderCoordCluster(coordResults);
+            updateKpis(authResults, coordResults);
+        }
+
+        // 5. Renderizar clúster de autenticación
+        function renderAuthCluster(results) {
+            while (authServicesList.firstChild) {
+                authServicesList.removeChild(authServicesList.firstChild);
+            }
+
+            let onlineCount = 0;
+            for (const item of results) {
+                const card = document.createElement('div');
+                card.className = 'service-card' + (item.ok ? '' : ' offline');
+
+                const header = document.createElement('div');
+                header.className = 'service-card-header';
+
+                const title = document.createElement('h3');
+                title.className = 'service-title';
+                title.textContent = item.url.replace(/^https?:\/\//, '');
+
+                const badges = document.createElement('div');
+                badges.className = 'button-row';
+
+                if (!item.ok) {
+                    const offBadge = document.createElement('span');
+                    offBadge.className = 'badge badge-offline';
+                    offBadge.textContent = '🔴 Caído';
+                    badges.appendChild(offBadge);
+                } else {
+                    onlineCount++;
+                    const role = item.metrics.cluster?.role || 'replica';
+                    const roleBadge = document.createElement('span');
+                    if (role === 'leader') {
+                        roleBadge.className = 'badge badge-leader';
+                        roleBadge.textContent = '⭐ Líder';
+                    } else if (role === 'candidate') {
+                        roleBadge.className = 'badge badge-candidate';
+                        roleBadge.textContent = '🗳️ Candidato';
+                    } else {
+                        roleBadge.className = 'badge badge-replica';
+                        roleBadge.textContent = '👥 Réplica';
+                    }
+                    badges.appendChild(roleBadge);
+
+                    const onBadge = document.createElement('span');
+                    onBadge.className = 'badge badge-online';
+                    onBadge.textContent = '🟢 Operativo';
+                    badges.appendChild(onBadge);
+                }
+
+                header.appendChild(title);
+                header.appendChild(badges);
+                card.appendChild(header);
+
+                const list = document.createElement('ul');
+                list.className = 'metrics-list';
+
+                if (!item.ok) {
+                    const errItem = document.createElement('li');
+                    errItem.className = 'metric-item';
+                    errItem.style.gridColumn = 'span 2';
+                    const errName = document.createElement('span');
+                    errName.className = 'name';
+                    errName.textContent = 'Estado de conexión';
+                    const errVal = document.createElement('span');
+                    errVal.className = 'val';
+                    errVal.style.color = 'var(--bad)';
+                    errVal.textContent = item.status ? `Error HTTP ${item.status}` : 'Sin respuesta de red';
+                    errItem.appendChild(errName);
+                    errItem.appendChild(errVal);
+                    list.appendChild(errItem);
+                } else {
+                    const cluster = item.metrics.cluster || {};
+                    const http = item.metrics.http || {};
+                    const ws = item.metrics.ws || {};
+
+                    addMetricItem(list, 'Term actual', String(cluster.term ?? '—'));
+                    addMetricItem(list, 'Secuencia aplicada', String(cluster.lastAppliedSeq ?? '—'));
+                    addMetricItem(list, 'Atraso (Lag)', cluster.lag === 0 ? 'Al día (0)' : (cluster.lag != null ? `${cluster.lag} op` : '—'));
+                    addMetricItem(list, 'Peticiones / s', http.rps != null ? `${http.rps.toFixed(2)} req/s` : '0 req/s');
+
+                    const p50 = http.latencyMs?.p50 != null ? `${http.latencyMs.p50.toFixed(1)} ms` : '—';
+                    const p95 = http.latencyMs?.p95 != null ? `${http.latencyMs.p95.toFixed(1)} ms` : '—';
+                    addMetricItem(list, 'Latencia HTTP (p50 / p95)', `${p50} / ${p95}`);
+                    addMetricItem(list, 'Conexiones Mesh WS', String(ws.connections ?? '0'));
+
+                    // Si es líder y tiene réplicas, mostrar detalle de quórum
+                    if (cluster.role === 'leader' && Array.isArray(cluster.replicas) && cluster.replicas.length > 0) {
+                        const repItem = document.createElement('li');
+                        repItem.className = 'replicas-subtable';
+                        const repTitle = document.createElement('strong');
+                        repTitle.textContent = 'Estado de réplicas en clúster:';
+                        repItem.appendChild(repTitle);
+
+                        const repUl = document.createElement('ul');
+                        for (const rep of cluster.replicas) {
+                            const li = document.createElement('li');
+                            const connStr = rep.connected ? 'conectada' : 'desconectada';
+                            const lagStr = rep.lag != null ? `atraso: ${rep.lag} op` : 'atraso: desconocido';
+                            li.textContent = `${rep.authId} (${connStr}, seq ${rep.lastAppliedSeq ?? '?'}, ${lagStr})`;
+                            repUl.appendChild(li);
+                        }
+                        repItem.appendChild(repUl);
+                        list.appendChild(repItem);
+                    }
+                }
+
+                card.appendChild(list);
+                authServicesList.appendChild(card);
+            }
+
+            authSummaryStatus.textContent = `${onlineCount} de ${results.length} nodo(s) activo(s)`;
+        }
+
+        // 6. Renderizar clúster de coordinadores
+        function renderCoordCluster(results) {
+            while (coordServicesList.firstChild) {
+                coordServicesList.removeChild(coordServicesList.firstChild);
+            }
+
+            let onlineCount = 0;
+            for (const item of results) {
+                const card = document.createElement('div');
+                card.className = 'service-card' + (item.ok ? '' : ' offline');
+
+                const header = document.createElement('div');
+                header.className = 'service-card-header';
+
+                const title = document.createElement('h3');
+                title.className = 'service-title';
+                title.textContent = item.url.replace(/^https?:\/\//, '');
+
+                const badges = document.createElement('div');
+                badges.className = 'button-row';
+
+                if (!item.ok) {
+                    const offBadge = document.createElement('span');
+                    offBadge.className = 'badge badge-offline';
+                    offBadge.textContent = '🔴 Caído';
+                    badges.appendChild(offBadge);
+                } else {
+                    onlineCount++;
+                    const onBadge = document.createElement('span');
+                    onBadge.className = 'badge badge-online';
+                    onBadge.textContent = '🟢 Operativo';
+                    badges.appendChild(onBadge);
+                }
+
+                header.appendChild(title);
+                header.appendChild(badges);
+                card.appendChild(header);
+
+                const list = document.createElement('ul');
+                list.className = 'metrics-list';
+
+                if (!item.ok) {
+                    const errItem = document.createElement('li');
+                    errItem.className = 'metric-item';
+                    errItem.style.gridColumn = 'span 2';
+                    const errName = document.createElement('span');
+                    errName.className = 'name';
+                    errName.textContent = 'Estado de conexión';
+                    const errVal = document.createElement('span');
+                    errVal.className = 'val';
+                    errVal.style.color = 'var(--bad)';
+                    errVal.textContent = item.status ? `Error HTTP ${item.status}` : 'Sin respuesta de red';
+                    errItem.appendChild(errName);
+                    errItem.appendChild(errVal);
+                    list.appendChild(errItem);
+                } else {
+                    const m = item.metrics;
+                    const pl = m.players || {};
+                    const tick = m.tick || {};
+                    const http = m.http || {};
+                    const repl = m.replication || {};
+
+                    const totalPlayers = (pl.local || 0) + (pl.remote || 0);
+                    addMetricItem(list, 'Jugadores (Total)', `${totalPlayers} (${pl.local || 0} loc / ${pl.remote || 0} rem)`);
+                    addMetricItem(list, 'Conexiones WS', String(m.ws?.connections ?? '0'));
+
+                    const effHz = tick.effectiveHz != null ? `${tick.effectiveHz} Hz` : '—';
+                    const cfgHz = tick.configuredHz != null ? `${tick.configuredHz} Hz` : '20 Hz';
+                    addMetricItem(list, 'Tick Rate (Real / Meta)', `${effHz} / ${cfgHz}`);
+                    addMetricItem(list, 'Peticiones / s', http.rps != null ? `${http.rps.toFixed(2)} req/s` : '0 req/s');
+
+                    const p50 = http.latencyMs?.p50 != null ? `${http.latencyMs.p50.toFixed(1)} ms` : '—';
+                    const p95 = http.latencyMs?.p95 != null ? `${http.latencyMs.p95.toFixed(1)} ms` : '—';
+                    addMetricItem(list, 'Latencia HTTP (p50 / p95)', `${p50} / ${p95}`);
+
+                    const repP50 = repl.intentLagMs?.p50 != null ? `${repl.intentLagMs.p50.toFixed(1)} ms` : '—';
+                    const repP95 = repl.intentLagMs?.p95 != null ? `${repl.intentLagMs.p95.toFixed(1)} ms` : '—';
+                    addMetricItem(list, 'Latencia Replicación (p50/p95)', `${repP50} / ${repP95}`);
+
+                    // Desfase de relojes si hay peers
+                    if (repl.clockOffsetMs && Object.keys(repl.clockOffsetMs).length > 0) {
+                        const clockItem = document.createElement('li');
+                        clockItem.className = 'replicas-subtable';
+                        const clockTitle = document.createElement('strong');
+                        clockTitle.textContent = 'Desfase de reloj con peers:';
+                        clockItem.appendChild(clockTitle);
+
+                        const clockUl = document.createElement('ul');
+                        for (const [peerId, offset] of Object.entries(repl.clockOffsetMs)) {
+                            const li = document.createElement('li');
+                            li.textContent = `${peerId}: ${offset != null ? `${offset.toFixed(1)} ms` : 'sin estimación'}`;
+                            clockUl.appendChild(li);
+                        }
+                        clockItem.appendChild(clockUl);
+                        list.appendChild(clockItem);
+                    }
+                }
+
+                card.appendChild(list);
+                coordServicesList.appendChild(card);
+            }
+
+            coordSummaryStatus.textContent = `${onlineCount} de ${results.length} coordinador(es) activo(s)`;
+        }
+
+        function addMetricItem(container, name, val) {
+            const li = document.createElement('li');
+            li.className = 'metric-item';
+            const spanName = document.createElement('span');
+            spanName.className = 'name';
+            spanName.textContent = name;
+            const spanVal = document.createElement('span');
+            spanVal.className = 'val';
+            spanVal.textContent = val;
+            li.appendChild(spanName);
+            li.appendChild(spanVal);
+            container.appendChild(li);
+        }
+
+        // 7. Actualizar tarjetas KPI globales
+        function updateKpis(authResults, coordResults) {
+            // Líder
+            let leaderNode = '—';
+            let leaderTerm = '—';
+            for (const r of authResults) {
+                if (r.ok && r.metrics?.cluster?.role === 'leader') {
+                    leaderNode = r.url.replace(/^https?:\/\//, '');
+                    leaderTerm = String(r.metrics.cluster.term ?? '—');
+                    break;
+                }
+            }
+            kpiAuthLeader.textContent = leaderNode;
+            kpiAuthTerm.textContent = `Term: ${leaderTerm}`;
+
+            // Jugadores y conexiones WS
+            let totalLocal = 0;
+            let totalRemote = 0;
+            let totalWs = 0;
+            let tickRates = [];
+
+            for (const r of coordResults) {
+                if (r.ok && r.metrics) {
+                    totalLocal += r.metrics.players?.local || 0;
+                    totalRemote += r.metrics.players?.remote || 0;
+                    totalWs += r.metrics.ws?.connections || 0;
+                    if (Number.isFinite(r.metrics.tick?.effectiveHz)) {
+                        tickRates.push(r.metrics.tick.effectiveHz);
+                    }
+                }
+            }
+            // Sumar WS connections de auths
+            for (const r of authResults) {
+                if (r.ok && r.metrics?.ws?.connections) {
+                    totalWs += r.metrics.ws.connections;
+                }
+            }
+
+            kpiPlayersTotal.textContent = String(totalLocal);
+            kpiPlayersSub.textContent = `${totalLocal} locales · ${totalRemote} réplicas`;
+            kpiWsConnections.textContent = String(totalWs);
+
+            if (tickRates.length > 0) {
+                const avgTick = tickRates.reduce((a, b) => a + b, 0) / tickRates.length;
+                kpiTickRate.textContent = `${avgTick.toFixed(1)} Hz`;
+            } else {
+                kpiTickRate.textContent = '— Hz';
+            }
+        }
+
+        // 8. Trazas recientes (GET /traces en los servicios)
+        async function fetchRecentTraceIds(serviceUrls) {
+            for (const baseUrl of serviceUrls) {
+                try {
+                    const res = await fetch(`${baseUrl}/traces`, {
+                        headers: { 'ngrok-skip-browser-warning': 'true' }
+                    });
+                    if (!res.ok) continue;
+                    const data = await res.json().catch(() => null);
+                    if (data && data.ok === true && Array.isArray(data.traceIds)) {
+                        for (const id of data.traceIds) {
+                            if (typeof id === 'string' && id.length > 0) {
+                                knownRecentTraceIds.add(id);
+                            }
+                        }
+                    }
+                } catch (_) {}
+            }
+            renderRecentTraces();
+        }
+
+        function renderRecentTraces() {
+            if (knownRecentTraceIds.size === 0) return;
+            while (recentTracesChips.firstChild) {
+                recentTracesChips.removeChild(recentTracesChips.firstChild);
+            }
+            const ids = [...knownRecentTraceIds].slice(-10).reverse();
+            for (const id of ids) {
+                const chip = document.createElement('button');
+                chip.type = 'button';
+                chip.className = 'trace-chip';
+                chip.textContent = id;
+                chip.addEventListener('click', () => {
+                    traceInput.value = id;
+                    searchTrace(id);
+                });
+                recentTracesChips.appendChild(chip);
+            }
+        }
+
+        // 9. Búsqueda y reconstrucción de traza distribuida
+        async function searchTrace(traceId) {
+            const cleanId = (traceId || '').trim();
+            if (!cleanId) return;
+
+            traceSearchBtn.disabled = true;
+            traceSearchBtn.textContent = 'Buscando…';
+            traceEmptyNotice.hidden = true;
+            traceResultContainer.hidden = true;
+
+            const authUrls = getConfiguredAuthUrls();
+            const coordUrls = [...knownCoordinatorHttpUrls];
+            const allEndpoints = [...authUrls, ...coordUrls];
+
+            const collectedTraces = [];
+            const queriedServices = new Set();
+
+            await Promise.allSettled(allEndpoints.map(async (baseUrl) => {
+                try {
+                    const res = await fetch(`${baseUrl}/traces/${encodeURIComponent(cleanId)}`, {
+                        headers: { 'ngrok-skip-browser-warning': 'true' }
+                    });
+                    if (!res.ok) return;
+                    const payload = await res.json().catch(() => null);
+                    if (payload && payload.ok === true && Array.isArray(payload.traces)) {
+                        for (const tr of payload.traces) {
+                            collectedTraces.push(tr);
+                            queriedServices.add(tr.service + ':' + tr.id);
+                        }
+                    }
+                } catch (_) {}
+            }));
+
+            traceSearchBtn.disabled = false;
+            traceSearchBtn.textContent = 'Buscar Traza';
+
+            if (collectedTraces.length === 0) {
+                traceEmptyNotice.hidden = false;
+                return;
+            }
+
+            // Ordenar cronológicamente
+            collectedTraces.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+
+            // Renderizar timeline
+            renderTraceTimeline(cleanId, collectedTraces, queriedServices);
+        }
+
+        function renderTraceTimeline(traceId, traces, services) {
+            while (traceTimeline.firstChild) {
+                traceTimeline.removeChild(traceTimeline.firstChild);
+            }
+
+            traceSummaryId.textContent = `TraceId: ${traceId}`;
+            traceSummaryCount.textContent = `${traces.length} eventos`;
+
+            const firstTime = new Date(traces[0].at).getTime();
+            const lastTime = new Date(traces[traces.length - 1].at).getTime();
+            const totalDuration = lastTime - firstTime;
+            traceSummaryMetrics.textContent = `Duración total: ${totalDuration} ms · Servicios involucrados: ${services.size} nodo(s)`;
+
+            for (let i = 0; i < traces.length; i++) {
+                const tr = traces[i];
+                const itemTime = new Date(tr.at).getTime();
+                const deltaMs = itemTime - firstTime;
+
+                const row = document.createElement('div');
+                row.className = `timeline-step service-${tr.service}`;
+
+                const colIndex = document.createElement('span');
+                colIndex.className = 'step-index';
+                colIndex.textContent = `#${i + 1}`;
+
+                const colTime = document.createElement('span');
+                colTime.className = 'step-time';
+                colTime.textContent = `+${deltaMs} ms`;
+
+                const colService = document.createElement('span');
+                colService.className = 'step-service';
+                const icon = tr.service === 'auth' ? '🛡️' : '🏎️';
+                colService.textContent = `${icon} ${tr.id}`;
+
+                const colEvent = document.createElement('div');
+                const eventBadge = document.createElement('span');
+                eventBadge.className = 'step-event';
+                eventBadge.textContent = tr.event;
+                const detailText = document.createElement('span');
+                detailText.className = 'step-detail';
+                detailText.style.marginLeft = '8px';
+                detailText.textContent = typeof tr.detail === 'object' ? JSON.stringify(tr.detail) : String(tr.detail || '');
+                colEvent.appendChild(eventBadge);
+                colEvent.appendChild(detailText);
+
+                const colDuration = document.createElement('span');
+                colDuration.className = 'step-duration';
+                colDuration.textContent = tr.durationMs != null ? `${tr.durationMs} ms` : '—';
+
+                row.appendChild(colIndex);
+                row.appendChild(colTime);
+                row.appendChild(colService);
+                row.appendChild(colEvent);
+                row.appendChild(colDuration);
+
+                traceTimeline.appendChild(row);
+            }
+
+            traceResultContainer.hidden = false;
+        }
+
+        // 10. Listeners de búsqueda
+        traceSearchBtn.addEventListener('click', () => searchTrace(traceInput.value));
+        traceInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                searchTrace(traceInput.value);
+            }
+        });
+
+        // 11. Arranque inmediato y ciclo de 1 s
+        pollMetrics();
+        setInterval(pollMetrics, 1000);
+
+    })();
+    </script>
+</body>
+</html>
