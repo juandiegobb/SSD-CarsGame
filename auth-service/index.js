@@ -5,7 +5,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { timingSafeEqual } = require('node:crypto');
+const { timingSafeEqual, randomUUID } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 // SKIP_DOTENV=1 (lo ponen las pruebas y npm test de la raíz): no leer el .env local,
 // así las pruebas no dependen de la configuración de quien las corre.
@@ -42,6 +42,8 @@ const { createAuthMesh } = require('./auth-mesh');
 const { createReplication } = require('./replication');
 const { createElection } = require('./election');
 const { createRollingSamples, percentile } = require('../shared/rolling-samples');
+const { createTraceBuffer } = require('../shared/trace-buffer');
+const traceBuffer = createTraceBuffer(500);
 
 // 1. Verificación de configuración y variables de entorno críticas
 if (!process.env.JWT_SECRET) {
@@ -298,8 +300,8 @@ const authMesh = createAuthMesh({
   secret: AUTH_MESH_SECRET,
   getHello: () => replication.hello()
 });
-replication = createReplication({ config: CLUSTER, mesh: authMesh, clusterState, replicationLog });
-const election = createElection({ config: CLUSTER, mesh: authMesh, clusterState, replicationLog });
+replication = createReplication({ config: CLUSTER, mesh: authMesh, clusterState, replicationLog, traceBuffer });
+const election = createElection({ config: CLUSTER, mesh: authMesh, clusterState, replicationLog, traceBuffer });
 
 // Opción B (SPEC §13.7): el líder responde la escritura cuando al menos 1 réplica la confirmó.
 // Si nadie confirma en REPLICATION_ACK_TIMEOUT_MS → 503 replication_timeout (el cambio queda
@@ -447,15 +449,44 @@ if (allowedOrigins.includes(origin) || allowedOrigins.includes('*') || origin.in
     }
     return callback(null, false);
   },
-  allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning', 'x-trace-id'],
+  exposedHeaders: ['x-trace-id'],
   methods: ['GET', 'POST', 'OPTIONS'],
   credentials: true
 }));
 
-// Parser de cuerpo JSON
+// TraceId middleware y registro de trazas HTTP
 app.use((req, res, next) => {
+  const headerTraceId = req.headers['x-trace-id'];
+  const traceId = (typeof headerTraceId === 'string' && headerTraceId.trim()) || randomUUID();
+  req.traceId = traceId;
+  res.setHeader('x-trace-id', traceId);
+
   const startedAt = performance.now();
-  res.once('finish', () => httpLatencies.record(performance.now() - startedAt));
+  traceBuffer.record({
+    traceId,
+    service: 'auth',
+    id: CLUSTER.myId || 'auth',
+    event: 'http_request',
+    at: new Date().toISOString(),
+    durationMs: null,
+    detail: `${req.method} ${req.path}`
+  });
+
+  res.once('finish', () => {
+    const duration = performance.now() - startedAt;
+    httpLatencies.record(duration);
+    const durationMs = Math.round(duration * 100) / 100;
+    traceBuffer.record({
+      traceId,
+      service: 'auth',
+      id: CLUSTER.myId || 'auth',
+      event: 'http_response',
+      at: new Date().toISOString(),
+      durationMs,
+      detail: `${req.method} ${req.path} -> ${res.statusCode}`
+    });
+  });
   next();
 });
 app.use(express.json({ limit: '4kb' }));
@@ -545,6 +576,34 @@ app.get('/metrics', (req, res) => {
       replicas
     }
   });
+});
+
+app.get('/traces/:traceId', (req, res) => {
+  const traceId = (req.params.traceId || '').trim();
+  if (!traceId) {
+    return sendError(
+      res,
+      400,
+      'INVALID_TRACE_ID',
+      'El traceId no es válido.',
+      'Proporciona un identificador de traza válido.'
+    );
+  }
+  const traces = traceBuffer.getTraces(traceId);
+  if (traces.length === 0) {
+    return sendError(
+      res,
+      404,
+      'TRACE_NOT_FOUND',
+      'No se encontraron trazas para ese traceId.',
+      'Verifica que el traceId sea correcto y que corresponda a una petición reciente.'
+    );
+  }
+  return sendOk(res, 200, 'Trazas encontradas.', { traceId, traces });
+});
+
+app.get('/traces', (req, res) => {
+  return sendOk(res, 200, 'Trazas recientes.', { traceIds: traceBuffer.getRecentTraceIds(30) });
 });
 
 // POST /heartbeat - Registra o actualiza un coordinador autenticado en memoria.
@@ -813,7 +872,7 @@ app.post('/register', async (req, res, next) => {
         const info = stmts.insertLocal.run(cleanUsername, passwordHash);
         newUserId = Number(info.lastInsertRowid);
         return replicationLog.dataForUser('register', newUserId);
-      });
+      }, req.traceId);
       console.log(`Usuario registrado: ${cleanUsername} (seq ${entry.seq})`);
       if (!(await confirmReplicated(res, entry))) return;
 
@@ -1016,7 +1075,7 @@ app.post('/auth/google', async (req, res, next) => {
         replicationLog.recordLocalWrite('update_picture', () => {
           stmts.updatePicture.run(pictureUrl, existing.id);
           return replicationLog.dataForUser('update_picture', existing.id);
-        });
+        }, req.traceId);
         existing.picture_url = pictureUrl;
       }
       const token = emitToken(existing);
@@ -1075,7 +1134,7 @@ app.post('/auth/google', async (req, res, next) => {
         const info = stmts.insertGoogle.run(cleanUsername, googleSub, email, pictureUrl);
         newUserId = Number(info.lastInsertRowid);
         return replicationLog.dataForUser('register_google', newUserId);
-      });
+      }, req.traceId);
       if (!(await confirmReplicated(res, entry))) return;
       const newUser = { id: String(newUserId), username: cleanUsername, provider: 'google', picture_url: pictureUrl };
       const token = emitToken(newUser);
@@ -1122,7 +1181,7 @@ app.use((req, res) => {
     404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas disponibles: GET /health, GET /metrics, GET /status, GET /peers, GET /peers?coordinatorId=<ID>, POST /heartbeat, GET /coordinator, GET /coordinators, POST /register, POST /login, POST /auth/google.'
+    'Rutas disponibles: GET /health, GET /metrics, GET /traces/:traceId, GET /status, GET /peers, GET /peers?coordinatorId=<ID>, POST /heartbeat, GET /coordinator, GET /coordinators, POST /register, POST /login, POST /auth/google.'
   );
 });
 
@@ -1186,5 +1245,6 @@ module.exports = {
   authMesh,
   coordinators,
   isCoordinatorLive,
-  pruneExpiredCoordinators
+  pruneExpiredCoordinators,
+  traceBuffer
 };

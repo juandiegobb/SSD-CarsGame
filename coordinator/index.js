@@ -3,7 +3,7 @@
 // un Map de jugadores en línea y hacer broadcast de la lista ante cada cambio.
 // El JWT se intercambia por un ticket de un solo uso antes del handshake WS.
 
-const { randomBytes } = require('node:crypto');
+const { randomBytes, randomUUID } = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const readline = require('node:readline/promises');
 const fs = require('node:fs');
@@ -25,6 +25,8 @@ const { createItems, pickupItems, refreshItems, speedFactor, EFFECTS: ITEM_EFFEC
 const { createAuthClient, parseAuthUrls } = require('./auth-client');
 const { createRollingSamples, percentile } = require('../shared/rolling-samples');
 const { calculateClockEstimate, correctedIntentLatency } = require('../shared/clock-metrics');
+const { createTraceBuffer } = require('../shared/trace-buffer');
+const traceBuffer = createTraceBuffer(500);
 
 // ── Verificación de configuración crítica ────────────────────────────────────
 if (!process.env.JWT_SECRET) {
@@ -174,6 +176,7 @@ let gameLoopTimer = null;
 let peerSyncTimer = null;
 let peerRebalanceTimer = null;
 const rebalanceInFlight = new Map();
+let intentSampleCounter = 0;
 const httpLatencies = createRollingSamples();
 const tickSamples = createRollingSamples(1000);
 const intentLagSamples = createRollingSamples();
@@ -210,12 +213,23 @@ async function sendHeartbeat() {
 
   try {
     const connectedPlayers = countOpenLocalPlayers();
+    const traceId = randomUUID();
+    traceBuffer.record({
+      traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'heartbeat_send',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: 'POST /heartbeat'
+    });
     // El timeout es por intento (dentro de authClient) para poder pasar al siguiente auth.
     const { response, payload } = await authClient.request('/heartbeat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-coordinator-secret': COORDINATOR_SHARED_SECRET
+        'x-coordinator-secret': COORDINATOR_SHARED_SECRET,
+        'x-trace-id': traceId
       },
       body: JSON.stringify({
         coordinatorId: COORDINATOR_ID,
@@ -227,6 +241,15 @@ async function sendHeartbeat() {
         load: connectedPlayers
       }),
       signal: controller.signal
+    });
+    traceBuffer.record({
+      traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'heartbeat_recv',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: `HTTP ${response.status}`
     });
 
     if (!response.ok) {
@@ -321,7 +344,29 @@ async function refreshPeers() {
 
   try {
     const path = `/peers?coordinatorId=${encodeURIComponent(COORDINATOR_ID)}`;
-    const { response, payload } = await authClient.request(path, { signal: controller.signal });
+    const traceId = randomUUID();
+    traceBuffer.record({
+      traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'peers_send',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: 'GET /peers'
+    });
+    const { response, payload } = await authClient.request(path, {
+      signal: controller.signal,
+      headers: { 'x-trace-id': traceId }
+    });
+    traceBuffer.record({
+      traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'peers_recv',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: `HTTP ${response.status}`
+    });
     if (!response.ok) {
       if (payload?.error !== 'no_leader' && payload?.error !== 'not_leader') {
         console.error(`[coordinator] Auth rechazó la consulta de peers (HTTP ${response.status}).`);
@@ -445,14 +490,25 @@ function runPeerRebalance() {
       }
     }, PLAYER_REBALANCE_TIMEOUT_MS).unref();
 
+    const traceId = randomUUID();
     const request = {
       type: 'player_rebalance',
       sourceId: assignment.sourceId,
       targetId: target.coordinatorId,
       targetName: target.coordinatorName,
       targetUrl: target.publicUrl,
-      userId: assignment.userId
+      userId: assignment.userId,
+      traceId
     };
+    traceBuffer.record({
+      traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'player_rebalance_send',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: `jugador ${assignment.userId} a ${target.coordinatorId}`
+    });
 
     if (isLocalSource) {
       sendRebalanceRequest(assignment.userId, {
@@ -481,6 +537,17 @@ function stopPeerRebalance() {
 }
 
 function acceptRebalanceRequest(peerId, message) {
+  if (message.traceId) {
+    traceBuffer.record({
+      traceId: message.traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'player_rebalance_recv',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: `de ${peerId} para jugador ${message.userId}`
+    });
+  }
   const activeIds = [COORDINATOR_ID, ...peers.map((peer) => peer.coordinatorId)].sort();
   const target = peers.find((peer) =>
     peer.coordinatorId === message.targetId && peer.publicUrl === message.targetUrl);
@@ -498,6 +565,17 @@ function acceptRebalanceRequest(peerId, message) {
 }
 
 function acceptPlayerTransfer(peerId, message) {
+  if (message.traceId) {
+    traceBuffer.record({
+      traceId: message.traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'player_transfer_complete_recv',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: `jugador ${message.userId} completado en ${peerId}`
+    });
+  }
   if (message.previousCoordinatorId !== COORDINATOR_ID ||
       message.targetId !== peerId ||
       typeof message.userId !== 'string' ||
@@ -549,6 +627,16 @@ function confirmPlayerMigration(ws, userId, player, sourceCoordinatorId) {
 
   const previousCoordinatorId = player.migrationSource;
   player.migrationSource = null;
+  const traceId = randomUUID();
+  traceBuffer.record({
+    traceId,
+    service: 'coordinator',
+    id: COORDINATOR_ID,
+    event: 'player_transfer_complete_send',
+    at: new Date().toISOString(),
+    durationMs: null,
+    detail: `jugador ${userId} migrado desde ${previousCoordinatorId}`
+  });
   if (isOpenSocket(peerConnections.get(previousCoordinatorId))) {
     broadcastPeer({
       type: 'player_transfer_complete',
@@ -558,7 +646,8 @@ function confirmPlayerMigration(ws, userId, player, sourceCoordinatorId) {
       userId,
       x: player.x,
       y: player.y,
-      extras: player.extras
+      extras: player.extras,
+      traceId
     });
   }
   sendWs(ws, {
@@ -717,11 +806,22 @@ function roomReplicationPayload(room) {
 }
 
 function replicateRoom(room, op) {
+  const traceId = randomUUID();
+  traceBuffer.record({
+    traceId,
+    service: 'coordinator',
+    id: COORDINATOR_ID,
+    event: 'room_replicate_send',
+    at: new Date().toISOString(),
+    durationMs: null,
+    detail: `${op} room ${room.roomId}`
+  });
   broadcastPeer({
     type: 'room_replicate',
     op,
     roomId: room.roomId,
-    room: roomReplicationPayload(room).room
+    room: roomReplicationPayload(room).room,
+    traceId
   });
 }
 
@@ -773,7 +873,17 @@ function publishRaceUpdate(room, operation = 'race') {
 }
 
 function replicateRoomRemoval(roomId) {
-  broadcastPeer({ type: 'room_replicate', op: 'leave', roomId, room: null });
+  const traceId = randomUUID();
+  traceBuffer.record({
+    traceId,
+    service: 'coordinator',
+    id: COORDINATOR_ID,
+    event: 'room_replicate_send',
+    at: new Date().toISOString(),
+    durationMs: null,
+    detail: `leave room ${roomId}`
+  });
+  broadcastPeer({ type: 'room_replicate', op: 'leave', roomId, room: null, traceId });
 }
 
 function sendLocalRoomsToPeer(ws) {
@@ -789,6 +899,17 @@ function sendLocalRoomsToPeer(ws) {
 }
 
 function applyRemoteRoom(peerId, message) {
+  if (message.traceId) {
+    traceBuffer.record({
+      traceId: message.traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'room_replicate_recv',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: `${message.op} room ${message.roomId} de ${peerId}`
+    });
+  }
   if (!['create', 'join', 'leave', 'start', 'race', 'color', 'host'].includes(message.op) ||
       typeof message.roomId !== 'string' || !message.roomId ||
       message.roomId.length > 128) return;
@@ -1112,6 +1233,17 @@ function removePlayersFromPeer(peerId) {
 }
 
 function acceptRemoteIntent(peerId, message) {
+  if (message.traceId) {
+    traceBuffer.record({
+      traceId: message.traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'intent_replicate_recv',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: `jugador ${message.userId} de ${peerId}`
+    });
+  }
   const player = typeof message.userId === 'string' ? players.get(message.userId) : null;
   const dir = message.intent && message.intent.dir;
   if (!player || player.local || player.home !== peerId ||
@@ -1406,8 +1538,36 @@ gameLoopTimer = setInterval(tick, TICK_MS);
 // ── Express — endpoints HTTP ─────────────────────────────────────────────────
 const app = express();
 app.use((req, res, next) => {
+  const headerTraceId = req.headers['x-trace-id'];
+  const traceId = (typeof headerTraceId === 'string' && headerTraceId.trim()) || randomUUID();
+  req.traceId = traceId;
+  res.setHeader('x-trace-id', traceId);
+
   const startedAt = performance.now();
-  res.once('finish', () => httpLatencies.record(performance.now() - startedAt));
+  traceBuffer.record({
+    traceId,
+    service: 'coordinator',
+    id: COORDINATOR_ID,
+    event: 'http_request',
+    at: new Date().toISOString(),
+    durationMs: null,
+    detail: `${req.method} ${req.path}`
+  });
+
+  res.once('finish', () => {
+    const duration = performance.now() - startedAt;
+    httpLatencies.record(duration);
+    const durationMs = Math.round(duration * 100) / 100;
+    traceBuffer.record({
+      traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'http_response',
+      at: new Date().toISOString(),
+      durationMs,
+      detail: `${req.method} ${req.path} -> ${res.statusCode}`
+    });
+  });
   next();
 });
 app.use(express.json());
@@ -1429,7 +1589,8 @@ function allowTicketOrigin(req, res) {
   res.set('Access-Control-Allow-Origin', origin);
   res.set('Vary', 'Origin');
   res.set('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Authorization, ngrok-skip-browser-warning');
+  res.set('Access-Control-Allow-Headers', 'Authorization, ngrok-skip-browser-warning, Content-Type, x-trace-id');
+  res.set('Access-Control-Expose-Headers', 'x-trace-id');
   res.set('Access-Control-Max-Age', '600');
   return true;
 }
@@ -1442,7 +1603,8 @@ function allowPlayersOrigin(req, res) {
   res.set('Access-Control-Allow-Origin', origin);
   res.set('Vary', 'Origin');
   res.set('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'ngrok-skip-browser-warning');
+  res.set('Access-Control-Allow-Headers', 'ngrok-skip-browser-warning, Authorization, Content-Type, x-trace-id');
+  res.set('Access-Control-Expose-Headers', 'x-trace-id');
   res.set('Access-Control-Max-Age', '600');
   return true;
 }
@@ -1600,13 +1762,49 @@ app.get('/players', (req, res) => {
   });
 });
 
+app.options('/traces/:traceId', (req, res) => {
+  if (!allowPlayersOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+  return res.status(204).end();
+});
+
+app.get('/traces/:traceId', (req, res) => {
+  if (!allowPlayersOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+  const traceId = (req.params.traceId || '').trim();
+  if (!traceId) {
+    return sendError(res, 400, 'INVALID_TRACE_ID', 'El traceId no es válido.', 'Proporciona un identificador de traza válido.');
+  }
+  const traces = traceBuffer.getTraces(traceId);
+  if (traces.length === 0) {
+    return sendError(res, 404, 'TRACE_NOT_FOUND', 'No se encontraron trazas para ese traceId.', 'Verifica que el traceId sea correcto y que corresponda a una petición reciente.');
+  }
+  return sendOk(res, 200, 'Trazas encontradas.', { traceId, traces });
+});
+
+app.options('/traces', (req, res) => {
+  if (!allowPlayersOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+  return res.status(204).end();
+});
+
+app.get('/traces', (req, res) => {
+  if (!allowPlayersOrigin(req, res)) {
+    return sendError(res, 403, 'ORIGIN_NOT_ALLOWED', 'El origen no está autorizado.', 'Usa el origen configurado para el cliente.');
+  }
+  return sendOk(res, 200, 'Trazas recientes.', { traceIds: traceBuffer.getRecentTraceIds(30) });
+});
+
 // Handler 404 para rutas HTTP desconocidas
 app.use((req, res) => {
   sendError(
     res, 404,
     'NOT_FOUND',
     'La ruta solicitada no existe.',
-    'Rutas HTTP disponibles: GET /health, GET /metrics, GET /players y POST /ws-ticket. Solicita un ticket antes de conectar al WebSocket.'
+    'Rutas HTTP disponibles: GET /health, GET /metrics, GET /traces/:traceId, GET /players y POST /ws-ticket. Solicita un ticket antes de conectar al WebSocket.'
   );
 });
 
@@ -2085,11 +2283,25 @@ wss.on('connection', (ws, payload) => {
           (room.race.phase !== 'racing' || completedLaps >= RACE_LAPS_PER_LEVEL);
         // Sanitizar a -1, 0, 1: NO confiar en el cliente ({x: 9999} queda en 1)
         entry.intent = movementLocked ? { x: 0, y: 0 } : { x: Math.sign(dir.x), y: Math.sign(dir.y) };
+        const shouldSample = (intentSampleCounter++ % 20 === 0);
+        const traceId = shouldSample ? randomUUID() : undefined;
+        if (traceId) {
+          traceBuffer.record({
+            traceId,
+            service: 'coordinator',
+            id: COORDINATOR_ID,
+            event: 'intent_replicate_send',
+            at: new Date().toISOString(),
+            durationMs: null,
+            detail: `jugador ${userId} dir (${entry.intent.x}, ${entry.intent.y})`
+          });
+        }
         broadcastPeer({
           type: 'intent_replicate',
           sentAt: Date.now(),
           userId,
-          intent: { dir: entry.intent }
+          intent: { dir: entry.intent },
+          ...(traceId ? { traceId } : {})
         });
         break;
       }
@@ -2549,5 +2761,6 @@ module.exports = {
       return authClient.currentUrl;
     },
     hasCoordinatorSharedSecret: Boolean(COORDINATOR_SHARED_SECRET)
-  }
+  },
+  traceBuffer
 };
