@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
 // Taller 7: el coordinador conoce varios auths (AUTH_URLS) y tiene que hablar con el LÍDER,
 // porque el directorio (heartbeat y /peers?coordinatorId) solo lo atiende el líder.
 //
@@ -60,14 +62,16 @@ function createAuthClient({ urls, fetchImpl = fetch, timeoutMs = 5000, log = con
     }
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     timeout.unref?.();
+    const traceId = (options.headers && (options.headers['x-trace-id'] || options.headers['X-Trace-Id'])) || crypto.randomUUID();
+    const headers = { 'ngrok-skip-browser-warning': 'true', ...(options.headers || {}), 'x-trace-id': traceId };
     try {
       const response = await fetchImpl(`${baseUrl}${path}`, {
         ...options,
-        headers: { 'ngrok-skip-browser-warning': 'true', ...(options.headers || {}) },
+        headers,
         signal: controller.signal
       });
       const payload = await response.json().catch(() => null);
-      return { response, payload };
+      return { response, payload, traceId };
     } finally {
       clearTimeout(timeout);
       if (outerSignal) outerSignal.removeEventListener('abort', onOuterAbort);
