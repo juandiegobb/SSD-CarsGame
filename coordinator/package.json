@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "start:local": "node index.js --local",
     "dev": "node --watch index.js",
+    "dev:local": "node --watch index.js --local",
     "test": "node --test"
   },
   "keywords": [],

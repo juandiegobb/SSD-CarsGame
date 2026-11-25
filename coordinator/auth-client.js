@@ -133,4 +133,42 @@ function createAuthClient({ urls, fetchImpl = fetch, timeoutMs = 5000, log = con
   };
 }
 
-module.exports = { createAuthClient, parseAuthUrls, normalizeAuthUrl };
+const DEFAULT_LOCAL_AUTH_URLS = 'http://localhost:4001,http://localhost:4002,http://localhost:4003,http://localhost:4000';
+
+function isLocalMode(env = process.env, argv = process.argv) {
+  const localFlag = String(env.LOCAL_MODE || '').trim().toLowerCase();
+  const mode = String(env.COORDINATOR_MODE || '').trim().toLowerCase();
+  return (Array.isArray(argv) && argv.includes('--local')) ||
+    localFlag === '1' ||
+    localFlag === 'true' ||
+    mode === 'local';
+}
+
+// Resuelve URLs públicas/peer/auth del coordinador permitiendo modo --local
+// sin borrar las URLs de ngrok guardadas en coordinator/.env.
+function resolveCoordinatorEndpoints({ env = process.env, argv = process.argv, port, peerPort }) {
+  const localMode = isLocalMode(env, argv);
+  if (localMode) {
+    const publicUrl = env.LOCAL_PUBLIC_URL || `ws://localhost:${port}`;
+    const peerUrl = env.LOCAL_PEER_URL || `ws://localhost:${peerPort}`;
+    const authUrls = parseAuthUrls(
+      env.LOCAL_AUTH_URLS || (!env.LOCAL_AUTH_URL ? DEFAULT_LOCAL_AUTH_URLS : ''),
+      env.LOCAL_AUTH_URL
+    );
+    return { localMode, publicUrl, peerUrl, authUrls };
+  }
+
+  const publicUrl = env.PUBLIC_URL || `ws://localhost:${port}`;
+  const peerUrl = env.PEER_URL || (publicUrl.startsWith('wss:') ? publicUrl : `ws://localhost:${peerPort}`);
+  const authUrls = parseAuthUrls(env.AUTH_URLS, env.AUTH_URL);
+  return { localMode, publicUrl, peerUrl, authUrls };
+}
+
+module.exports = {
+  createAuthClient,
+  parseAuthUrls,
+  normalizeAuthUrl,
+  isLocalMode,
+  resolveCoordinatorEndpoints,
+  DEFAULT_LOCAL_AUTH_URLS
+};

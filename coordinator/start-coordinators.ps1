@@ -1,4 +1,4 @@
-﻿param(
+param(
   [ValidateRange(1, 65535)] [int]$Count = 3,
   [int]$HttpPortStart = 5001,
   [int]$PeerPortStart = 6001,
@@ -8,7 +8,8 @@
   [string[]]$CoordinatorNames = @(),
   [string[]]$PublicUrls = @(),
   [string[]]$PeerUrls = @(),
-  [string]$AuthUrls = ''
+  [string]$AuthUrls = '',
+  [switch]$Local
 )
 
 $ErrorActionPreference = 'Stop'
@@ -119,10 +120,19 @@ if (Test-Path -LiteralPath $envPath) {
   }
 }
 
-$defaultAuthUrls = 'http://localhost:4001,http://localhost:4002,http://localhost:4003'
+$defaultAuthUrls = 'http://localhost:4001,http://localhost:4002,http://localhost:4003,http://localhost:4000'
 
 $resolvedAuthUrlsInput = if (-not [string]::IsNullOrWhiteSpace($AuthUrls)) {
   $AuthUrls
+} elseif ($Local) {
+  if (-not [string]::IsNullOrWhiteSpace($env:LOCAL_AUTH_URLS)) {
+    $env:LOCAL_AUTH_URLS
+  } elseif ($dotenvValues.ContainsKey('LOCAL_AUTH_URLS') -and
+      -not [string]::IsNullOrWhiteSpace($dotenvValues['LOCAL_AUTH_URLS'])) {
+    $dotenvValues['LOCAL_AUTH_URLS']
+  } else {
+    $defaultAuthUrls
+  }
 } elseif (-not [string]::IsNullOrWhiteSpace($env:AUTH_URLS)) {
   $env:AUTH_URLS
 } elseif ($dotenvValues.ContainsKey('AUTH_URLS') -and
@@ -184,6 +194,7 @@ foreach ($port in $allPorts) {
 
 $nodePath = $nodeCommand.Source
 $instanceEnvironment = @(
+  'LOCAL_MODE',
   'PORT',
   'COORDINATOR_ID',
   'COORDINATOR_NAME',
@@ -240,6 +251,11 @@ try {
     } else {
       "ws://localhost:$peerPort"
     }
+    if ($Local) {
+      $env:LOCAL_MODE = '1'
+    } else {
+      Remove-Item Env:LOCAL_MODE -ErrorAction SilentlyContinue
+    }
     $env:PORT = [string]$httpPort
     $env:COORDINATOR_ID = $coordinatorId
     $env:COORDINATOR_NAME = $coordinatorName
@@ -254,10 +270,11 @@ try {
       Remove-Item Env:COORDINATOR_SHARED_SECRET -ErrorAction SilentlyContinue
     }
 
+    $nodeArgs = if ($Local) { @('index.js', '--local') } else { @('index.js') }
     Write-Host "Iniciando '$coordinatorName' (${coordinatorId}): PORT=$httpPort, PEER_PORT=$peerPort, AUTH_URLS=$normalizedAuthUrls"
     $process = Start-Process `
       -FilePath $nodePath `
-      -ArgumentList @('index.js') `
+      -ArgumentList $nodeArgs `
       -WorkingDirectory $PSScriptRoot `
       -PassThru `
       -NoNewWindow

@@ -22,7 +22,7 @@ const { planRebalance } = require('./rebalance');
 const { limitMove, separateOverlaps } = require('./collisions');
 const { recordFinish, closeLevel, buildStandings } = require('./race-results');
 const { createItems, pickupItems, refreshItems, speedFactor, EFFECTS: ITEM_EFFECTS } = require('./race-items');
-const { createAuthClient, parseAuthUrls } = require('./auth-client');
+const { createAuthClient, resolveCoordinatorEndpoints } = require('./auth-client');
 const { createRollingSamples, percentile } = require('../shared/rolling-samples');
 const { calculateClockEstimate, correctedIntentLatency } = require('../shared/clock-metrics');
 const { createTraceBuffer } = require('../shared/trace-buffer');
@@ -87,23 +87,34 @@ if (COORDINATOR_NAME && !isValidCoordinatorName(COORDINATOR_NAME)) {
   process.exit(1);
 }
 
+const {
+  localMode: LOCAL_MODE,
+  publicUrl: rawPublicUrl,
+  peerUrl: rawPeerUrl,
+  authUrls: AUTH_URLS
+} = resolveCoordinatorEndpoints({
+  env: process.env,
+  argv: process.argv,
+  port: PORT,
+  peerPort: PEER_PORT
+});
+
 const PUBLIC_URL = parseServiceUrl(
   'PUBLIC_URL',
-  process.env.PUBLIC_URL,
+  rawPublicUrl,
   `ws://localhost:${PORT}`,
   ['ws:', 'wss:']
 );
 const defaultPeerUrl = PUBLIC_URL.startsWith('wss:')
   ? PUBLIC_URL
-  : (process.env.PEER_URL ? process.env.PEER_URL : `ws://localhost:${PEER_PORT}`);
+  : `ws://localhost:${PEER_PORT}`;
 const PEER_URL = parseServiceUrl(
   'PEER_URL',
-  process.env.PEER_URL,
+  rawPeerUrl,
   defaultPeerUrl,
   ['ws:', 'wss:']
 );
 // Taller 7: AUTH_URLS es la lista de auths (líder + réplicas). Si no existe se usa AUTH_URL.
-const AUTH_URLS = parseAuthUrls(process.env.AUTH_URLS, process.env.AUTH_URL);
 if (!AUTH_URLS) {
   console.error('Error de configuración: AUTH_URLS (o AUTH_URL) debe tener URLs http(s) separadas por comas, sin credenciales, query ni fragmento.');
   process.exit(1);
@@ -122,6 +133,10 @@ const CLIENT_ORIGINS = new Set(
     .map((origin) => origin.trim())
     .filter(Boolean)
 );
+if (LOCAL_MODE) {
+  CLIENT_ORIGINS.add('http://localhost:3000');
+  CLIENT_ORIGINS.add('http://127.0.0.1:3000');
+}
 const APP_WS_PROTOCOL = 'carsgame.v1';
 const WS_TICKET_PROTOCOL_PREFIX = 'auth.';
 const WS_TICKET_TTL_MS = 15_000;
@@ -2069,7 +2084,9 @@ function connectDiscoveredPeers() {
         peerConnections.has(peer.coordinatorId) ||
         pendingPeerConnections.has(peer.coordinatorId)) continue;
 
-    const ws = new WebSocket(`${peer.peerUrl.replace(/\/+$/, '')}/mesh`);
+    const ws = new WebSocket(`${peer.peerUrl.replace(/\/+$/, '')}/mesh`, {
+      headers: { 'ngrok-skip-browser-warning': 'true' }
+    });
     pendingPeerConnections.set(peer.coordinatorId, ws);
     attachPeerConnection(ws, peer.coordinatorId, true);
   }
@@ -2873,6 +2890,10 @@ async function startCoordinator() {
   });
   server.listen(PORT, () => {
     console.log(`Coordinador "${COORDINATOR_NAME}" (${COORDINATOR_ID}) escuchando en http://localhost:${PORT} y peers en ws://localhost:${PORT}/mesh (secundario: ${PEER_PORT}).`);
+    if (LOCAL_MODE) {
+      console.log('  Modo: LOCAL (ignorando URLs de ngrok del .env).');
+    }
+    console.log(`  PUBLIC_URL: ${PUBLIC_URL} · PEER_URL: ${PEER_URL}`);
     console.log(`  Auths (AUTH_URLS): ${AUTH_URLS.join(', ')}`);
     console.log(`WebSocket disponible en ws://localhost:${PORT}/connect (ticket efímero por subprotocolo)`);
     try {
@@ -2932,6 +2953,7 @@ module.exports = {
     PEER_URL,
     AUTH_URL,
     AUTH_URLS,
+    localMode: LOCAL_MODE,
     get currentAuthUrl() {
       return authClient.currentUrl;
     },
