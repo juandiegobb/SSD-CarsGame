@@ -569,7 +569,12 @@ function setupFullscreenToggle(buttonId, targetElement) {
     const target = targetElement || document.documentElement;
 
     function isFullscreen() {
-        return Boolean(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement);
+        return Boolean(
+            document.fullscreenElement ||
+            document.webkitFullscreenElement ||
+            document.mozFullScreenElement ||
+            document.body.classList.contains("fullscreen-active")
+        );
     }
 
     function updateLabel() {
@@ -580,29 +585,47 @@ function setupFullscreenToggle(buttonId, targetElement) {
 
     btn.addEventListener("click", async () => {
         try {
-            if (!isFullscreen()) {
+            const active = isFullscreen();
+            if (!active) {
+                // Activar modo pantalla completa CSS (garantizado en iOS Safari y móviles)
+                document.body.classList.add("fullscreen-active");
                 if (target.requestFullscreen) {
-                    await target.requestFullscreen();
+                    try { await target.requestFullscreen(); } catch (_) {}
                 } else if (target.webkitRequestFullscreen) {
-                    await target.webkitRequestFullscreen();
+                    try { await target.webkitRequestFullscreen(); } catch (_) {}
                 } else if (target.msRequestFullscreen) {
-                    await target.msRequestFullscreen();
+                    try { await target.msRequestFullscreen(); } catch (_) {}
                 }
             } else {
+                document.body.classList.remove("fullscreen-active");
                 if (document.exitFullscreen) {
-                    await document.exitFullscreen();
+                    try { await document.exitFullscreen(); } catch (_) {}
                 } else if (document.webkitExitFullscreen) {
-                    await document.webkitExitFullscreen();
+                    try { await document.webkitExitFullscreen(); } catch (_) {}
                 } else if (document.msExitFullscreen) {
-                    await document.msExitFullscreen();
+                    try { await document.msExitFullscreen(); } catch (_) {}
                 }
             }
+            updateLabel();
+            setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
         } catch (err) {
             console.warn("[fullscreen] Error:", err);
+            document.body.classList.toggle("fullscreen-active");
+            updateLabel();
+            window.dispatchEvent(new Event("resize"));
         }
     });
 
-    document.addEventListener("fullscreenchange", updateLabel);
-    document.addEventListener("webkitfullscreenchange", updateLabel);
+    function onFsChange() {
+        if (!document.fullscreenElement && !document.webkitFullscreenElement && !document.mozFullScreenElement) {
+            document.body.classList.remove("fullscreen-active");
+        }
+        updateLabel();
+        window.dispatchEvent(new Event("resize"));
+    }
+
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+    document.addEventListener("mozfullscreenchange", onFsChange);
     updateLabel();
 }
