@@ -22,6 +22,7 @@ const MESH_PATH = '/auth-mesh';
 const SECRET_HEADER = 'x-auth-mesh-secret';
 const MESSAGE_TYPES = new Set([
   'hello',
+  'peers_announce',
   'heartbeat',
   'write_propagate',
   'write_ack',
@@ -33,6 +34,20 @@ const MESSAGE_TYPES = new Set([
 ]);
 const AUTH_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const MAX_MESSAGE_BYTES = 4 * 1024 * 1024;
+
+function normalizePeerBaseUrl(value, protocols) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  try {
+    const url = new URL(value.trim());
+    if (!protocols.includes(url.protocol) || !url.hostname || url.username || url.password ||
+        (url.pathname && url.pathname !== '/') || url.search || url.hash) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
 
 function secretsMatch(provided, expected) {
   if (typeof provided !== 'string' || typeof expected !== 'string') return false;
@@ -60,6 +75,7 @@ function createAuthMesh({
 }) {
   const knownPeers = new Map(config.peers.map((peer) => [peer.authId, peer]));
   const sockets = new Map(); // authId → ws (ya identificado con hello)
+  const pendingSockets = new Map(); // authId → ws saliente en curso
   const handlers = new Map(); // type → [fn(msg, fromAuthId)]
   const upListeners = [];
   const downListeners = [];
@@ -70,6 +86,47 @@ function createAuthMesh({
   let attachedHttpServer = null;
   let pingTimer = null;
   let stopped = true;
+
+  function peerDirectory() {
+    return [...knownPeers.values()]
+      .filter((peer) => peer.peerUrl)
+      .map((peer) => ({
+        authId: peer.authId,
+        peerUrl: peer.peerUrl,
+        publicUrl: peer.publicUrl || null
+      }));
+  }
+
+  function helloMessage() {
+    return { type: 'hello', ...getHello(), peers: peerDirectory() };
+  }
+
+  function registerPeer(rawPeer, { connectIfNew = false } = {}) {
+    if (!rawPeer || typeof rawPeer !== 'object') return false;
+    const authId = typeof rawPeer.authId === 'string' ? rawPeer.authId.trim() : '';
+    if (!AUTH_ID_PATTERN.test(authId) || authId === config.authId) return false;
+    const peerUrl = normalizePeerBaseUrl(rawPeer.peerUrl, ['ws:', 'wss:']);
+    const publicUrl = normalizePeerBaseUrl(rawPeer.publicUrl, ['http:', 'https:']);
+
+    const existing = knownPeers.get(authId);
+    if (!existing) {
+      const entry = { authId, peerUrl, publicUrl, dynamic: true };
+      knownPeers.set(authId, entry);
+      if (connectIfNew && !stopped && peerUrl && !sockets.has(authId) && !pendingSockets.has(authId)) {
+        connectTo(entry);
+      }
+      return true;
+    }
+
+    if (!existing.peerUrl && peerUrl) {
+      existing.peerUrl = peerUrl;
+      if (connectIfNew && !stopped && !sockets.has(authId) && !pendingSockets.has(authId)) {
+        connectTo(existing);
+      }
+    }
+    if (!existing.publicUrl && publicUrl) existing.publicUrl = publicUrl;
+    return false;
+  }
 
   function on(type, handler) {
     if (!MESSAGE_TYPES.has(type)) throw new Error(`Tipo de mensaje del mesh desconocido: ${type}`);
@@ -115,18 +172,35 @@ function createAuthMesh({
       ws.close(4001, 'hello inválido');
       return null;
     }
-    if (!knownPeers.has(authId)) {
-      log.error(`[auth-mesh] ${authId} no está en AUTH_PEERS: conexión rechazada.`);
-      ws.close(4003, 'auth desconocido');
-      return null;
-    }
+    const isNewPeer = registerPeer({ authId, peerUrl: msg.peerUrl, publicUrl: msg.publicUrl });
     const existing = sockets.get(authId);
     if (existing && existing !== ws && existing.readyState === WebSocket.OPEN) {
-      ws.close(4009, 'conexión duplicada');
-      return null;
+      const newFromSmaller = (direction === 'out' && config.authId < authId) || (direction === 'in' && authId < config.authId);
+      const existingFromSmaller = (existing._meshDirection === 'out' && config.authId < authId) || (existing._meshDirection === 'in' && authId < config.authId);
+      if (newFromSmaller && !existingFromSmaller) {
+        existing.close(4009, 'conexión duplicada');
+      } else {
+        ws.close(4009, 'conexión duplicada');
+        return null;
+      }
     }
+    ws._meshDirection = direction;
     sockets.set(authId, ws);
-    log.info(`[auth-mesh] Conectado con ${authId} (${direction === 'out' ? 'saliente' : 'entrante'}).`);
+    if (isNewPeer) {
+      log.info(`[auth-mesh] Peer dinámico aceptado: ${authId} (${direction === 'out' ? 'saliente' : 'entrante'}).`);
+      const peerInfo = knownPeers.get(authId);
+      if (peerInfo && peerInfo.peerUrl) {
+        const announce = {
+          type: 'peers_announce',
+          peers: [{ authId, peerUrl: peerInfo.peerUrl, publicUrl: peerInfo.publicUrl || null }]
+        };
+        for (const [otherId, otherWs] of sockets) {
+          if (otherId !== authId) sendRaw(otherWs, announce);
+        }
+      }
+    } else {
+      log.info(`[auth-mesh] Conectado con ${authId} (${direction === 'out' ? 'saliente' : 'entrante'}).`);
+    }
     for (const listener of upListeners) listener(authId);
     return authId;
   }
@@ -159,10 +233,16 @@ function createAuthMesh({
         peerId = identify(ws, msg, direction);
         if (!peerId) return;
       }
+      if ((msg.type === 'hello' || msg.type === 'peers_announce') && Array.isArray(msg.peers)) {
+        for (const peer of msg.peers) registerPeer(peer, { connectIfNew: true });
+      }
       emit(msg.type, msg, peerId);
     });
 
     ws.on('close', () => {
+      if (expectedAuthId && pendingSockets.get(expectedAuthId) === ws) {
+        pendingSockets.delete(expectedAuthId);
+      }
       if (peerId && sockets.get(peerId) === ws) {
         sockets.delete(peerId);
         log.info(`[auth-mesh] Desconectado de ${peerId}.`);
@@ -172,12 +252,17 @@ function createAuthMesh({
     });
     ws.on('error', () => {}); // el 'close' que viene después se encarga
 
-    ws.on('open', () => sendRaw(ws, { type: 'hello', ...getHello() }));
-    if (ws.readyState === WebSocket.OPEN) sendRaw(ws, { type: 'hello', ...getHello() });
+    ws.on('open', () => {
+      if (expectedAuthId && pendingSockets.get(expectedAuthId) === ws) {
+        pendingSockets.delete(expectedAuthId);
+      }
+      sendRaw(ws, helloMessage());
+    });
+    if (ws.readyState === WebSocket.OPEN) sendRaw(ws, helloMessage());
   }
 
   function connectTo(peer) {
-    if (stopped || sockets.has(peer.authId)) return;
+    if (stopped || !peer?.peerUrl || sockets.has(peer.authId) || pendingSockets.has(peer.authId)) return;
     let ws;
     try {
       ws = new WebSocket(meshUrlOf(peer.peerUrl), {
@@ -189,6 +274,7 @@ function createAuthMesh({
       scheduleReconnect(peer.authId);
       return;
     }
+    pendingSockets.set(peer.authId, ws);
     attach(ws, 'out', peer.authId);
   }
 
@@ -284,6 +370,8 @@ function createAuthMesh({
     clearInterval(pingTimer);
     for (const timer of reconnectTimers.values()) clearTimeout(timer);
     reconnectTimers.clear();
+    for (const ws of pendingSockets.values()) ws.terminate();
+    pendingSockets.clear();
     for (const ws of sockets.values()) ws.terminate();
     sockets.clear();
     if (attachedHttpServer && upgradeListener) {

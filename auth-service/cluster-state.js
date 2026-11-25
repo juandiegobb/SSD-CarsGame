@@ -125,7 +125,14 @@ function createClusterState({ config, replicationLog }) {
   // Lo que el mesh va aprendiendo de cada peer (hello, heartbeat, conexión/desconexión)
   function updatePeer(authId, info) {
     if (!authId || authId === config.authId) return;
-    const current = peers.get(authId) || { authId, peerUrl: null, publicUrl: null, role: null, connected: false };
+    const current = peers.get(authId) || {
+      authId,
+      peerUrl: null,
+      publicUrl: null,
+      role: null,
+      connected: false,
+      lastAppliedSeq: null
+    };
     const next = { ...current };
     if (typeof info.peerUrl === 'string') next.peerUrl = info.peerUrl;
     if (typeof info.publicUrl === 'string') next.publicUrl = info.publicUrl;
@@ -180,6 +187,8 @@ function createClusterState({ config, replicationLog }) {
     isLeader: () => role === 'leader',
     getTerm,
     getLeader,
+    clusterSize: () => peers.size + 1,
+    majority: () => Math.floor((peers.size + 1) / 2) + 1,
     becomeLeader,
     becomeReplica,
     becomeCandidate,

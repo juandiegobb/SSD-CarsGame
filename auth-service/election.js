@@ -40,6 +40,8 @@ function createElection({
   const me = () => config.authId;
   const myTerm = () => clusterState.getTerm();
   const lastSeq = () => replicationLog.lastAppliedSeq();
+  const clusterSize = () => (typeof clusterState.clusterSize === 'function' ? clusterState.clusterSize() : config.clusterSize);
+  const majority = () => (typeof clusterState.majority === 'function' ? clusterState.majority() : config.majority);
   const isInt = (value) => Number.isSafeInteger(value) && value >= 0;
 
   // Tiempo sin noticias del líder (el arranque y un voto dado cuentan como "noticia")
@@ -70,7 +72,8 @@ function createElection({
 
   function startElection() {
     const reachable = mesh.connectedPeers().length + 1;
-    if (reachable < config.majority) {
+    const reqMajority = majority();
+    if (reachable < reqMajority) {
       if (reachable === 1 && config.allowSingleNodeLeadership) {
         warnedNoQuorum = false;
         const term = clusterState.becomeCandidate();
@@ -81,7 +84,7 @@ function createElection({
         return becomeLeader(term);
       }
       if (!warnedNoQuorum) {
-        log.info(`[election] Sin líder, pero solo veo ${reachable} de ${config.clusterSize} auths: no me postulo (hace falta mayoría ${config.majority}).`);
+        log.info(`[election] Sin líder, pero solo veo ${reachable} de ${clusterSize()} auths: no me postulo (hace falta mayoría ${reqMajority}).`);
         warnedNoQuorum = true;
       }
       return;
@@ -104,7 +107,7 @@ function createElection({
       });
     }
     log.info(`[election] ${me()} se postula en el term ${term} (lastSeq ${lastSeq()}).`);
-    if (votes.size >= config.majority) return becomeLeader(term, traceId);
+    if (votes.size >= reqMajority) return becomeLeader(term, traceId);
     mesh.broadcast({ type: 'election', candidate: me(), term, lastSeq: lastSeq(), traceId });
   }
 
@@ -181,7 +184,7 @@ function createElection({
     }
     if (clusterState.getRole() !== 'candidate' || msg.term !== myTerm() || msg.voteGranted !== true) return;
     votes.add(from);
-    if (votes.size >= config.majority) becomeLeader(msg.term, msg.traceId);
+    if (votes.size >= majority()) becomeLeader(msg.term, msg.traceId);
   });
 
   mesh.on('new_leader', (msg, from) => {

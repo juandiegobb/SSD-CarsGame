@@ -21,6 +21,12 @@ const NODES = [
   { key: 'C', authId: 'auth-c', port: 4003, peerPort: 4103 }
 ];
 
+// Perfil opcional para un 4.º auth (auth-d / 4004) que se suma al grupo en vivo.
+// No se incluye en NODES para que auth-a/b/c mantengan su quórum inicial de 3 nodos.
+const EXTRA_NODES = [
+  { key: 'D', authId: 'auth-d', port: 4004, peerPort: 4104 }
+];
+
 function trimUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
@@ -39,11 +45,11 @@ function urlsOf(node, env) {
 function findNode(arg) {
   const clean = String(arg || '').trim().toLowerCase();
   if (!clean) return null;
-  return NODES.find((node) =>
+  const matcher = (node) =>
     clean === String(node.port) ||
     clean === node.authId ||
-    clean === node.key.toLowerCase()
-  ) || null;
+    clean === node.key.toLowerCase();
+  return NODES.find(matcher) || EXTRA_NODES.find(matcher) || null;
 }
 
 // Devuelve las variables que hay que poner para ese auth, o null si el argumento

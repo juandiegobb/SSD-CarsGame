@@ -111,7 +111,8 @@ function createReplication({
   // Opción B: espera el write_ack de al menos UNA réplica (o el timeout).
   // Devuelve true si alguien confirmó, false si no.
   function waitForAck(seq, timeoutMs = config.replicationAckTimeoutMs) {
-    if (config.clusterSize === 1) return Promise.resolve(true); // auth solo: no hay a quién esperar
+    const totalNodes = typeof clusterState.clusterSize === 'function' ? clusterState.clusterSize() : config.clusterSize;
+    if (totalNodes === 1) return Promise.resolve(true); // auth solo: no hay a quién esperar
     if (config.allowSingleNodeLeadership && mesh.connectedPeers().length === 0) {
       return Promise.resolve(true); // líder solitario: confirma localmente sin esperar réplicas desconectadas
     }
@@ -336,6 +337,17 @@ function createReplication({
     if (msg.term > myTerm()) clusterState.observeTerm(msg.term);
     // Si somos líder, el recién llegado se entera de inmediato (sin esperar 2 s)
     if (clusterState.isLeader()) mesh.send(from, heartbeatMessage());
+  });
+
+  mesh.on('peers_announce', (msg) => {
+    if (!Array.isArray(msg.peers)) return;
+    for (const peer of msg.peers) {
+      if (!peer || typeof peer.authId !== 'string' || peer.authId === me()) continue;
+      clusterState.updatePeer(peer.authId, {
+        publicUrl: typeof peer.publicUrl === 'string' ? peer.publicUrl : undefined,
+        peerUrl: typeof peer.peerUrl === 'string' ? peer.peerUrl : undefined
+      });
+    }
   });
 
   mesh.onPeerDown((authId) => {
