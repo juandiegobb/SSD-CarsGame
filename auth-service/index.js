@@ -466,7 +466,7 @@ app.use((req, res, next) => {
   traceBuffer.record({
     traceId,
     service: 'auth',
-    id: CLUSTER.myId || 'auth',
+    id: CLUSTER.authId,
     event: 'http_request',
     at: new Date().toISOString(),
     durationMs: null,
@@ -480,7 +480,7 @@ app.use((req, res, next) => {
     traceBuffer.record({
       traceId,
       service: 'auth',
-      id: CLUSTER.myId || 'auth',
+      id: CLUSTER.authId,
       event: 'http_response',
       at: new Date().toISOString(),
       durationMs,

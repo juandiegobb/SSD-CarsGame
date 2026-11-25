@@ -1223,9 +1223,9 @@ Secciones mínimas: resumen y diagrama de arquitectura; componentes y puertos; c
 | Turno | Persona | Parte | Explica en la sustentación |
 |---|---|---|---|
 | 1 | Paula | Integración (§14.3) y juego (§14.4): choques, checkpoints, resultados, objetos, podio | Arranque local/túnel y el juego autoritativo |
-| 2 | Camilo | 2.2 parte A: `/metrics` en auth y coordinador, desfase de relojes y latencia de replicación (§14.5.1–14.5.2) | Qué se mide y cómo se corrige el desfase |
-| 3 | Mery | 2.2 parte B: `traceId`, `/traces` y dashboard (§14.5.3–14.5.4) | Dashboard en vivo y una traza completa |
-| 4 | Juan Diego | 2.5 espectadores (§14.6), arreglo del login (§14.10) y README final (§14.7) | Espectadores y arquitectura general |
+| 2 | Mery | 2.2 parte A: `/metrics` en auth y coordinador, desfase de relojes y latencia de replicación (§14.5.1–14.5.2) | Qué se mide y cómo se corrige el desfase |
+| 3 | Juan Diego | 2.2 parte B: `traceId`, `/traces` y dashboard (§14.5.3–14.5.4); arreglo del login (§14.10) | Dashboard en vivo y una traza completa |
+| 4 | Camilo | 2.5 espectadores (§14.6) y README final (§14.7) | Espectadores y arquitectura general |
 
 ### 14.9 Guion de sustentación
 
@@ -1241,7 +1241,7 @@ Secciones mínimas: resumen y diagrama de arquitectura; componentes y puertos; c
 
 **Qué debe pasar:** el recuadro queda **fijo** mientras se escribe, en escritorio y en pantallas pequeñas; el fondo 3D puede moverse detrás, pero el formulario no. Revisar que el foco en un campo no cambie el alto del contenedor ni haga *scroll*, y que la animación del fondo no mueva el formulario.
 
-**Responsable:** Juan Diego (turno 4), junto con las interfaces. Commit sugerido: `fix(client): el recuadro de inicio de sesión queda fijo al escribir`.
+**Responsable:** Juan Diego, junto con las interfaces. **Hecho** en `ae3efb1` (`fix(client): resolver bucle de redimensionamiento y desplazamiento en login`).
 
 
 ### 14.11 Demo del juego (gameplay, 3 min)
@@ -1259,4 +1259,4 @@ Secciones mínimas: resumen y diagrama de arquitectura; componentes y puertos; c
 | 7 | Terminar el nivel 4 | Podio 🥇🥈🥉 con tiempos totales y ganador | `race.standings` |
 | 8 | Abrir DevTools y mandar `{"type":"intent","intent":{"dir":{"x":5,"y":5}}}` o cambiar `x` en el `state` | El carro no va más rápido: el servidor solo usa el signo de cada eje (-1, 0 o 1) y la posición la calcula él | Servidor autoritativo |
 
-**Modo de falla conocido (para el README):** si cae el coordinador **propietario** de una sala en plena carrera, los demás coordinadores conservan su último estado replicado (vueltas, checkpoints, objetos y resultados) y los jugadores siguen moviéndose, pero nadie más cuenta vueltas ni recoge objetos en esa sala, porque hoy ningún coordinador adopta la propiedad. Es una limitación para el cierre de la sustentación.
+**Caída del coordinador propietario:** si cae el coordinador **dueño** de una sala en plena carrera, la **adopta el coordinador vivo con el ID más bajo** (todos los sobrevivientes llegan a la misma conclusión sin votar), que la vuelve a replicar como propietario: la carrera sigue contando vueltas y objetos desde el último estado replicado. Si dos la adoptan a la vez (vistas distintas del mesh), `applyRemoteRoom` deja como dueño al de ID más bajo. **Límite que queda:** los jugadores conectados al coordinador caído se reconectan a otro y vuelven al lobby.

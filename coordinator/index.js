@@ -1028,6 +1028,13 @@ function applyRemoteRoom(peerId, message) {
   }
 
   const previousRoom = rooms.get(message.roomId);
+  // Dos coordinadores se creen dueños de la sala (adopción simultánea o reconexión tras un
+  // corte del mesh): gana el de ID más bajo. Si yo soy el más bajo, ignoro su versión y
+  // vuelvo a anunciar la mía para que el otro ceda.
+  if (previousRoom?.owner === COORDINATOR_ID && data.owner !== COORDINATOR_ID && data.owner > COORDINATOR_ID) {
+    replicateRoom(previousRoom, 'race');
+    return;
+  }
   const preserveLocalRace = previousRoom?.owner === COORDINATOR_ID && !['start', 'race'].includes(message.op);
   const resetRacePositions = message.op === 'start' ||
     (message.op === 'create' && data.status === 'playing') ||
@@ -1248,6 +1255,41 @@ function removePlayersFromPeer(peerId) {
   }
   broadcastRoomList();
   broadcastPlayers();
+}
+
+// Proyecto final (SPEC §14.4): si se cae el coordinador PROPIETARIO de una sala, la sala
+// no se queda sin quien cuente vueltas. La adopta el coordinador vivo con el ID más bajo
+// (todos los sobrevivientes llegan a la misma conclusión sin votar) y la vuelve a
+// replicar como propietario; la carrera sigue desde el último estado replicado.
+// Si por una vista distinta del mesh dos la adoptan a la vez, applyRemoteRoom deja como
+// dueño al de ID más bajo.
+function adoptOrphanRooms(deadPeerId) {
+  const alive = [COORDINATOR_ID, ...peerConnections.keys()].sort();
+  if (alive[0] !== COORDINATOR_ID) return;
+  for (const room of [...rooms.values()]) {
+    if (room.owner !== deadPeerId) continue;
+    if (room.members.size === 0) {
+      rooms.delete(room.roomId);
+      replicateRoomRemoval(room.roomId);
+      broadcastRoomList();
+      continue;
+    }
+    room.owner = COORDINATOR_ID;
+    if (room.race && !(room.race.previousPositions instanceof Map)) room.race.previousPositions = new Map();
+    const traceId = randomUUID();
+    traceBuffer.record({
+      traceId,
+      service: 'coordinator',
+      id: COORDINATOR_ID,
+      event: 'room_adopted',
+      at: new Date().toISOString(),
+      durationMs: null,
+      detail: `sala ${room.roomId} adoptada (su propietario ${deadPeerId} se cayó)`
+    });
+    console.log(`[coordinator] Sala ${room.roomId} adoptada: su propietario ${deadPeerId} se cayó. traceId=${traceId}`);
+    replicateRoom(room, 'race');
+    broadcastRoom(room.roomId, roomUpdateMessage(room));
+  }
 }
 
 function acceptRemoteIntent(peerId, message) {
@@ -2011,6 +2053,7 @@ function attachPeerConnection(ws, expectedPeerId = null, initiatedLocally = fals
       peerConnections.delete(peerId);
       console.log(`[coordinator] Mesh desconectado de ${peerId} (${code}).`);
       removePlayersFromPeer(peerId);
+      adoptOrphanRooms(peerId);
     }
   });
   ws.on('error', (err) => {

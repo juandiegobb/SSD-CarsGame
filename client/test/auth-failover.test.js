@@ -77,6 +77,24 @@ test('503 not_leader: repite la misma petición en leaderUrl', async () => {
   assert.deepEqual(calls, ['http://a.test/register', 'http://c.test/register']);
 });
 
+test('track 2.2: la réplica y el líder reciben el MISMO x-trace-id (una sola traza)', async () => {
+  const traceIds = [];
+  const { common, calls } = createHarness((url, options) => {
+    traceIds.push(options.headers['x-trace-id']);
+    return url.startsWith('http://c.test') ? { status: 201, body: { ok: true, message: 'creado' } } : notLeader('http://c.test');
+  });
+  await common.apiPost('/register', { username: 'bob', password: '12345678' });
+  assert.deepEqual(calls, ['http://a.test/register', 'http://c.test/register']);
+  assert.equal(traceIds.length, 2);
+  assert.ok(typeof traceIds[0] === 'string' && traceIds[0].length > 8, 'manda un traceId');
+  assert.equal(traceIds[0], traceIds[1], 'el reintento en el líder conserva el traceId');
+
+  traceIds.length = 0;
+  await common.apiPost('/register', { username: 'eva', password: '12345678' });
+  assert.notEqual(traceIds[0], undefined);
+  assert.ok(!traceIds.includes(undefined));
+});
+
 test('leaderUrl fuera de la lista (p. ej. ngrok) también se sigue', async () => {
   const { common, calls } = createHarness((url) =>
     url.startsWith('https://leader.ngrok.test') ? okLogin : notLeader('https://leader.ngrok.test/')

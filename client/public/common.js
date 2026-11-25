@@ -98,10 +98,24 @@ async function fetchOneAuth(baseUrl, path, options) {
     }
 }
 
-// Devuelve { response, payload, authUrl }. Lanza error solo si ningún auth respondió.
+// Track 2.2: un traceId por petición LÓGICA. Viaja en x-trace-id en todos los intentos
+// (réplica que responde not_leader → líder, o el siguiente auth si uno no responde), así
+// /traces/:traceId muestra el recorrido completo de esa petición en un solo traceId.
+function newTraceId() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    // crypto.randomUUID solo existe en contextos seguros (https o localhost)
+    return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+// Devuelve { response, payload, authUrl, traceId }. Lanza error solo si ningún auth respondió.
 async function authFetch(path, options = {}) {
     const urls = getAuthUrls();
     let lastAnswer = null;
+    const headers = { ...(options.headers || {}) };
+    const traceId = headers["x-trace-id"] || newTraceId();
+    headers["x-trace-id"] = traceId;
+    options = { ...options, headers };
+    if (path !== "/status") console.info(`[auth] ${options.method || "GET"} ${path} · traceId ${traceId}`);
 
     for (let round = 0; round < AUTH_MAX_ROUNDS; round += 1) {
         const queue = [...urls];
@@ -121,7 +135,7 @@ async function authFetch(path, options = {}) {
                 continue;
             }
             const { response, payload } = answer;
-            lastAnswer = { ...answer, authUrl: baseUrl };
+            lastAnswer = { ...answer, authUrl: baseUrl, traceId };
 
             if (response.status === 503 && payload && payload.error === "not_leader") {
                 const leaderUrl = normalizeAuthUrl(payload.leaderUrl);

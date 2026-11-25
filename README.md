@@ -37,6 +37,9 @@ El despliegue integrado por defecto ejecuta tres Auth (`4001`–`4003`), tres co
     - [Modo espectador](#146-modo-espectador-track-25)
     - [Ejecución integrada](#1410-ejecución-integrada)
     - [Fallas, limitaciones y mejoras futuras](#1411-modos-de-falla-limitaciones-y-trabajo-futuro)
+    - [Por qué dos tracks](#1412-por-qué-dos-tracks-22-principal--25-secundario)
+    - [El juego](#1413-el-juego-carreras-en-cuatro-pistas)
+    - [Restricciones del enunciado](#1414-restricciones-del-enunciado)
     - [Responsabilidades del equipo](#responsabilidades-del-trabajo-final)
 15. [Equipo y Reparto de Fases](#15-equipo-y-reparto-de-fases)
 
@@ -1231,6 +1234,7 @@ Auth, ticket temporal y `/connect`.
 | Se pierde el WebSocket de un jugador | El coordinador limpia la sesión al detectar `close`; el cliente intenta recuperar la sesión mientras su token sea válido. |
 | Se pierde el WebSocket espectador | La interfaz reintenta la conexión hasta 15 veces; si se agotan, muestra el estado de desconexión. |
 | Se reinicia un servicio | Los buffers de métricas/trazas y el estado del juego en memoria se pierden; las bases Auth son SQLite locales y separadas. |
+| Cae el coordinador **propietario** de una sala en plena carrera | El coordinador vivo con el ID más bajo **adopta la sala** (evento `room_adopted` en las trazas) y la sigue replicando: la carrera continúa desde el último estado replicado. Los jugadores que estaban conectados al coordinador caído se reconectan a otro y vuelven al lobby (pierden su lugar en esa carrera). Si dos coordinadores la adoptan a la vez, queda como dueño el de ID más bajo. |
 | Límite de espectadores | Cada coordinador acepta hasta 50 espectadores por defecto; no hay balanceador ni proceso dedicado para repartirlos. |
 | Exposición pública | `/spectate` no autentica porque el estado es público/de solo lectura; el límite no sustituye rate limiting ni protección de red ante abuso volumétrico. |
 
@@ -1239,6 +1243,58 @@ con consenso para decisiones globales del juego, límites de tasa por IP en
 `/spectate`, observabilidad durable, pruebas visuales automatizadas y una topología
 de mesh más escalable que la conexión completa entre pares. Estas capacidades no
 se presentan como implementadas.
+
+### 14.12. Por qué dos tracks (2.2 principal + 2.5 secundario)
+
+El enunciado permite elegir dos tracks, uno principal y uno secundario, y pide
+justificarlo:
+
+- **2.2 Observabilidad (principal).** Era lo que más le faltaba al sistema: con
+  3 auths, varios coordinadores y túneles en distintos PCs, sin métricas ni trazas
+  no había forma de ver qué pasaba. Es el track que más ayuda a demostrar los
+  talleres anteriores (elección de líder, replicación, mesh). Está completo:
+  `/metrics` en todos los servicios, latencia de replicación corrigiendo el desfase
+  de relojes, `traceId` en HTTP y en los mensajes WS importantes, y un dashboard que
+  refleja una caída o un registro en menos de 3 s.
+- **2.5 Espectadores (secundario).** Es acotado y aprovecha lo que ya existe: el
+  mismo `state` que reciben los jugadores. Se usa en la demo para mostrar una
+  carrera sin iniciar sesión. **Atajos documentados:** no hay coordinador dedicado
+  a espectadores ni balanceo entre coordinadores para ellos; cada coordinador
+  acepta hasta `MAX_SPECTATORS` (50 por defecto) y el `state` se serializa una
+  sola vez por tick para jugadores y espectadores. No hay rate limiting por IP en
+  `/spectate`.
+
+### 14.13. El juego: carreras en cuatro pistas
+
+El círculo del canvas pasó a ser un **carro de carreras**. Todo lo calcula el
+coordinador (servidor autoritativo): el cliente solo manda la dirección de las
+teclas o del joystick (`-1`, `0` o `1` por eje) y dibuja lo que llega en `state`.
+
+| Mecánica | Qué hace | Dónde |
+|---|---|---|
+| Choques | Dos carros nunca se superponen: se deslizan y, si quedan encimados, se separan sin salir de la pista | `coordinator/collisions.js` |
+| Checkpoints | Una vuelta cuenta solo si se pasa por los 4 checkpoints en orden; ir y volver sobre la meta no suma | `shared/tracks.js`, `coordinator/index.js` |
+| Objetos | Turbo (×1,6 durante 2 s) y aceite (×0,5 durante 1,5 s); al recogerlos desaparecen 5 s | `coordinator/race-items.js` |
+| Llegada | Al completar las vueltas, el carro se estaciona pasando la meta, en su orden de llegada, y queda "fantasma" (no choca) para no tapar la meta | `RaceTracks.parkingSpot` |
+| Victoria | Orden de llegada y tiempo por nivel, suma de tiempos en los 4 niveles, podio y ganador | `coordinator/race-results.js` |
+| Ayudas visuales | Flechas de sentido en la pista y aviso "¡Vas en sentido contrario!" (solo dibujo) | `client/public/game.js` |
+
+**Estado replicado entre coordinadores:** el coordinador propietario de la sala
+lleva la carrera (`race.level`, `phase`, `laps`, `checkpoints`, `items`,
+`effects`, `results`, `totals`, `standings`) y la replica con `room_replicate`.
+Así, dos jugadores conectados a coordinadores distintos ven la misma carrera.
+Cada coordinador simula los choques de todos los carros con la misma regla, y el
+`player_sync` del coordinador *home* de cada jugador corrige las diferencias.
+
+### 14.14. Restricciones del enunciado
+
+Se cumplen todas las restricciones, sin excepciones que justificar: servidor
+autoritativo; solo `ws`, `express` y `node:sqlite` (sin Redis, Kafka ni librerías
+de consenso: la elección de líder es propia); JWT con secret compartida y sin
+sesiones en memoria en el auth; sin proxy reverso (el cliente conoce la lista
+`AUTH_URLS` y cambia de auth si uno falla); sin sticky sessions (un jugador puede
+volver por cualquier coordinador). ngrok solo publica cada servicio con su propia
+URL; no reparte tráfico entre servidores.
 
 ---
 
@@ -1258,7 +1314,7 @@ se presentan como implementadas.
 
 | Persona | Responsabilidad integrada |
 |---|---|
-| Persona 1 — Paula | Integración, configuración, ejecución, túneles y juego: carreras, colisiones, checkpoints, vueltas, turbo, aceite y estado autoritativo/replicado. |
-| Persona 2 — Camilo | Métricas y medición de rendimiento, incluidas latencia de replicación y desfase de relojes. |
-| Persona 3 — Mery | Propagación de `traceId`, endpoints de trazas y dashboard de observabilidad. |
-| Persona 4 — Juan Diego | Modo espectador, corrección visual del login y documentación técnica final. |
+| Persona 1 — Paula | Integración, configuración, ejecución, túneles y juego: carreras, colisiones, checkpoints, vueltas, turbo, aceite, llegada y estado autoritativo/replicado. |
+| Persona 2 — Mery | Track 2.2, parte A: `/metrics` en auth y coordinador, percentiles, latencia de replicación y desfase de relojes. |
+| Persona 3 — Juan Diego | Track 2.2, parte B: propagación de `traceId`, `/traces` y dashboard de observabilidad; corrección del login e interfaz móvil. |
+| Persona 4 — Camilo | Track 2.5: modo espectador (`/spectate`, `spectator.html`, límite de 50) y documentación técnica final. |
